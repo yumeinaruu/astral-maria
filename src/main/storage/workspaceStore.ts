@@ -2,7 +2,7 @@ import * as fs from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import * as path from 'node:path'
 import type { WorkspaceInfo } from '../../shared/types'
-import { readJson, writeJsonAtomic } from './fsJson'
+import { CorruptFileError, readJson, writeJsonAtomic } from './fsJson'
 
 interface WorkspaceFile {
   version: 1
@@ -11,6 +11,7 @@ interface WorkspaceFile {
 }
 
 const LOCAL_IGNORE = '.local/'
+const META_FILE = 'workspace.json'
 
 async function exists(p: string): Promise<boolean> {
   try {
@@ -35,7 +36,7 @@ async function ensureGitignore(dir: string): Promise<void> {
 }
 
 export async function createWorkspace(dir: string, name: string): Promise<WorkspaceInfo> {
-  const metaPath = path.join(dir, 'workspace.json')
+  const metaPath = path.join(dir, META_FILE)
   if (await exists(metaPath)) throw new Error('workspace_exists')
   await fs.mkdir(path.join(dir, 'collections'), { recursive: true })
   await fs.mkdir(path.join(dir, 'environments'), { recursive: true })
@@ -45,14 +46,32 @@ export async function createWorkspace(dir: string, name: string): Promise<Worksp
   return { id: meta.id, name, dir }
 }
 
-export async function openWorkspace(dir: string): Promise<WorkspaceInfo> {
-  let meta: WorkspaceFile
+/** Reads and validates `workspace.json` only; writes nothing, so it is safe for folders the user did not open. */
+export async function readWorkspaceInfo(dir: string): Promise<WorkspaceInfo> {
+  const metaPath = path.join(dir, META_FILE)
+  let meta: unknown
   try {
-    meta = await readJson<WorkspaceFile>(path.join(dir, 'workspace.json'))
+    meta = await readJson<unknown>(metaPath, META_FILE)
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'ENOENT') throw new Error('not_a_workspace')
     throw e
   }
+  if (
+    typeof meta !== 'object' ||
+    meta === null ||
+    Array.isArray(meta) ||
+    typeof (meta as Record<string, unknown>).id !== 'string' ||
+    (meta as Record<string, unknown>).id === '' ||
+    typeof (meta as Record<string, unknown>).name !== 'string'
+  ) {
+    throw new CorruptFileError(metaPath, `Invalid workspace metadata in ${META_FILE}`)
+  }
+  const { id, name } = meta as WorkspaceFile
+  return { id, name, dir }
+}
+
+export async function openWorkspace(dir: string): Promise<WorkspaceInfo> {
+  const info = await readWorkspaceInfo(dir)
   await ensureGitignore(dir)
-  return { id: meta.id, name: meta.name, dir }
+  return info
 }

@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import * as fsp from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { createWorkspace, openWorkspace } from '../../src/main/storage/workspaceStore'
+import { CorruptFileError } from '../../src/main/storage/fsJson'
+import { createWorkspace, openWorkspace, readWorkspaceInfo } from '../../src/main/storage/workspaceStore'
 
 let dir: string
 beforeEach(async () => {
@@ -54,5 +55,41 @@ describe('openWorkspace', () => {
     await fsp.rm(path.join(dir, '.gitignore'))
     await openWorkspace(dir)
     expect(await fsp.readFile(path.join(dir, '.gitignore'), 'utf8')).toBe('.local/\n')
+  })
+})
+
+describe('workspace.json shape', () => {
+  it.each([['null'], ['[]'], ['{}'], ['"x"'], ['{"id":1,"name":"A"}'], ['{"id":"a"}'], ['{"id":"","name":"A"}']])(
+    'rejects %s on open and on read without a TypeError',
+    async (text) => {
+      await fsp.writeFile(path.join(dir, 'workspace.json'), text)
+      for (const read of [openWorkspace, readWorkspaceInfo]) {
+        const err = (await read(dir).catch((e: unknown) => e)) as Error
+        expect(err).toBeInstanceOf(CorruptFileError)
+        expect(err.message).toBe('Invalid workspace metadata in workspace.json')
+      }
+      await expect(fsp.access(path.join(dir, '.gitignore'))).rejects.toThrow()
+    }
+  )
+
+  it('reports invalid JSON without quoting it', async () => {
+    await fsp.writeFile(path.join(dir, 'workspace.json'), '{"name": secret}')
+    await expect(openWorkspace(dir)).rejects.toThrow('Invalid JSON in workspace.json (line 1, column 10)')
+  })
+})
+
+describe('readWorkspaceInfo', () => {
+  it('reads the info of a workspace without writing anything', async () => {
+    const info = await createWorkspace(dir, 'A')
+    await fsp.writeFile(path.join(dir, '.gitignore'), 'node_modules/')
+    const before = await fsp.readdir(dir)
+    expect(await readWorkspaceInfo(dir)).toEqual(info)
+    expect(await fsp.readFile(path.join(dir, '.gitignore'), 'utf8')).toBe('node_modules/')
+    expect(await fsp.readdir(dir)).toEqual(before)
+  })
+
+  it('rejects a plain folder with not_a_workspace and creates nothing', async () => {
+    await expect(readWorkspaceInfo(dir)).rejects.toThrow('not_a_workspace')
+    expect(await fsp.readdir(dir)).toEqual([])
   })
 })

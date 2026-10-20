@@ -273,6 +273,27 @@ describe('workspace.recent', () => {
     expect((await makeApi().workspace.recent()).map((w) => w.dir)).toEqual([b])
   })
 
+  it('leaves the files of listed workspaces byte-identical', async () => {
+    const api = makeApi()
+    const dirs = [await newWorkspace(api, 'a'), await newWorkspace(api, 'b')]
+    const snapshot = async () => {
+      const out: Record<string, string> = {}
+      for (const d of dirs) {
+        for (const name of await fs.readdir(d)) {
+          const p = path.join(d, name)
+          if ((await fs.stat(p)).isFile()) out[p] = await fs.readFile(p, 'utf8')
+        }
+      }
+      return out
+    }
+    // A repository whose .gitignore does not list .local/ yet, and one without a .gitignore at all.
+    await fs.writeFile(path.join(dirs[0], '.gitignore'), 'node_modules/')
+    await fs.rm(path.join(dirs[1], '.gitignore'))
+    const before = await snapshot()
+    expect((await makeApi().workspace.recent()).map((w) => w.dir)).toEqual([dirs[1], dirs[0]])
+    expect(await snapshot()).toEqual(before)
+  })
+
   it('treats a corrupt recent file as empty', async () => {
     await fs.writeFile(path.join(tmp, 'recent.json'), '{nope')
     expect(await makeApi().workspace.recent()).toEqual([])

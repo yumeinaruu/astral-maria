@@ -7,7 +7,7 @@ import { sendRequest } from './http/sendRequest'
 import { CollectionStore } from './storage/collectionStore'
 import { EnvironmentStore, type SecretCipher } from './storage/environmentStore'
 import { readJson, writeJsonAtomic } from './storage/fsJson'
-import { createWorkspace, openWorkspace } from './storage/workspaceStore'
+import { createWorkspace, openWorkspace, readWorkspaceInfo } from './storage/workspaceStore'
 
 export interface ApiDeps {
   cipher: SecretCipher
@@ -128,7 +128,8 @@ export function createApi(deps: ApiDeps): AstralApi {
         const out: WorkspaceInfo[] = []
         for (const entry of await readRecent(deps.recentFile)) {
           try {
-            out.push(await openWorkspace(entry.dir))
+            // Read-only: listing must not touch (e.g. the .gitignore of) folders the user has not opened.
+            out.push(await readWorkspaceInfo(entry.dir))
           } catch {
             // The folder is gone or no longer a workspace; leave it out.
           }
