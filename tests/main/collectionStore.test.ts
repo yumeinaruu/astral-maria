@@ -1,337 +1,407 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import * as fsp from "node:fs/promises";
-import * as os from "node:os";
-import * as path from "node:path";
-import { CollectionStore } from "../../src/main/storage/collectionStore";
-import { CorruptFileError } from "../../src/main/storage/fsJson";
-import type {
-  FolderNode,
-  RequestItem,
-  RequestNode,
-} from "../../src/shared/types";
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import * as fsp from 'node:fs/promises'
+import * as os from 'node:os'
+import * as path from 'node:path'
+import { CollectionStore } from '../../src/main/storage/collectionStore'
+import { CorruptFileError } from '../../src/main/storage/fsJson'
+import type { FolderNode, RequestItem, RequestNode } from '../../src/shared/types'
 
-let dir: string;
-let store: CollectionStore;
+let dir: string
+let store: CollectionStore
 beforeEach(async () => {
-  dir = await fsp.mkdtemp(path.join(os.tmpdir(), "am-col-"));
-  await fsp.mkdir(path.join(dir, "collections"));
-  store = new CollectionStore(dir);
-});
+  dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'am-col-'))
+  await fsp.mkdir(path.join(dir, 'collections'))
+  store = new CollectionStore(dir)
+})
 afterEach(async () => {
-  await fsp.rm(dir, { recursive: true, force: true });
-});
+  await fsp.rm(dir, { recursive: true, force: true })
+})
 
-const names = (nodes: { name: string }[]) => nodes.map((n) => n.name);
-const read = (rel: string) => fsp.readFile(path.join(dir, rel), "utf8");
+const names = (nodes: { name: string }[]) => nodes.map((n) => n.name)
+const read = (rel: string) => fsp.readFile(path.join(dir, rel), 'utf8')
 
-describe("create and list", () => {
-  it("lists a nested tree with workspace-relative paths", async () => {
-    const col = await store.createCollection("My API");
-    expect(col.path).toBe("collections/my-api");
-    const folder = await store.createFolder(col.path, "Users");
-    expect(folder.path).toBe("collections/my-api/users");
-    const req = await store.createRequest(folder.path, "Login");
-    expect(req.path).toBe("collections/my-api/users/login.request.json");
+describe('create and list', () => {
+  it('lists a nested tree with workspace-relative paths', async () => {
+    const col = await store.createCollection('My API')
+    expect(col.path).toBe('collections/my-api')
+    const folder = await store.createFolder(col.path, 'Users')
+    expect(folder.path).toBe('collections/my-api/users')
+    const req = await store.createRequest(folder.path, 'Login')
+    expect(req.path).toBe('collections/my-api/users/login.request.json')
     expect(req.request).toMatchObject({
-      name: "Login",
-      method: "GET",
-      url: "",
+      name: 'Login',
+      method: 'GET',
+      url: '',
       params: [],
       headers: [],
-      body: { mode: "none" },
-      auth: { type: "inherit" },
-    });
+      body: { mode: 'none' },
+      auth: { type: 'inherit' }
+    })
 
-    const { collections, errors } = await store.list();
-    expect(errors).toEqual([]);
-    expect(collections).toHaveLength(1);
-    const c = collections[0];
+    const { collections, errors } = await store.list()
+    expect(errors).toEqual([])
+    expect(collections).toHaveLength(1)
+    const c = collections[0]
     expect(c).toMatchObject({
       id: col.id,
-      name: "My API",
-      path: "collections/my-api",
-      variables: [],
-    });
-    const f = c.children[0] as FolderNode;
+      name: 'My API',
+      path: 'collections/my-api',
+      variables: []
+    })
+    const f = c.children[0] as FolderNode
     expect(f).toMatchObject({
-      kind: "folder",
-      name: "Users",
-      path: "collections/my-api/users",
-    });
-    const r = f.children[0] as RequestNode;
-    expect(r).toMatchObject({ kind: "request", name: "Login", path: req.path });
-    expect(r.request.id).toBe(req.request.id);
-  });
+      kind: 'folder',
+      name: 'Users',
+      path: 'collections/my-api/users'
+    })
+    const r = f.children[0] as RequestNode
+    expect(r).toMatchObject({ kind: 'request', name: 'Login', path: req.path })
+    expect(r.request.id).toBe(req.request.id)
+  })
 
-  it("writes 2-space JSON with a trailing newline", async () => {
-    await store.createCollection("A");
-    const text = await read("collections/a/collection.json");
-    expect(text.endsWith("}\n")).toBe(true);
-    expect(text).toContain('\n  "order": []');
-  });
+  it('writes 2-space JSON with a trailing newline', async () => {
+    await store.createCollection('A')
+    const text = await read('collections/a/collection.json')
+    expect(text.endsWith('}\n')).toBe(true)
+    expect(text).toContain('\n  "order": []')
+  })
 
-  it("suffixes duplicate request names and ignores case", async () => {
-    const col = await store.createCollection("C");
-    await store.createRequest(col.path, "Login");
-    await store.createRequest(col.path, "Login");
-    await store.createRequest(col.path, "LOGIN");
-    const files = (await fsp.readdir(path.join(dir, col.path))).sort();
-    expect(files).toEqual([
-      "collection.json",
-      "login-2.request.json",
-      "login-3.request.json",
-      "login.request.json",
-    ]);
-  });
+  it('suffixes duplicate request names and ignores case', async () => {
+    const col = await store.createCollection('C')
+    await store.createRequest(col.path, 'Login')
+    await store.createRequest(col.path, 'Login')
+    await store.createRequest(col.path, 'LOGIN')
+    const files = (await fsp.readdir(path.join(dir, col.path))).sort()
+    expect(files).toEqual(['collection.json', 'login-2.request.json', 'login-3.request.json', 'login.request.json'])
+  })
 
-  it("keeps hostile names inside the parent", async () => {
-    const col = await store.createCollection("x");
-    const req = await store.createRequest("collections/x", "../../evil");
-    expect(req.path).toBe("collections/x/evil.request.json");
-    expect(await fsp.readdir(dir)).toEqual(["collections"]);
-    expect(col.path).toBe("collections/x");
-  });
+  it('keeps hostile names inside the parent', async () => {
+    await store.createCollection('x')
+    const req = await store.createRequest('collections/x', '../../evil')
+    expect(req.path).toBe('collections/x/evil.request.json')
+    expect(await fsp.readdir(dir)).toEqual(['collections'])
+  })
 
-  it("orders by order, then appends unlisted files alphabetically", async () => {
-    const col = await store.createCollection("C");
-    const b = await store.createRequest(col.path, "B");
-    await store.createRequest(col.path, "A");
-    await store.move(b.path, col.path, 0);
-    const hand = { ...b.request, id: "hand", name: "Aardvark" };
-    await fsp.writeFile(
-      path.join(dir, col.path, "aardvark.request.json"),
-      JSON.stringify(hand),
-    );
-    await fsp.writeFile(
-      path.join(dir, col.path, "zeta.request.json"),
-      JSON.stringify({ ...hand, name: "Zeta" }),
-    );
-    const { collections } = await store.list();
-    expect(names(collections[0].children)).toEqual([
-      "B",
-      "A",
-      "Aardvark",
-      "Zeta",
-    ]);
-  });
+  it('orders by order, then appends unlisted files alphabetically', async () => {
+    const col = await store.createCollection('C')
+    const b = await store.createRequest(col.path, 'B')
+    await store.createRequest(col.path, 'A')
+    const hand = { ...b.request, id: 'hand', name: 'Aardvark' }
+    await fsp.writeFile(path.join(dir, col.path, 'aardvark.request.json'), JSON.stringify(hand))
+    await fsp.writeFile(path.join(dir, col.path, 'zeta.request.json'), JSON.stringify({ ...hand, name: 'Zeta' }))
+    await fsp.writeFile(path.join(dir, col.path, 'notes.txt'), 'stray')
+    const { collections, errors } = await store.list()
+    expect(errors).toEqual([])
+    expect(names(collections[0].children)).toEqual(['B', 'A', 'Aardvark', 'Zeta'])
+  })
 
-  it("ignores stale order entries and drops them on the next write", async () => {
-    const col = await store.createCollection("C");
-    await store.createRequest(col.path, "A");
-    const file = path.join(dir, col.path, "collection.json");
-    const meta = JSON.parse(await fsp.readFile(file, "utf8"));
-    meta.order = ["gone.request.json", ...meta.order];
-    await fsp.writeFile(file, JSON.stringify(meta));
-    expect(names((await store.list()).collections[0].children)).toEqual(["A"]);
-    await store.createRequest(col.path, "B");
-    expect(JSON.parse(await fsp.readFile(file, "utf8")).order).toEqual([
-      "a.request.json",
-      "b.request.json",
-    ]);
-  });
-});
+  it('reorders with move: to front, to end, and clamped beyond the end', async () => {
+    const col = await store.createCollection('C')
+    await store.createRequest(col.path, 'A')
+    await store.createRequest(col.path, 'B')
+    const c = await store.createRequest(col.path, 'C')
+    const order = async () => names((await store.list()).collections[0].children)
+    expect(await order()).toEqual(['A', 'B', 'C'])
+    expect(await store.move(c.path, col.path, 0)).toBe(c.path)
+    expect(await order()).toEqual(['C', 'A', 'B'])
+    await store.move(c.path, col.path, 2)
+    expect(await order()).toEqual(['A', 'B', 'C'])
+    await store.move('collections/c/a.request.json', col.path, 99)
+    expect(await order()).toEqual(['B', 'C', 'A'])
+    await store.move('collections/c/a.request.json', col.path, -5)
+    expect(await order()).toEqual(['A', 'B', 'C'])
+  })
 
-describe("rename", () => {
-  it("renames a request file and its name field", async () => {
-    const col = await store.createCollection("C");
-    const req = await store.createRequest(col.path, "Old");
-    const next = await store.rename(req.path, "New Name");
-    expect(next).toBe("collections/c/new-name.request.json");
-    await expect(fsp.access(path.join(dir, req.path))).rejects.toThrow();
-    expect(JSON.parse(await read(next)).name).toBe("New Name");
-    expect(
-      JSON.parse(await read("collections/c/collection.json")).order,
-    ).toEqual(["new-name.request.json"]);
-  });
+  it('serializes concurrent creates in one folder', async () => {
+    const col = await store.createCollection('C')
+    const made = await Promise.all(Array.from({ length: 10 }, () => store.createRequest(col.path, 'Login')))
+    const expected = ['login.request.json', ...Array.from({ length: 9 }, (_, i) => `login-${i + 2}.request.json`)]
+    expect(made.map((m) => path.posix.basename(m.path))).toEqual(expected)
+    expect(JSON.parse(await read('collections/c/collection.json')).order).toEqual(expected)
+    expect((await fsp.readdir(path.join(dir, col.path))).sort()).toEqual([...expected, 'collection.json'].sort())
+  })
 
-  it("renames a folder directory and metadata, keeping its position", async () => {
-    const col = await store.createCollection("C");
-    await store.createFolder(col.path, "A");
-    const f = await store.createFolder(col.path, "B");
-    await store.createFolder(col.path, "C");
-    const next = await store.rename(f.path, "Beta");
-    expect(next).toBe("collections/c/beta");
-    expect(JSON.parse(await read("collections/c/beta/folder.json")).name).toBe(
-      "Beta",
-    );
-    expect(names((await store.list()).collections[0].children)).toEqual([
-      "A",
-      "Beta",
-      "C",
-    ]);
-  });
+  it('keeps working after a failed mutation', async () => {
+    const col = await store.createCollection('C')
+    const results = await Promise.allSettled([
+      store.createRequest('collections/nope', 'X'),
+      store.createRequest(col.path, 'Y')
+    ])
+    expect(results[0].status).toBe('rejected')
+    expect(results[1].status).toBe('fulfilled')
+    expect(names((await store.list()).collections[0].children)).toEqual(['Y'])
+  })
 
-  it("renames a collection", async () => {
-    const col = await store.createCollection("Old");
-    const next = await store.rename(col.path, "Fresh");
-    expect(next).toBe("collections/fresh");
-    expect((await store.list()).collections[0].name).toBe("Fresh");
-  });
+  it('ignores stale order entries and drops them on the next write', async () => {
+    const col = await store.createCollection('C')
+    await store.createRequest(col.path, 'A')
+    const file = path.join(dir, col.path, 'collection.json')
+    const meta = JSON.parse(await fsp.readFile(file, 'utf8'))
+    meta.order = ['gone.request.json', ...meta.order]
+    await fsp.writeFile(file, JSON.stringify(meta))
+    expect(names((await store.list()).collections[0].children)).toEqual(['A'])
+    await store.createRequest(col.path, 'B')
+    expect(JSON.parse(await fsp.readFile(file, 'utf8')).order).toEqual(['a.request.json', 'b.request.json'])
+  })
+})
 
-  it("picks a unique name on collision", async () => {
-    const col = await store.createCollection("C");
-    await store.createRequest(col.path, "A");
-    const b = await store.createRequest(col.path, "B");
-    expect(await store.rename(b.path, "a")).toBe(
-      "collections/c/a-2.request.json",
-    );
-  });
+describe('rename', () => {
+  it('renames a request file and its name field', async () => {
+    const col = await store.createCollection('C')
+    const req = await store.createRequest(col.path, 'Old')
+    const next = await store.rename(req.path, 'New Name')
+    expect(next).toBe('collections/c/new-name.request.json')
+    await expect(fsp.access(path.join(dir, req.path))).rejects.toThrow()
+    expect(JSON.parse(await read(next)).name).toBe('New Name')
+    expect(JSON.parse(await read('collections/c/collection.json')).order).toEqual(['new-name.request.json'])
+  })
 
-  it("allows a case-only rename", async () => {
-    const col = await store.createCollection("C");
-    const r = await store.createRequest(col.path, "login");
-    expect(await store.rename(r.path, "Login")).toBe(r.path);
-    expect(JSON.parse(await read(r.path)).name).toBe("Login");
-  });
-});
+  it('renames a folder directory and metadata, keeping its position', async () => {
+    const col = await store.createCollection('C')
+    await store.createFolder(col.path, 'A')
+    const f = await store.createFolder(col.path, 'B')
+    await store.createFolder(col.path, 'C')
+    const next = await store.rename(f.path, 'Beta')
+    expect(next).toBe('collections/c/beta')
+    expect(JSON.parse(await read('collections/c/beta/folder.json')).name).toBe('Beta')
+    expect(names((await store.list()).collections[0].children)).toEqual(['A', 'Beta', 'C'])
+  })
 
-describe("move", () => {
-  it("moves into a folder at an index and returns the new path", async () => {
-    const col = await store.createCollection("C");
-    const f = await store.createFolder(col.path, "F");
-    await store.createRequest(f.path, "X");
-    const y = await store.createRequest(col.path, "Y");
-    const next = await store.move(y.path, f.path, 0);
-    expect(next).toBe("collections/c/f/y.request.json");
-    const tree = (await store.list()).collections[0];
-    expect(names((tree.children[0] as FolderNode).children)).toEqual([
-      "Y",
-      "X",
-    ]);
-    expect(tree.children).toHaveLength(1);
-  });
+  it('renames a collection', async () => {
+    const col = await store.createCollection('Old')
+    const next = await store.rename(col.path, 'Fresh')
+    expect(next).toBe('collections/fresh')
+    expect((await store.list()).collections[0].name).toBe('Fresh')
+  })
 
-  it("picks a unique name when the target already has one", async () => {
-    const col = await store.createCollection("C");
-    const f = await store.createFolder(col.path, "F");
-    await store.createRequest(f.path, "Same");
-    const s = await store.createRequest(col.path, "Same");
-    expect(await store.move(s.path, f.path, 5)).toBe(
-      "collections/c/f/same-2.request.json",
-    );
-  });
+  it('picks a unique name on collision', async () => {
+    const col = await store.createCollection('C')
+    await store.createRequest(col.path, 'A')
+    const b = await store.createRequest(col.path, 'B')
+    expect(await store.rename(b.path, 'a')).toBe('collections/c/a-2.request.json')
+  })
 
-  it("rejects moving a folder into itself or a descendant", async () => {
-    const col = await store.createCollection("C");
-    const a = await store.createFolder(col.path, "A");
-    const b = await store.createFolder(a.path, "B");
-    await expect(store.move(a.path, b.path, 0)).rejects.toThrow(
-      "cannot_move_into_descendant",
-    );
-    await expect(store.move(a.path, a.path, 0)).rejects.toThrow(
-      "cannot_move_into_descendant",
-    );
-  });
+  it('allows a case-only rename', async () => {
+    const col = await store.createCollection('C')
+    const r = await store.createRequest(col.path, 'login')
+    expect(await store.rename(r.path, 'Login')).toBe(r.path)
+    expect(JSON.parse(await read(r.path)).name).toBe('Login')
+  })
+})
 
-  it("does not treat a sibling with a shared name prefix as a descendant", async () => {
-    const col = await store.createCollection("C");
-    const a = await store.createFolder(col.path, "a");
-    const ab = await store.createFolder(col.path, "ab");
-    expect(await store.move(a.path, ab.path, 0)).toBe("collections/c/ab/a");
-  });
-});
+describe('move', () => {
+  it('moves into a folder at an index and returns the new path', async () => {
+    const col = await store.createCollection('C')
+    const f = await store.createFolder(col.path, 'F')
+    await store.createRequest(f.path, 'X')
+    const y = await store.createRequest(col.path, 'Y')
+    const next = await store.move(y.path, f.path, 0)
+    expect(next).toBe('collections/c/f/y.request.json')
+    const tree = (await store.list()).collections[0]
+    expect(names((tree.children[0] as FolderNode).children)).toEqual(['Y', 'X'])
+    expect(tree.children).toHaveLength(1)
+  })
 
-describe("remove", () => {
-  it("deletes a folder subtree and its order entry", async () => {
-    const col = await store.createCollection("C");
-    const f = await store.createFolder(col.path, "F");
-    await store.createRequest(f.path, "X");
-    await store.createRequest(col.path, "Keep");
-    await store.remove(f.path);
-    await expect(fsp.access(path.join(dir, f.path))).rejects.toThrow();
-    expect(
-      JSON.parse(await read("collections/c/collection.json")).order,
-    ).toEqual(["keep.request.json"]);
-  });
-});
+  it('picks a unique name when the target already has one', async () => {
+    const col = await store.createCollection('C')
+    const f = await store.createFolder(col.path, 'F')
+    await store.createRequest(f.path, 'Same')
+    const s = await store.createRequest(col.path, 'Same')
+    expect(await store.move(s.path, f.path, 5)).toBe('collections/c/f/same-2.request.json')
+  })
 
-describe("path safety", () => {
-  it("rejects paths outside the workspace or outside collections/", async () => {
-    const col = await store.createCollection("C");
-    const req = await store.createRequest(col.path, "A");
-    await expect(
-      store.saveRequest("../x.request.json", req.request),
-    ).rejects.toThrow("path_outside_workspace");
-    await expect(store.remove("../x")).rejects.toThrow(
-      "path_outside_workspace",
-    );
-    await expect(store.remove("workspace.json")).rejects.toThrow(
-      "path_outside_workspace",
-    );
-    await expect(store.remove("collections/../workspace.json")).rejects.toThrow(
-      "path_outside_workspace",
-    );
-    await expect(store.rename("collections", "x")).rejects.toThrow(
-      "path_outside_workspace",
-    );
-    await expect(store.createFolder("/etc", "x")).rejects.toThrow(
-      "path_outside_workspace",
-    );
-  });
-});
+  it('rejects moving a folder into itself or a descendant', async () => {
+    const col = await store.createCollection('C')
+    const a = await store.createFolder(col.path, 'A')
+    const b = await store.createFolder(a.path, 'B')
+    await expect(store.move(a.path, b.path, 0)).rejects.toThrow('cannot_move_into_descendant')
+    await expect(store.move(a.path, a.path, 0)).rejects.toThrow('cannot_move_into_descendant')
+  })
 
-describe("saveRequest", () => {
-  it("persists edits", async () => {
-    const col = await store.createCollection("C");
-    const r = await store.createRequest(col.path, "A");
+  it('does not treat a sibling with a shared name prefix as a descendant', async () => {
+    const col = await store.createCollection('C')
+    const a = await store.createFolder(col.path, 'a')
+    const ab = await store.createFolder(col.path, 'ab')
+    expect(await store.move(a.path, ab.path, 0)).toBe('collections/c/ab/a')
+  })
+})
+
+describe('remove', () => {
+  it('deletes a folder subtree and its order entry', async () => {
+    const col = await store.createCollection('C')
+    const f = await store.createFolder(col.path, 'F')
+    await store.createRequest(f.path, 'X')
+    await store.createRequest(col.path, 'Keep')
+    await store.remove(f.path)
+    await expect(fsp.access(path.join(dir, f.path))).rejects.toThrow()
+    expect(JSON.parse(await read('collections/c/collection.json')).order).toEqual(['keep.request.json'])
+  })
+})
+
+describe('path safety', () => {
+  it('rejects paths outside the workspace or outside collections/', async () => {
+    const col = await store.createCollection('C')
+    const req = await store.createRequest(col.path, 'A')
+    await expect(store.saveRequest('../x.request.json', req.request)).rejects.toThrow('path_outside_workspace')
+    await expect(store.remove('../x')).rejects.toThrow('path_outside_workspace')
+    await expect(store.remove('workspace.json')).rejects.toThrow('path_outside_workspace')
+    await expect(store.remove('collections/../workspace.json')).rejects.toThrow('path_outside_workspace')
+    await expect(store.rename('collections', 'x')).rejects.toThrow('path_outside_workspace')
+    await expect(store.createFolder('/etc', 'x')).rejects.toThrow('path_outside_workspace')
+  })
+})
+
+describe('saveRequest', () => {
+  it('persists edits', async () => {
+    const col = await store.createCollection('C')
+    const r = await store.createRequest(col.path, 'A')
     const edited: RequestItem = {
       ...r.request,
-      method: "POST",
-      url: "https://example.test",
-    };
-    await store.saveRequest(r.path, edited);
-    expect(JSON.parse(await read(r.path))).toEqual(edited);
-    expect((await read(r.path)).endsWith("\n")).toBe(true);
-  });
-});
+      method: 'POST',
+      url: 'https://example.test'
+    }
+    await store.saveRequest(r.path, edited)
+    expect(JSON.parse(await read(r.path))).toEqual(edited)
+    expect((await read(r.path)).endsWith('\n')).toBe(true)
+  })
+})
 
-describe("corrupt files", () => {
-  it("reports a conflicted request, loads the rest, and refuses to overwrite it", async () => {
-    const col = await store.createCollection("C");
-    const good = await store.createRequest(col.path, "Good");
-    const bad = await store.createRequest(col.path, "Bad");
-    const conflict = "<<<<<<< HEAD\n{}\n=======\n{}\n>>>>>>> other\n";
-    await fsp.writeFile(path.join(dir, bad.path), conflict);
+describe('corrupt files', () => {
+  it('reports a conflicted request, loads the rest, and refuses to overwrite it', async () => {
+    const col = await store.createCollection('C')
+    const good = await store.createRequest(col.path, 'Good')
+    const bad = await store.createRequest(col.path, 'Bad')
+    const conflict = '<<<<<<< HEAD\n{}\n=======\n{}\n>>>>>>> other\n'
+    await fsp.writeFile(path.join(dir, bad.path), conflict)
 
-    const { collections, errors } = await store.list();
-    expect(errors).toHaveLength(1);
-    expect(errors[0].path).toBe(bad.path);
-    expect(names(collections[0].children)).toEqual(["Good"]);
-    expect(collections[0].children[0].path).toBe(good.path);
+    const { collections, errors } = await store.list()
+    expect(errors).toHaveLength(1)
+    expect(errors[0].path).toBe(bad.path)
+    expect(names(collections[0].children)).toEqual(['Good'])
+    expect(collections[0].children[0].path).toBe(good.path)
 
-    await expect(
-      store.saveRequest(bad.path, bad.request),
-    ).rejects.toBeInstanceOf(CorruptFileError);
-    expect(await read(bad.path)).toBe(conflict);
-  });
+    await expect(store.saveRequest(bad.path, bad.request)).rejects.toBeInstanceOf(CorruptFileError)
+    expect(await read(bad.path)).toBe(conflict)
+  })
 
-  it("reports a corrupt collection.json and skips that collection only", async () => {
-    const a = await store.createCollection("A");
-    await store.createCollection("B");
-    const file = path.join(dir, a.path, "collection.json");
-    await fsp.writeFile(file, "{ nope");
-    const { collections, errors } = await store.list();
-    expect(names(collections)).toEqual(["B"]);
-    expect(errors.map((e) => e.path)).toEqual([
-      "collections/a/collection.json",
-    ]);
-    await expect(store.createRequest(a.path, "X")).rejects.toBeInstanceOf(
-      CorruptFileError,
-    );
-    expect(await fsp.readFile(file, "utf8")).toBe("{ nope");
-  });
+  it('reports a corrupt collection.json but still lists its children', async () => {
+    const a = await store.createCollection('Alpha')
+    await store.createCollection('B')
+    await store.createRequest(a.path, 'Zed')
+    await store.createRequest(a.path, 'Abe')
+    const file = path.join(dir, a.path, 'collection.json')
+    await fsp.writeFile(file, '{ nope')
+    const { collections, errors } = await store.list()
+    expect(errors.map((e) => e.path)).toEqual(['collections/alpha/collection.json'])
+    expect(names(collections)).toEqual(['alpha', 'B'])
+    expect(collections[0]).toMatchObject({ variables: [], auth: { type: 'none' } })
+    expect(names(collections[0].children)).toEqual(['Abe', 'Zed'])
+    await expect(store.createRequest(a.path, 'X')).rejects.toBeInstanceOf(CorruptFileError)
+    expect(await fsp.readFile(file, 'utf8')).toBe('{ nope')
+  })
 
-  it("reports a corrupt folder.json and skips that folder only", async () => {
-    const col = await store.createCollection("C");
-    const f = await store.createFolder(col.path, "F");
-    await store.createRequest(f.path, "Inside");
-    await store.createRequest(col.path, "Outside");
-    await fsp.writeFile(
-      path.join(dir, f.path, "folder.json"),
-      "<<<<<<< HEAD\n",
-    );
-    const { collections, errors } = await store.list();
-    expect(names(collections[0].children)).toEqual(["Outside"]);
-    expect(errors.map((e) => e.path)).toEqual(["collections/c/f/folder.json"]);
-  });
-});
+  it('reports a corrupt folder.json but still lists the folder and its children', async () => {
+    const col = await store.createCollection('C')
+    const f = await store.createFolder(col.path, 'Fold')
+    await store.createRequest(f.path, 'Inside')
+    await store.createRequest(col.path, 'Outside')
+    const file = path.join(dir, f.path, 'folder.json')
+    await fsp.writeFile(file, '<<<<<<< HEAD\n')
+    const { collections, errors } = await store.list()
+    expect(errors.map((e) => e.path)).toEqual(['collections/c/fold/folder.json'])
+    const folder = collections[0].children.find((n) => n.kind === 'folder') as FolderNode
+    expect(folder.name).toBe('fold')
+    expect(names(folder.children)).toEqual(['Inside'])
+    expect(names(collections[0].children)).toContain('Outside')
+    await expect(store.createRequest(f.path, 'X')).rejects.toBeInstanceOf(CorruptFileError)
+    await expect(store.remove(path.posix.join(f.path, 'inside.request.json'))).rejects.toBeInstanceOf(CorruptFileError)
+    expect(await fsp.readFile(file, 'utf8')).toBe('<<<<<<< HEAD\n')
+  })
+
+  describe.each([['null'], ['[]'], ['{}']])('malformed JSON %s', (text) => {
+    it('is reported per file for collection.json, folder.json and requests without throwing', async () => {
+      const col = await store.createCollection('C')
+      const f = await store.createFolder(col.path, 'F')
+      const r = await store.createRequest(col.path, 'R')
+      await store.createRequest(col.path, 'Good')
+      const files = [`${col.path}/collection.json`, `${f.path}/folder.json`, r.path]
+      for (const file of files) await fsp.writeFile(path.join(dir, file), text)
+      const { collections, errors } = await store.list()
+      expect(errors.map((e) => e.path).sort()).toEqual([...files].sort())
+      expect(names(collections[0].children)).toContain('Good')
+      expect(names(collections[0].children)).not.toContain('R')
+      expect(collections[0].name).toBe('c')
+    })
+  })
+})
+
+describe('hostile names', () => {
+  it.each([['a/b\\c'], ['CON'], ['🚀🔥'], ['x'.repeat(500)], ['é'.repeat(500)], ['𝒜'.repeat(300)]])(
+    'creates safe files for %s',
+    async (name) => {
+      const col = await store.createCollection(name)
+      const f = await store.createFolder(col.path, name)
+      const r1 = await store.createRequest(col.path, name)
+      const r2 = await store.createRequest(col.path, name)
+      for (const p of [col.path, f.path, r1.path, r2.path]) {
+        expect(p.startsWith('collections/')).toBe(true)
+        expect(Buffer.byteLength(path.posix.basename(p))).toBeLessThanOrEqual(255 - 4)
+        await fsp.access(path.join(dir, p))
+      }
+      expect(r1.path).not.toBe(r2.path)
+      expect(await fsp.readdir(dir)).toEqual(['collections'])
+      expect(await fsp.readdir(path.join(dir, 'collections'))).toHaveLength(1)
+    }
+  )
+
+  it('avoids a hand-made file differing only by case', async () => {
+    const col = await store.createCollection('C')
+    await fsp.writeFile(path.join(dir, col.path, 'Login.request.json'), '{}')
+    const r = await store.createRequest(col.path, 'login')
+    expect(r.path).toBe('collections/c/login-2.request.json')
+  })
+})
+
+describe('invalid targets', () => {
+  it('refuses to rename, move or remove metadata files and stray files', async () => {
+    const col = await store.createCollection('C')
+    const f = await store.createFolder(col.path, 'F')
+    await fsp.writeFile(path.join(dir, col.path, 'notes.txt'), 'stray')
+    const before = await read('collections/c/collection.json')
+    for (const p of [
+      'collections/c/collection.json',
+      `${f.path}/folder.json`,
+      'collections/c/notes.txt',
+      'collections/c/missing'
+    ]) {
+      await expect(store.remove(p)).rejects.toThrow('invalid_target')
+      await expect(store.rename(p, 'x')).rejects.toThrow('invalid_target')
+      await expect(store.move(p, f.path, 0)).rejects.toThrow('invalid_target')
+    }
+    expect(await read('collections/c/collection.json')).toBe(before)
+    await fsp.access(path.join(dir, 'collections/c/notes.txt'))
+    await fsp.access(path.join(dir, f.path, 'folder.json'))
+  })
+})
+
+describe('escaping paths in rename and move', () => {
+  it('rejects escaping sources and destinations', async () => {
+    const col = await store.createCollection('C')
+    const r = await store.createRequest(col.path, 'A')
+    await expect(store.rename('../x.request.json', 'y')).rejects.toThrow('path_outside_workspace')
+    await expect(store.move('../x.request.json', col.path, 0)).rejects.toThrow('path_outside_workspace')
+    await expect(store.move(r.path, '..', 0)).rejects.toThrow('path_outside_workspace')
+    await expect(store.move(r.path, 'collections/../..', 0)).rejects.toThrow('path_outside_workspace')
+    await fsp.access(path.join(dir, r.path))
+  })
+})
+
+describe('remove a collection', () => {
+  it('deletes the whole collection directory', async () => {
+    const col = await store.createCollection('C')
+    await store.createRequest(col.path, 'A')
+    await store.remove(col.path)
+    expect((await store.list()).collections).toEqual([])
+    expect(await fsp.readdir(path.join(dir, 'collections'))).toEqual([])
+  })
+})
