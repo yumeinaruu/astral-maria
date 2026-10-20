@@ -82,6 +82,21 @@ async function shot(page: Page, name: string): Promise<void> {
   if (SHOTS) await page.screenshot({ path: join(SHOTS, `${name}.png`) })
 }
 
+/** Takes the shot once in the dark and once in the light palette (the OS setting is emulated). */
+async function shotBoth(page: Page, name: string): Promise<void> {
+  if (!SHOTS) return
+  for (const colorScheme of ['dark', 'light'] as const) {
+    await page.emulateMedia({ colorScheme })
+    await shot(page, `${name}-${colorScheme}`)
+  }
+  await page.emulateMedia({ colorScheme: null })
+}
+
+/** The sidebar row of an environment (its name button opens the editor tab). */
+function envRow(page: Page, name: string) {
+  return page.getByRole('list', { name: 'Environments' }).getByRole('button', { name, exact: true })
+}
+
 async function allFiles(dir: string): Promise<string[]> {
   const out: string[] = []
   for (const entry of await readdir(dir, { withFileTypes: true })) {
@@ -99,6 +114,7 @@ test('create, send, persist, and keep secrets local', async () => {
   await test.step('the preload bridge exists', async () => {
     await expect(page.getByRole('heading', { name: 'Astral Maria' })).toBeVisible()
     expect(await page.evaluate(() => typeof (window as unknown as { astral?: unknown }).astral)).toBe('object')
+    await shotBoth(page, '0-gate')
   })
 
   await test.step('create a workspace', async () => {
@@ -106,6 +122,7 @@ test('create, send, persist, and keep secrets local', async () => {
     await page.getByLabel('Workspace name').fill('Smoke')
     await page.getByRole('button', { name: 'Create', exact: true }).click()
     await expect(page.locator('.workspace-name')).toHaveText('Smoke')
+    await shotBoth(page, '0-empty-workspace')
   })
 
   await test.step('create a collection and a request', async () => {
@@ -123,23 +140,24 @@ test('create, send, persist, and keep secrets local', async () => {
   })
 
   await test.step('define an environment with a variable and a secret', async () => {
-    await page.getByRole('button', { name: 'Manage environments' }).click()
-    const dialog = page.getByRole('dialog', { name: 'Environments' })
-    await dialog.getByRole('button', { name: 'New environment' }).click()
-    await dialog.getByLabel('Environment name').fill('Local')
-    await dialog.getByRole('button', { name: 'Add variable' }).click()
-    await dialog.getByLabel('Variable name 1').fill('baseUrl')
-    await dialog.getByLabel('Shared value 1').fill(baseUrl)
-    await dialog.getByRole('button', { name: 'Add variable' }).click()
-    await dialog.getByLabel('Variable name 2').fill('token')
-    await dialog.getByLabel('Secret 2').check()
-    await dialog.getByLabel('Current value 2').fill(SECRET)
-    await shot(page, '1-environment-editor')
-    await dialog.getByRole('button', { name: 'Save', exact: true }).click()
-    await expect(dialog.getByRole('alert')).toHaveCount(0)
-    await dialog.getByRole('button', { name: 'Close' }).click()
-    await expect(dialog).toHaveCount(0)
-    await page.getByRole('combobox', { name: 'Environment' }).selectOption({ label: 'Local' })
+    await page.getByRole('button', { name: 'New environment' }).click()
+    const editor = page.getByRole('tabpanel')
+    await editor.getByLabel('Environment name').fill('Local')
+    // Typing into the trailing empty row creates the variable.
+    await editor.getByLabel('Variable name 1').fill('baseUrl')
+    await editor.getByLabel('Initial value 1').fill(baseUrl)
+    await editor.getByLabel('Variable name 2').fill('token')
+    await editor.getByLabel('Type 2').selectOption('secret')
+    await editor.getByLabel('Current value 2').fill(SECRET)
+    await shotBoth(page, '1-environment-tab-unsaved')
+    await editor.getByRole('button', { name: 'Save', exact: true }).click()
+    await expect(editor.getByRole('alert')).toHaveCount(0)
+    await expect(envRow(page, 'Local')).toBeVisible()
+    // Activated from the sidebar check, as the selector would.
+    await page.getByRole('button', { name: 'Activate Local' }).click()
+    await expect(page.getByRole('button', { name: 'Environment', exact: true })).toHaveText('Local')
+    await shotBoth(page, '2-environment-tab')
+    await page.getByRole('tab', { name: /Hello/ }).click()
   })
 
   await test.step('send the request and see the response', async () => {
@@ -149,7 +167,7 @@ test('create, send, persist, and keep secrets local', async () => {
     await expect(page.locator('.status-badge')).toHaveText('200 OK')
     await expect(page.locator('.response-viewer .cm-content')).toContainText(BODY.greeting)
     expect(hits).toEqual([`/hello?key=${SECRET}`])
-    await shot(page, '2-response')
+    await shotBoth(page, '3-response')
   })
 
   await test.step('the request editor accepts typing in CodeMirror', async () => {
@@ -160,7 +178,7 @@ test('create, send, persist, and keep secrets local', async () => {
     await editor.click()
     await page.keyboard.type('{"a":1}')
     await expect(editor).toContainText('{"a":1}')
-    await shot(page, '3-body-editor')
+    await shot(page, '4-body-editor')
   })
 
   await test.step('Save body as file downloads through the blob URL', async () => {
@@ -203,13 +221,13 @@ test('create, send, persist, and keep secrets local', async () => {
     await page.getByRole('button', { name: 'Send', exact: true }).click()
     await page.getByRole('radio', { name: 'Preview' }).check()
     await expect(page.frameLocator('iframe[title="HTML preview"]').getByRole('heading')).toHaveText('Preview heading')
-    await shot(page, '4-html-preview')
+    await shot(page, '5-html-preview')
     await page.getByRole('textbox', { name: 'URL', exact: true }).fill('{{baseUrl}}/image')
     await page.getByRole('button', { name: 'Send', exact: true }).click()
     const img = page.getByRole('img', { name: 'Response body' })
     await expect(img).toBeVisible()
     await expect.poll(() => img.evaluate((el) => (el as HTMLImageElement).naturalWidth)).toBe(1)
-    await shot(page, '5-image-preview')
+    await shot(page, '6-image-preview')
   })
 
   await test.step('files on disk: layout and no plain-text secret outside .local', async () => {
@@ -247,19 +265,33 @@ test('create, send, persist, and keep secrets local', async () => {
     await expect(p.locator('.workspace-name')).toHaveText('Smoke')
     await p.getByRole('treeitem', { name: 'Hello' }).click()
     await expect(p.getByRole('textbox', { name: 'URL', exact: true })).toHaveValue('{{baseUrl}}/image')
-    await p.getByRole('button', { name: 'Manage environments' }).click()
-    const dialog = p.getByRole('dialog', { name: 'Environments' })
-    await dialog.getByRole('button', { name: 'Local' }).click()
-    await expect(dialog.getByLabel('Variable name 1')).toHaveValue('baseUrl')
-    await expect(dialog.getByLabel('Shared value 1')).toHaveValue(baseUrl)
-    await expect(dialog.getByLabel('Variable name 2')).toHaveValue('token')
-    await expect(dialog.getByLabel('Current value 2')).toHaveValue(SECRET)
+    await envRow(p, 'Local').click()
+    const editor = p.getByRole('tabpanel')
+    await expect(editor.getByLabel('Variable name 1')).toHaveValue('baseUrl')
+    await expect(editor.getByLabel('Initial value 1')).toHaveValue(baseUrl)
+    await expect(editor.getByLabel('Variable name 2')).toHaveValue('token')
+    await expect(editor.getByLabel('Current value 2')).toHaveValue(SECRET)
     expect(second.problems).toEqual([])
+  })
+
+  await test.step('quick open finds the request; the sidebar collapses', async () => {
+    const p = app!.windows()[0]
+    await p.keyboard.press('ControlOrMeta+k')
+    await p.keyboard.type('hel')
+    await expect(p.getByRole('option', { name: /Hello/ })).toBeVisible()
+    await shotBoth(p, '7-quick-open')
+    await p.keyboard.press('Enter')
+    await expect(p.getByRole('tab', { name: /Hello/ })).toHaveAttribute('aria-selected', 'true')
+    await p.getByRole('button', { name: 'Settings' }).click()
+    await p.getByRole('menuitemradio', { name: 'Light' }).click()
+    await expect(p.locator('html')).toHaveAttribute('data-theme', 'light')
+    await shot(p, '8-light-theme-setting')
+    await p.getByRole('button', { name: 'Settings' }).click()
+    await p.getByRole('menuitemradio', { name: 'System' }).click()
   })
 
   await test.step('an edit typed just before quitting is on disk after the quit', async () => {
     const p = app!.windows()[0]
-    await p.getByRole('dialog', { name: 'Environments' }).getByRole('button', { name: 'Close' }).click()
     await p.getByRole('textbox', { name: 'URL', exact: true }).fill('{{baseUrl}}/typed-before-quit')
     // Well within the 500 ms autosave delay: only the quit flush can have written it.
     await app!.close()
@@ -281,15 +313,13 @@ test('a secret is refused, not stored, when OS encryption is unavailable', async
   await page.getByLabel('Workspace name').fill('NoCrypto')
   await page.getByRole('button', { name: 'Create', exact: true }).click()
   await expect(page.locator('.workspace-name')).toHaveText('NoCrypto')
-  await page.getByRole('button', { name: 'Manage environments' }).click()
-  const dialog = page.getByRole('dialog', { name: 'Environments' })
-  await dialog.getByRole('button', { name: 'New environment' }).click()
-  await dialog.getByLabel('Environment name').fill('Locked')
-  await dialog.getByRole('button', { name: 'Add variable' }).click()
-  await dialog.getByLabel('Variable name 1').fill('token')
-  await dialog.getByLabel('Secret 1').check()
-  await dialog.getByLabel('Current value 1').fill(SECRET)
-  await dialog.getByRole('button', { name: 'Save', exact: true }).click()
-  await expect(dialog.getByRole('alert')).toBeVisible()
+  await page.getByRole('button', { name: 'New environment' }).click()
+  const editor = page.getByRole('tabpanel')
+  await editor.getByLabel('Environment name').fill('Locked')
+  await editor.getByLabel('Variable name 1').fill('token')
+  await editor.getByLabel('Type 1').selectOption('secret')
+  await editor.getByLabel('Current value 1').fill(SECRET)
+  await editor.getByRole('button', { name: 'Save', exact: true }).click()
+  await expect(editor.getByRole('alert')).toBeVisible()
   for (const f of await allFiles(dir)) expect(await readFile(f, 'utf8'), f).not.toContain(SECRET)
 })

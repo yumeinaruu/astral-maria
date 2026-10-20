@@ -1100,9 +1100,9 @@ input[type='radio'] {
   flex: none;
   align-items: center;
   justify-content: center;
-  width: 22px;
+  width: 20px;
   height: 22px;
-  margin-right: 4px;
+  margin-right: 3px;
 }
 
 .tab-close {
@@ -1152,7 +1152,8 @@ input[type='radio'] {
 .tabstrip-actions {
   display: flex;
   flex: none;
-  align-items: center;
+  align-items: flex-end;
+  padding-bottom: 1px;
   gap: 2px;
   padding: 0 var(--space-1);
 }
@@ -1167,7 +1168,7 @@ input[type='radio'] {
 }
 
 .env-select {
-  width: 200px;
+  width: 172px;
   justify-content: space-between;
 }
 
