@@ -372,6 +372,25 @@ describe('workspace.recent', () => {
   })
 })
 
+describe('workspace.close', () => {
+  it('cancels sends in flight and leaves no workspace open, which can be opened again', async () => {
+    const api = makeApi()
+    const dir = await newWorkspace(api)
+    const pending = api.http.send(req({ url: `${base}/slow` }), { collectionPath: null, environmentId: null }, 'a')
+    await waitFor(() => seen.length === 1)
+    await api.workspace.close()
+    expect(await pending).toMatchObject({ ok: false, error: { code: 'cancelled' } })
+    await expect(api.collections.list()).rejects.toThrow('no_workspace_open')
+    expect((await api.workspace.recent()).map((w) => w.dir)).toEqual([dir])
+    await api.workspace.open(dir)
+    await expect(api.collections.list()).resolves.toMatchObject({ errors: [] })
+  })
+
+  it('is harmless when no workspace is open', async () => {
+    await expect(makeApi().workspace.close()).resolves.toBeUndefined()
+  })
+})
+
 describe('quit support', () => {
   it('app.flushed reports the acknowledgement to main', async () => {
     let acks = 0

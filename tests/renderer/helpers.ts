@@ -53,6 +53,7 @@ export function installApi(overrides: Partial<{ [G in keyof AstralApi]: Partial<
       open: vi.fn().mockResolvedValue(WS),
       pickDirectory: vi.fn().mockResolvedValue('/tmp/demo'),
       recent: vi.fn().mockResolvedValue([]),
+      close: vi.fn().mockResolvedValue(undefined),
       ...overrides.workspace,
     },
     collections: {

@@ -135,6 +135,10 @@ export function createApi(deps: ApiDeps): AstralApi {
       create: tracked(async (dir: string, name: string) => activate(await createWorkspace(dir, name))),
       open: tracked(async (dir: string) => activate(await openWorkspace(dir))),
       pickDirectory: () => deps.pickDirectory(),
+      async close() {
+        cancelAllSends()
+        current = null
+      },
       async recent() {
         await recentQueue
         const out: WorkspaceInfo[] = []

@@ -91,6 +91,13 @@ export interface AppActions {
    * resolves when all of it is on disk (or failed). Used before the app quits or the window closes.
    */
   flushAll(): Promise<void>
+  /**
+   * "Switch workspace": writes all drafts (as `flushAll`), then closes the workspace and returns to the gate. Resolves
+   * `unsaved` (and stays) if some changes could not be written, unless `discardUnsaved` is set.
+   */
+  leaveWorkspace(options?: { discardUnsaved?: boolean }): Promise<'left' | 'unsaved'>
+  /** Paths of drafts (open or closed) with changes that are not on disk, e.g. after a failed save or a conflict. */
+  unsavedPaths(): string[]
   /** Resolves a `conflict`: writes the draft over the file on disk. */
   overwriteOnDisk(path: string): Promise<void>
   /** Resolves a `conflict`: discards the draft and adopts the file on disk. */
@@ -800,6 +807,26 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
     flushSave: flush,
     flushAllSaves() {
       for (const e of entries.values()) if (e.timer) void runSave(e)
+    },
+    unsavedPaths() {
+      return [...entries.values(), ...pending.values()].filter((e) => e.version !== e.savedVersion).map((e) => e.path)
+    },
+    async leaveWorkspace(options) {
+      const started = epoch
+      await get().flushAll()
+      if (epoch !== started) return 'left'
+      if (!options?.discardUnsaved && get().unsavedPaths().length > 0) return 'unsaved'
+      // Nothing that is still in flight may apply to the gate or to the next workspace.
+      epoch++
+      openSeq++
+      resetEditing()
+      set(initialState())
+      try {
+        await window.astral.workspace.close()
+      } catch {
+        // Main cancels and forgets the workspace when another one is opened anyway.
+      }
+      return 'left'
     },
     async flushAll() {
       const started = epoch

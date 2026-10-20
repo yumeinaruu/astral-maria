@@ -4,6 +4,7 @@ import { EnvironmentSelector } from './components/EnvironmentSelector'
 import { RequestEditor } from './components/RequestEditor'
 import { RequestTabs, tabDomId } from './components/RequestTabs'
 import { Sidebar } from './components/Sidebar'
+import { SwitchWorkspace } from './components/SwitchWorkspace'
 import { WorkspaceGate } from './components/WorkspaceGate'
 import { useApp } from './state/store'
 
@@ -47,6 +48,7 @@ export function App(): React.JSX.Element {
         <span className="workspace-name" title={workspace.dir}>
           {workspace.name}
         </span>
+        <SwitchWorkspace />
         <div className="topbar-env">
           <EnvironmentSelector />
         </div>

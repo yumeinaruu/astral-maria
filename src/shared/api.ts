@@ -15,6 +15,8 @@ export interface AstralApi {
     open(dir: string): Promise<WorkspaceInfo>
     pickDirectory(): Promise<string | null>
     recent(): Promise<WorkspaceInfo[]>
+    /** Cancels sends in flight and closes the open workspace (if any); the renderer flushes its drafts first. */
+    close(): Promise<void>
   }
   collections: {
     list(): Promise<{ collections: CollectionTree[]; errors: LoadError[] }>
@@ -65,7 +67,7 @@ export const FLUSH_REQUEST_CHANNEL = 'astral:app.flush-request'
 
 /** Method names per group; the preload and the main-process handlers are both generated from this table. */
 export const API_METHODS = {
-  workspace: ['create', 'open', 'pickDirectory', 'recent'],
+  workspace: ['create', 'open', 'pickDirectory', 'recent', 'close'],
   collections: ['list', 'createCollection', 'createFolder', 'createRequest', 'saveRequest', 'rename', 'remove', 'move'],
   environments: ['list', 'save', 'remove'],
   http: ['send', 'cancel'],

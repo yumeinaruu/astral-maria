@@ -266,6 +266,86 @@ describe('flushAll (before quitting or closing the window)', () => {
   })
 })
 
+describe('leaving the workspace (Switch workspace)', () => {
+  it('writes pending edits, closes the workspace in main and resets to the gate', async () => {
+    const api = await setup({
+      environments: {
+        list: vi.fn().mockResolvedValue({ environments: [{ id: 'env1', name: 'Dev', variables: [] }], errors: [] }),
+      },
+    })
+    await useApp.getState().refresh()
+    useApp.getState().setActiveEnvironment('env1')
+    setUrl(REQUEST_PATH, 'typed just before switching')
+    const order: string[] = []
+    api.collections.saveRequest.mockImplementation(async () => {
+      order.push('save')
+      return 'rev'
+    })
+    api.workspace.close.mockImplementation(async () => void order.push('close'))
+    expect(await useApp.getState().leaveWorkspace()).toBe('left')
+    expect(order).toEqual(['save', 'close'])
+    expect(api.collections.saveRequest).toHaveBeenCalledWith(
+      REQUEST_PATH,
+      expect.objectContaining({ url: 'typed just before switching' }),
+      `rev:${REQUEST_PATH}`,
+    )
+    const s = useApp.getState()
+    expect(s.workspace).toBeNull()
+    expect(s).toMatchObject({
+      openTabs: [],
+      activePath: null,
+      drafts: {},
+      saves: {},
+      responses: {},
+      environments: [],
+      activeEnvironmentId: null,
+      collections: [],
+      error: null,
+    })
+  })
+
+  it('discards results that arrive after leaving', async () => {
+    const send = deferred<SendResult>()
+    const api = await setup({ http: { send: vi.fn().mockReturnValue(send.promise) } })
+    const sending = useApp.getState().send(REQUEST_PATH)
+    await useApp.getState().leaveWorkspace()
+    send.resolve({ ok: false, error: { code: 'cancelled', message: 'Request cancelled' } })
+    await sending
+    expect(useApp.getState().responses).toEqual({})
+    expect(useApp.getState().workspace).toBeNull()
+    expect(api.workspace.close).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports drafts that could not be saved instead of leaving, and leaves when told to discard them', async () => {
+    const api = await setup()
+    api.collections.saveRequest.mockRejectedValue(new Error('disk full'))
+    setUrl(REQUEST_PATH, 'unsaved')
+    expect(await useApp.getState().leaveWorkspace()).toBe('unsaved')
+    expect(api.workspace.close).not.toHaveBeenCalled()
+    expect(useApp.getState().workspace).not.toBeNull()
+    expect(draft().url).toBe('unsaved')
+    expect(await useApp.getState().leaveWorkspace({ discardUnsaved: true })).toBe('left')
+    expect(api.workspace.close).toHaveBeenCalledTimes(1)
+    expect(useApp.getState().workspace).toBeNull()
+  })
+
+  it('counts a closed tab whose save failed as unsaved', async () => {
+    const api = await setup()
+    api.collections.saveRequest.mockRejectedValue(new Error('disk full'))
+    setUrl(REQUEST_PATH, 'unsaved')
+    useApp.getState().closeTab(REQUEST_PATH)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(await useApp.getState().leaveWorkspace()).toBe('unsaved')
+  })
+
+  it('still resets to the gate when main fails to close', async () => {
+    const api = await setup()
+    api.workspace.close.mockRejectedValue(new Error('boom'))
+    expect(await useApp.getState().leaveWorkspace()).toBe('left')
+    expect(useApp.getState().workspace).toBeNull()
+  })
+})
+
 describe('renames, moves and deletes', () => {
   const NEW_PATH = 'collections/shop/users/renamed.request.json'
   // What the main process would report after the rename and the save of the edit.

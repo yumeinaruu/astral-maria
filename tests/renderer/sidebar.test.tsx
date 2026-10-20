@@ -73,6 +73,36 @@ describe('WorkspaceGate', () => {
   })
 })
 
+describe('Switch workspace', () => {
+  it('returns to the gate, which lists the recent workspaces', async () => {
+    const api = installApi({ workspace: { recent: vi.fn().mockResolvedValue([WS]) } })
+    const { user } = await openedApp(api)
+    await user.click(screen.getByRole('button', { name: 'Switch workspace…' }))
+    expect(await screen.findByRole('button', { name: 'Open workspace' })).toBeInTheDocument()
+    expect(api.workspace.close).toHaveBeenCalledTimes(1)
+    expect(await screen.findByRole('button', { name: /Demo workspace/ })).toBeInTheDocument()
+  })
+
+  it('asks before discarding changes that could not be saved', async () => {
+    const api = installApi()
+    const { user } = await openedApp(api)
+    api.collections.saveRequest.mockRejectedValue(new Error('disk full'))
+    await user.click(screen.getByRole('treeitem', { name: 'Get users' }))
+    useApp.getState().editDraft(REQUEST_PATH, (r) => ({ ...r, url: 'unsaved' }))
+    await user.click(screen.getByRole('button', { name: 'Switch workspace…' }))
+    const dialog = await screen.findByRole('alertdialog')
+    expect(dialog).toHaveTextContent(REQUEST_PATH)
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(api.workspace.close).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Open workspace' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Switch workspace…' }))
+    await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Discard and switch' }))
+    expect(await screen.findByRole('button', { name: 'Open workspace' })).toBeInTheDocument()
+    expect(api.workspace.close).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('Sidebar tree', () => {
   it('renders collections, folders and requests with a method badge', async () => {
     await openedApp()
