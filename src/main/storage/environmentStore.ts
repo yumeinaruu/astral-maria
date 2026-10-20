@@ -152,9 +152,11 @@ export class EnvironmentStore {
       for (const v of env.variables) {
         if (v.currentValue) {
           values[v.key] = v.secret ? this.cipher.encrypt(v.currentValue) : v.currentValue
-        } else if (v.secret && v.locked === true && Object.hasOwn(stored, v.key)) {
-          // A secret this machine cannot decrypt (Keychain denied or reset) is kept as is unless it was replaced.
-          values[v.key] = stored[v.key]
+        } else if (v.secret && v.locked === true) {
+          // A secret this machine cannot decrypt (Keychain denied or reset) is kept as is unless it was replaced; a
+          // renamed one carries the key it was stored under.
+          const from = typeof v.lockedKey === 'string' ? v.lockedKey : v.key
+          if (Object.hasOwn(stored, from)) values[v.key] = stored[from]
         }
       }
 

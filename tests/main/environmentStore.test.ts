@@ -383,6 +383,32 @@ describe('secrets that cannot be decrypted on this machine', () => {
     expect((await store.list()).environments[0].variables[0]).not.toHaveProperty('locked')
   })
 
+  it('moves the blob to the new key when a locked secret is renamed', async () => {
+    await lockedSetup()
+    const listed = (await store.list()).environments[0]
+    await store.save({
+      ...listed,
+      variables: [{ ...listed.variables[0], key: 'apiToken', lockedKey: 'token' }, listed.variables[1]]
+    })
+    expect(JSON.parse(await read(LOCAL)).values).toEqual({ apiToken: 'foreign-cipher-text' })
+    expect(await read('environments/staging.json')).not.toContain('lockedKey')
+    expect((await store.list()).environments[0].variables[0]).toMatchObject({ key: 'apiToken', locked: true })
+  })
+
+  it('swaps the blobs of two locked secrets whose names were swapped', async () => {
+    await store.save(env({ variables: [tokenVar, { ...tokenVar, key: 'other' }] }))
+    await write(LOCAL, '{"values":{"token":"blob-a","other":"blob-b"}}')
+    const listed = (await store.list()).environments[0]
+    await store.save({
+      ...listed,
+      variables: [
+        { ...listed.variables[0], key: 'other', lockedKey: 'token' },
+        { ...listed.variables[1], key: 'token', lockedKey: 'other' }
+      ]
+    })
+    expect(JSON.parse(await read(LOCAL)).values).toEqual({ other: 'blob-a', token: 'blob-b' })
+  })
+
   it('removes the blob when the variable is deleted', async () => {
     await lockedSetup()
     const listed = (await store.list()).environments[0]

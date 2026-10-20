@@ -78,6 +78,11 @@ export interface EnvVar {
    * with `locked: true` and no `currentValue` keeps the stored (encrypted) value; a new `currentValue` replaces it.
    */
   locked?: boolean
+  /**
+   * On a locked secret whose key was renamed in the editor: the key its encrypted value is stored under, so saving
+   * moves the value to the new key instead of dropping it. Never written to disk.
+   */
+  lockedKey?: string
 }
 
 export interface Environment {
