@@ -451,21 +451,31 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
 
   /**
    * Runs `fn` (which renames, moves or deletes `path`) while no save may write below `path`: running saves finish
-   * first, saves that come due meanwhile resume afterwards, under the new path if there is one.
+   * first, saves that come due meanwhile resume afterwards, under the new path if there is one. The tree is reloaded
+   * after `fn`, so `fn` itself should not reload it.
    */
   async function locked(path: string, fn: () => Promise<void>): Promise<void> {
     const affected = [...entries.values(), ...pending.values()].filter((e) => isWithin(e.path, path))
     for (const e of affected) if (e.timer) e.deferred = true
+    const started = epoch
     locks.push(path)
+    // A refresh already in flight may read the disk mid-change and then apply after it; its result is discarded.
+    refreshSeq++
     try {
       await Promise.all(affected.map((e) => e.running))
       await fn()
     } finally {
-      locks.splice(locks.indexOf(path), 1)
-      for (const e of [...entries.values(), ...pending.values()]) {
-        if (e.deferred && !isLocked(e.path)) {
-          e.deferred = false
-          void runSave(e)
+      // After a workspace change the locks (and everything else) were reset already.
+      if (epoch === started) {
+        locks.splice(locks.indexOf(path), 1)
+        // Reloaded once the change is done (a refresh under the lock keeps what it may have read mid-change), and
+        // before deferred saves resume, so they write with the revisions now on disk.
+        await get().refresh()
+        for (const e of [...entries.values(), ...pending.values()]) {
+          if (e.deferred && !isLocked(e.path)) {
+            e.deferred = false
+            void runSave(e)
+          }
         }
       }
     }
@@ -497,7 +507,7 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
    * Runs an API call, turns a rejection into `error`, applies `apply` on success, then reloads the tree (it may have
    * changed on disk). Nothing is touched if the workspace changed while the call was in flight.
    */
-  async function mutate<T>(call: () => Promise<T>, apply?: (result: T) => void): Promise<void> {
+  async function mutate<T>(call: () => Promise<T>, apply?: (result: T) => void, reload = true): Promise<void> {
     const started = epoch
     try {
       const result = await call()
@@ -507,7 +517,7 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
       if (epoch !== started) return
       fail(e)
     }
-    await get().refresh()
+    if (reload) await get().refresh()
   }
 
   /** Runs an environment write and reloads; unlike `mutate` a rejection goes to the caller, except gate errors. */
@@ -587,18 +597,35 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
         }
         for (const p of adoptRevision) if (onDisk.has(p)) revisions.set(p, onDisk.get(p))
         adoptRevision.clear()
-        const vanished = get()
-          .openTabs.map((t) => t.path)
-          .filter((p) => !saved.has(p))
+        // A path a rename, move or delete is changing right now may be read mid-change; that action reconciles it.
+        const present = (p: string): boolean => saved.has(p) || isLocked(p)
+        const current = get()
+        const vanished = current.openTabs.map((t) => t.path).filter((p) => !present(p))
+        const vanishedPending = [...pending.keys()].filter((p) => !present(p))
+        const lost = [
+          ...vanished.map((p) =>
+            current.saves[p]
+              ? `${p} was removed on disk; unsaved changes were discarded`
+              : `${p} was removed on disk; its tab was closed`,
+          ),
+          ...vanishedPending
+            .filter((p) => {
+              const e = pending.get(p)!
+              return e.version !== e.savedVersion || e.failed !== null
+            })
+            .map((p) => `${p} was removed on disk; unsaved changes were discarded`),
+        ]
         set((s) => {
-          const openTabs = s.openTabs.filter((t) => saved.has(t.path))
+          const openTabs = s.openTabs.filter((t) => present(t.path))
           const oldIndex = s.openTabs.findIndex((t) => t.path === s.activePath)
-          const activeKept = s.activePath !== null && saved.has(s.activePath)
+          const activeKept = s.activePath !== null && present(s.activePath)
           const drafts: Record<string, RequestItem> = {}
           for (const { path } of openTabs) {
-            const baseline = saved.get(path)!
+            const baseline = saved.get(path)
             const draft = s.drafts[path]
-            if (!draft || (!s.saves[path] && !sameRequest(draft, baseline))) drafts[path] = baseline
+            if (!baseline) {
+              if (draft) drafts[path] = draft
+            } else if (!draft || (!s.saves[path] && !sameRequest(draft, baseline))) drafts[path] = baseline
             else if (draft.name !== baseline.name) drafts[path] = { ...draft, name: baseline.name }
             else drafts[path] = draft
           }
@@ -612,7 +639,8 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
               : neighbour(openTabs, oldIndex < 0 ? 0 : Math.min(oldIndex, openTabs.length)),
           }
         })
-        dropEditing([...vanished, ...[...pending.keys()].filter((p) => !saved.has(p))], 'removed')
+        dropEditing([...vanished, ...vanishedPending], 'removed')
+        if (lost.length > 0) set((s) => ({ error: [s.error, ...lost].filter(Boolean).join('. ') }))
         // A dirty draft keeps its edits but must not write an outdated name over a rename done on disk.
         for (const e of [...entries.values(), ...pending.values()]) {
           const name = saved.get(e.path)?.name
@@ -657,6 +685,7 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
         mutate(
           () => window.astral.collections.rename(path, name),
           (to) => remapTabs(path, to),
+          false,
         ),
       ),
     move: (path, parentPath, index) =>
@@ -667,6 +696,7 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
             remapTabs(path, to)
             get().setExpanded(parentPath, true)
           },
+          false,
         ),
       ),
     remove: (path) =>
@@ -687,6 +717,7 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
               'removed',
             )
           },
+          false,
         ),
       ),
 

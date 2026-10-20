@@ -318,6 +318,20 @@ describe('errors and disappearing data', () => {
     expect(useApp.getState().openTabs).toEqual([])
   })
 
+  it('shows an error naming an open request that was deleted on disk and closes its tab', async () => {
+    const { api, user } = await openedApp()
+    await user.click(screen.getByRole('treeitem', { name: 'Get users' }))
+    expect(screen.getByRole('tab', { name: /Get users/ })).toBeInTheDocument()
+    api.collections.list.mockResolvedValue({
+      collections: [collectionTree('collections/shop', 'Shop', [folderNode(FOLDER_PATH, 'Users', [])])],
+      errors: [],
+    })
+    await useApp.getState().refresh()
+    expect(await screen.findByRole('alert')).toHaveTextContent(`${REQUEST_PATH} was removed on disk`)
+    expect(screen.queryByRole('tab', { name: /Get users/ })).not.toBeInTheDocument()
+    expect(screen.getByText('Open a request')).toBeInTheDocument()
+  })
+
   it('returns to the workspace gate with an error when the workspace folder disappears', async () => {
     const { api } = await openedApp()
     api.collections.list.mockRejectedValue(new Error('workspace_unavailable: cannot read workspace "Demo"'))
