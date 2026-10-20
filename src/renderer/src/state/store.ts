@@ -46,6 +46,10 @@ export interface AppState {
   activePath: string | null
   environments: Environment[]
   activeEnvironmentId: string | null
+  /** Environment files that could not be read; the healthy ones are in `environments`. */
+  environmentErrors: LoadError[]
+  /** Non-blocking note shown in the top bar, e.g. when the active environment vanished. */
+  environmentNotice: string | null
   error: string | null
   /** Expanded collections and folders by path; kept here so the tree survives re-renders and refreshes. */
   expanded: Record<string, true>
@@ -83,6 +87,14 @@ export interface AppActions {
   cancelSend(): Promise<void>
   setResponseView(path: string, patch: Partial<ResponseView>): void
   setActiveEnvironment(id: string | null): void
+  /**
+   * Writes `env`, then reloads the environments. Resolves `false` if the workspace changed meanwhile (nothing was
+   * applied); rejects with the main-process error, which the caller shows next to its form.
+   */
+  saveEnvironment(env: Environment): Promise<boolean>
+  /** Deletes an environment; the selection is reset if it was the active one. Same result contract as `saveEnvironment`. */
+  removeEnvironment(id: string): Promise<boolean>
+  dismissEnvironmentNotice(): void
   setExpanded(path: string, expanded: boolean): void
   dismissError(): void
 }
@@ -96,6 +108,8 @@ export function initialState(): AppState {
     activePath: null,
     environments: [],
     activeEnvironmentId: null,
+    environmentErrors: [],
+    environmentNotice: null,
     error: null,
     expanded: {},
     drafts: {},
@@ -422,6 +436,25 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
     await get().refresh()
   }
 
+  /** Runs an environment write and reloads; unlike `mutate` a rejection goes to the caller, except gate errors. */
+  async function environmentCall(call: () => Promise<void>, apply?: () => void): Promise<boolean> {
+    const started = epoch
+    try {
+      await call()
+    } catch (e) {
+      if (epoch !== started) return false
+      if (isGateError(e)) {
+        fail(e)
+        return false
+      }
+      throw e
+    }
+    if (epoch !== started) return false
+    apply?.()
+    await get().refresh()
+    return epoch === started
+  }
+
   function remapTabs(from: string, to: string): void {
     remapEditing(from, to)
     set((s) => ({
@@ -505,10 +538,19 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
       }
       if (environments.status === 'fulfilled') {
         const list = environments.value.environments
-        set((s) => ({
-          environments: list,
-          activeEnvironmentId: list.some((e) => e.id === s.activeEnvironmentId) ? s.activeEnvironmentId : null,
-        }))
+        set((s) => {
+          const activeId = s.activeEnvironmentId
+          const vanished = activeId !== null && !list.some((e) => e.id === activeId)
+          const name = s.environments.find((e) => e.id === activeId)?.name ?? 'selected'
+          return {
+            environments: list,
+            environmentErrors: environments.value.errors,
+            activeEnvironmentId: vanished ? null : s.activeEnvironmentId,
+            environmentNotice: vanished
+              ? `The environment "${name}" is no longer available. No environment is selected.`
+              : s.environmentNotice,
+          }
+        })
       } else if (collections.status === 'fulfilled') {
         fail(environments.reason)
       }
@@ -665,7 +707,16 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
         },
       }))
     },
-    setActiveEnvironment: (id) => set({ activeEnvironmentId: id }),
+    setActiveEnvironment: (id) => set({ activeEnvironmentId: id, environmentNotice: null }),
+    saveEnvironment: (env) => environmentCall(() => window.astral.environments.save(env)),
+    removeEnvironment: (id) =>
+      environmentCall(
+        () => window.astral.environments.remove(id),
+        () => {
+          if (get().activeEnvironmentId === id) set({ activeEnvironmentId: null })
+        },
+      ),
+    dismissEnvironmentNotice: () => set({ environmentNotice: null }),
     setExpanded(path, expanded) {
       set((s) => {
         if (expanded === Boolean(s.expanded[path])) return s

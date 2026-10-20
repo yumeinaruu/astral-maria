@@ -1051,3 +1051,178 @@ p {
   font-weight: 600;
   color: var(--danger);
 }
+
+/* ---- environments ---- */
+
+.env-selector {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.env-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.env-notice {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+  font-size: var(--text-sm);
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  border-radius: var(--radius);
+}
+
+.env-notice-dismiss {
+  padding: 0 var(--space-1);
+}
+
+.env-dialog {
+  width: min(960px, calc(100vw - 32px));
+  height: min(640px, calc(100vh - 32px));
+}
+
+.env-dialog:focus {
+  outline: none;
+}
+
+.env-body {
+  display: flex;
+  flex: 1;
+  gap: var(--space-4);
+  min-height: 0;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.env-list-pane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 200px;
+  flex: none;
+}
+
+.env-list {
+  flex: 1;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.env-list-item {
+  display: block;
+  width: 100%;
+  padding: var(--space-1) var(--space-2);
+  font: inherit;
+  color: var(--text);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.env-list-item:hover {
+  background: var(--bg-hover);
+}
+
+.env-list-item-selected,
+.env-list-item-selected:hover {
+  background: var(--bg-selected);
+}
+
+.env-edit-pane {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.env-edit-header {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.env-name-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+.env-name-heading {
+  flex: 1;
+  margin: 0;
+  font-size: var(--text-lg);
+}
+
+.env-edit-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.env-table-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.env-table th.kv-check {
+  width: 56px;
+}
+
+.env-current {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.env-problem,
+.env-hint,
+.env-error {
+  display: block;
+  font-size: var(--text-xs);
+}
+
+.env-problem,
+.env-error {
+  color: var(--danger);
+}
+
+.env-hint {
+  color: var(--text-muted);
+}
+
+.env-error {
+  padding: var(--space-1) var(--space-2);
+  background: var(--error-bg);
+  border: 1px solid var(--error-border);
+  border-radius: var(--radius);
+  font-size: var(--text-sm);
+  color: var(--text);
+}
+
+.env-note {
+  margin-top: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.env-changed {
+  align-self: center;
+  margin-right: auto;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}

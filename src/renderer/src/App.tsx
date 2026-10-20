@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { ErrorBanner } from './components/Banners'
+import { EnvironmentSelector } from './components/EnvironmentSelector'
 import { RequestEditor } from './components/RequestEditor'
 import { RequestTabs, tabDomId } from './components/RequestTabs'
 import { Sidebar } from './components/Sidebar'
@@ -32,8 +33,9 @@ export function App(): React.JSX.Element {
         <span className="workspace-name" title={workspace.dir}>
           {workspace.name}
         </span>
-        {/* Reserved for the environment selector (Task 12). */}
-        <div className="topbar-env" id="environment-slot" />
+        <div className="topbar-env">
+          <EnvironmentSelector />
+        </div>
       </header>
       <ErrorBanner />
       <div className="layout">
