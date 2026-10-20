@@ -14,6 +14,7 @@ const PNG = Buffer.from(
 )
 const SECRET = 's3cr3t-e2e-PLAIN-TEXT-9f1c'
 const BODY = { greeting: 'hello from the astral test server' }
+const PACKAGED = process.env.ASTRAL_E2E_EXECUTABLE
 /** Set ASTRAL_E2E_SHOTS to a directory to also save screenshots there. */
 const SHOTS = process.env.ASTRAL_E2E_SHOTS
 
@@ -57,10 +58,14 @@ test.afterAll(async () => {
   await rm(root, { recursive: true, force: true })
 })
 
-async function launch(): Promise<{ app: ElectronApplication; page: Page; problems: string[]; requests: string[] }> {
+async function launch(
+  workspaceDir = workspace,
+): Promise<{ app: ElectronApplication; page: Page; problems: string[]; requests: string[] }> {
   app = await electron.launch({
-    args: [MAIN, `--user-data-dir=${userData}`],
-    env: { ...process.env, NODE_ENV: 'test', ASTRAL_E2E_WORKSPACE: workspace },
+    // ASTRAL_E2E_EXECUTABLE runs the same steps against a packaged build instead of out/main.
+    ...(PACKAGED ? { executablePath: PACKAGED } : {}),
+    args: [...(PACKAGED ? [] : [MAIN]), `--user-data-dir=${userData}`],
+    env: { ...process.env, NODE_ENV: 'test', ASTRAL_E2E_WORKSPACE: workspaceDir },
   })
   const page = await app.firstWindow()
   const problems: string[] = []
@@ -215,10 +220,6 @@ test('create, send, persist, and keep secrets local', async () => {
     const p = second.page
     await p.getByRole('button', { name: 'Open workspace' }).click()
     await expect(p.locator('.workspace-name')).toHaveText('Smoke')
-    await p
-      .getByRole('button', { name: 'Actions for Demo' })
-      .click()
-      .catch(() => undefined)
     await p.getByRole('treeitem', { name: 'Hello' }).click()
     await expect(p.getByRole('textbox', { name: 'URL', exact: true })).toHaveValue('{{baseUrl}}/image')
     await p.getByRole('button', { name: 'Manage environments' }).click()
@@ -230,4 +231,28 @@ test('create, send, persist, and keep secrets local', async () => {
     await expect(dialog.getByLabel('Current value 2')).toHaveValue(SECRET)
     expect(second.problems).toEqual([])
   })
+})
+
+test('a secret is refused, not stored, when OS encryption is unavailable', async () => {
+  const dir = join(root, 'workspace-no-crypto')
+  await mkdir(dir)
+  const { page } = await launch(dir)
+  await app!.evaluate(({ safeStorage }) => {
+    safeStorage.isEncryptionAvailable = () => false
+  })
+  await page.getByRole('button', { name: 'Create workspace' }).click()
+  await page.getByLabel('Workspace name').fill('NoCrypto')
+  await page.getByRole('button', { name: 'Create', exact: true }).click()
+  await expect(page.locator('.workspace-name')).toHaveText('NoCrypto')
+  await page.getByRole('button', { name: 'Manage environments' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Environments' })
+  await dialog.getByRole('button', { name: 'New environment' }).click()
+  await dialog.getByLabel('Environment name').fill('Locked')
+  await dialog.getByRole('button', { name: 'Add variable' }).click()
+  await dialog.getByLabel('Variable name 1').fill('token')
+  await dialog.getByLabel('Secret 1').check()
+  await dialog.getByLabel('Current value 1').fill(SECRET)
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click()
+  await expect(dialog.getByRole('alert')).toBeVisible()
+  for (const f of await allFiles(dir)) expect(await readFile(f, 'utf8'), f).not.toContain(SECRET)
 })
