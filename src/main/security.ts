@@ -1,16 +1,32 @@
 import * as path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-export function isAllowedRendererUrl(url: string, devServerUrl?: string): boolean {
+/**
+ * Whether the renderer may load `url`: the app's own files under `rendererRoot`, devtools, and (in development) the
+ * Vite dev server. Everything else, including any other local file, is cancelled.
+ */
+export function isAllowedRendererUrl(url: string, opts: { rendererRoot: string; devServerUrl?: string }): boolean {
   let parsed: URL
   try {
     parsed = new URL(url)
   } catch {
     return false
   }
-  if (parsed.protocol === 'file:' || parsed.protocol === 'devtools:') return true
-  if (devServerUrl) {
+  if (parsed.protocol === 'devtools:') return true
+  if (parsed.protocol === 'file:') {
+    if (parsed.host !== '') return false
+    let file: string
     try {
-      const dev = new URL(devServerUrl)
+      file = fileURLToPath(parsed)
+    } catch {
+      return false
+    }
+    const rel = path.relative(path.resolve(opts.rendererRoot), file)
+    return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)
+  }
+  if (opts.devServerUrl) {
+    try {
+      const dev = new URL(opts.devServerUrl)
       const sameHost = parsed.host === dev.host
       const isSocket = parsed.protocol === 'ws:' || parsed.protocol === 'wss:'
       return sameHost && (parsed.protocol === dev.protocol || isSocket)
@@ -19,6 +35,14 @@ export function isAllowedRendererUrl(url: string, devServerUrl?: string): boolea
     }
   }
   return false
+}
+
+/**
+ * Permission requests and checks (camera, notifications, geolocation, clipboard reading, ...) are all denied, except
+ * writing to the clipboard, which the "Copy body" button needs.
+ */
+export function isPermissionAllowed(permission: string): boolean {
+  return permission === 'clipboard-sanitized-write'
 }
 
 /** The Vite dev server to load the renderer from: only ever in an unpackaged (development) run. */

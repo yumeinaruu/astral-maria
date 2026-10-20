@@ -1,33 +1,72 @@
 import { describe, expect, it } from 'vitest'
-import { devServerUrlFor, isAllowedRendererUrl, isE2eAllowed } from '../../src/main/security'
+import * as path from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { devServerUrlFor, isAllowedRendererUrl, isE2eAllowed, isPermissionAllowed } from '../../src/main/security'
 
 describe('isAllowedRendererUrl', () => {
-  it('allows file URLs', () => {
-    expect(isAllowedRendererUrl('file:///app/index.html')).toBe(true)
+  const rendererRoot = '/Applications/Astral Maria.app/Contents/Resources/app.asar/out/renderer'
+  const root = { rendererRoot }
+  const dev = { rendererRoot, devServerUrl: 'http://localhost:5173' }
+
+  it('allows file URLs inside the renderer directory only', () => {
+    expect(isAllowedRendererUrl(pathToFileURL(`${rendererRoot}/index.html`).href, root)).toBe(true)
+    expect(isAllowedRendererUrl(pathToFileURL(`${rendererRoot}/assets/index-1.js`).href, root)).toBe(true)
+    expect(isAllowedRendererUrl(`${pathToFileURL(`${rendererRoot}/index.html`).href}#x`, root)).toBe(true)
+  })
+
+  it('denies other file URLs, including look-alike and escaping paths', () => {
+    expect(isAllowedRendererUrl('file:///etc/passwd', root)).toBe(false)
+    expect(isAllowedRendererUrl('file:///app/index.html', root)).toBe(false)
+    expect(isAllowedRendererUrl(pathToFileURL(`${rendererRoot}-evil/index.html`).href, root)).toBe(false)
+    expect(isAllowedRendererUrl(`file://${rendererRoot.replace(/ /g, '%20')}/../../../../secret`, root)).toBe(false)
+    expect(isAllowedRendererUrl(pathToFileURL(path.dirname(rendererRoot)).href, root)).toBe(false)
+    expect(isAllowedRendererUrl('file://remote-host/share/index.html', root)).toBe(false)
   })
 
   it('allows devtools URLs', () => {
-    expect(isAllowedRendererUrl('devtools://devtools/x')).toBe(true)
+    expect(isAllowedRendererUrl('devtools://devtools/x', root)).toBe(true)
   })
 
   it('denies remote URLs', () => {
-    expect(isAllowedRendererUrl('https://example.com')).toBe(false)
+    expect(isAllowedRendererUrl('https://example.com', root)).toBe(false)
+    expect(isAllowedRendererUrl('not a url', root)).toBe(false)
   })
 
   it('denies localhost when no dev server is given', () => {
-    expect(isAllowedRendererUrl('http://localhost:9999')).toBe(false)
+    expect(isAllowedRendererUrl('http://localhost:9999', root)).toBe(false)
   })
 
   it('allows the dev server origin', () => {
-    expect(isAllowedRendererUrl('http://localhost:5173/x', 'http://localhost:5173')).toBe(true)
+    expect(isAllowedRendererUrl('http://localhost:5173/x', dev)).toBe(true)
   })
 
   it('denies other ports than the dev server', () => {
-    expect(isAllowedRendererUrl('http://localhost:5174/x', 'http://localhost:5173')).toBe(false)
+    expect(isAllowedRendererUrl('http://localhost:5174/x', dev)).toBe(false)
   })
 
   it('allows the dev server websocket for hot reload', () => {
-    expect(isAllowedRendererUrl('ws://localhost:5173/', 'http://localhost:5173')).toBe(true)
+    expect(isAllowedRendererUrl('ws://localhost:5173/', dev)).toBe(true)
+  })
+})
+
+describe('isPermissionAllowed', () => {
+  it('allows only writing to the clipboard (Copy body)', () => {
+    expect(isPermissionAllowed('clipboard-sanitized-write')).toBe(true)
+  })
+
+  it('denies every other permission request and check', () => {
+    for (const p of [
+      'media',
+      'geolocation',
+      'notifications',
+      'midi',
+      'openExternal',
+      'fullscreen',
+      'clipboard-read',
+      'unknown'
+    ]) {
+      expect(isPermissionAllowed(p), p).toBe(false)
+    }
   })
 })
 

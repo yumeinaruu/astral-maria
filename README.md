@@ -67,9 +67,27 @@ Committed: everything except `.local/`. Local only: current values and secrets (
 recent workspaces, which lives in the app's own user-data folder. Secrets are encrypted with Electron
 `safeStorage` (the macOS Keychain); when encryption is unavailable the app shows an error and does not store them.
 
-## Privacy
+## Privacy and network
 
-Astral Maria has no AI features, no telemetry, no analytics and no update checks. The renderer is sandboxed and cannot reach the network.
+Astral Maria has no AI features, no telemetry, no analytics and no update checks.
 
-The only network activity is the HTTP requests you send yourself (made by the main process) and, in later versions,
-the git operations you start. Nothing else leaves your machine.
+The HTTP requests you send are made by the main process (not by the web page that draws the UI). By this
+application's own code and the settings below, only those requests leave your machine; in later versions the git
+operations you start will too.
+
+Settings that keep everything else off (`src/main/index.ts`, `src/main/security.ts`, `src/main/csp.ts`):
+
+- The UI runs in a sandboxed renderer without Node.js. Every request it makes is cancelled unless it is one of the
+  app's own files (plus devtools, and the Vite dev server under `npm run dev`); navigation, redirects and new windows
+  are blocked, and its Content-Security-Policy allows only the app's own scripts and no remote content.
+- Chromium's background networking, component updates and sync are switched off (`--disable-background-networking`,
+  `--disable-component-update`, `--disable-sync`), and the spellchecker is disabled (on Windows and Linux it
+  downloads dictionaries from Google).
+- Every permission request or check (camera, microphone, location, notifications, clipboard reading, ...) is denied;
+  only writing to the clipboard ("Copy body") is allowed.
+
+What is verified, on macOS only: the e2e test checks that the UI made no requests other than to its own files and
+`data:`/`blob:` URLs, that an HTML preview never fetches the images it references, that the local test server
+receives exactly the requests the test sent, and that the switches and the disabled spellchecker are in effect and
+the location permission is denied. It observes the UI's requests, not every socket of every Chromium process. Windows and Linux builds are not produced or tested yet: the same settings are configured
+for them, but their effect there has not been verified.

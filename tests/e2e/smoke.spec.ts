@@ -173,6 +173,31 @@ test('create, send, persist, and keep secrets local', async () => {
     await expect.poll(async () => JSON.parse(await readFile(join(downloadDir, saved), 'utf8'))).toEqual(BODY)
   })
 
+  await test.step('network and permission lockdown is in effect, and copying still works', async () => {
+    const state = await app!.evaluate(({ app: electronApp, session }) => ({
+      spellchecker: session.defaultSession.isSpellCheckerEnabled(),
+      switches: ['disable-background-networking', 'disable-component-update', 'disable-sync'].filter((s) =>
+        electronApp.commandLine.hasSwitch(s),
+      ),
+    }))
+    expect(state).toEqual({
+      spellchecker: false,
+      switches: ['disable-background-networking', 'disable-component-update', 'disable-sync'],
+    })
+    expect(await page.evaluate(async () => (await navigator.permissions.query({ name: 'geolocation' })).state)).toBe(
+      'denied',
+    )
+    // Writing to the clipboard is the one permission granted; the user's clipboard text is restored afterwards.
+    const saved = await app!.evaluate(({ clipboard }) => clipboard.readText())
+    try {
+      await page.getByRole('button', { name: 'Copy body' }).click()
+      await expect(page.getByText('Copied', { exact: true })).toBeVisible()
+      expect(await app!.evaluate(({ clipboard }) => clipboard.readText())).toBe(JSON.stringify(BODY))
+    } finally {
+      await app!.evaluate(({ clipboard }, text) => clipboard.writeText(text), saved)
+    }
+  })
+
   await test.step('HTML preview (srcdoc iframe) and image preview (data: URL) work under the CSP', async () => {
     await page.getByRole('textbox', { name: 'URL', exact: true }).fill('{{baseUrl}}/page')
     await page.getByRole('button', { name: 'Send', exact: true }).click()

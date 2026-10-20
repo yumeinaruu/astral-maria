@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { buildCsp } from '../../src/main/csp'
 
 const BRIEF_CSP =
-  "default-src 'self'; connect-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'"
+  "default-src 'self'; connect-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'none'; object-src 'none'"
 const metaCsp = (html: string): string | undefined =>
   /http-equiv="Content-Security-Policy"\s+content="([^"]*)"/.exec(html)?.[1]
 
@@ -20,6 +20,7 @@ describe('buildCsp', () => {
     const csp = buildCsp({ wsOrigin: 'ws://localhost:5173' })
     expect(csp).toContain("script-src 'self' 'unsafe-inline'")
     expect(csp).toContain("connect-src 'self' ws://localhost:5173")
+    expect(csp).toContain("base-uri 'none'; form-action 'none'; object-src 'none'")
   })
 
   it('source index.html carries the strict production policy', () => {

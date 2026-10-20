@@ -5,7 +5,13 @@ import { API_METHODS, channelName, FLUSH_REQUEST_CHANNEL } from '../shared/api'
 import { createApi } from './api'
 import { FlushCoordinator, interceptOnce, OperationTracker } from './flushGuard'
 import { createSecretCipher } from './secretCipher'
-import { devServerUrlFor, isAllowedRendererUrl, isE2eAllowed } from './security'
+import { devServerUrlFor, isAllowedRendererUrl, isE2eAllowed, isPermissionAllowed } from './security'
+
+// No traffic of Chromium's own: no background requests (variations, component and dictionary downloads, ...).
+// Must run before the app is ready.
+for (const flag of ['disable-background-networking', 'disable-component-update', 'disable-sync']) {
+  app.commandLine.appendSwitch(flag)
+}
 
 /** The e2e hooks below are honoured only for a test run on a temp workspace with its own user-data folder. */
 const e2eWorkspace = isE2eAllowed({
@@ -24,6 +30,8 @@ if (e2eWorkspace) app.commandLine.appendSwitch('use-mock-keychain')
 
 /** A packaged build always loads its own files: a renderer URL from the environment is a development feature only. */
 const devServerUrl = devServerUrlFor({ isPackaged: app.isPackaged, rendererUrl: process.env['ELECTRON_RENDERER_URL'] })
+/** The built renderer; the only local files the window may load. */
+const rendererRoot = join(__dirname, '../renderer')
 
 /** How long a quit or window close waits for the renderer to report its drafts written. */
 const FLUSH_TIMEOUT_MS = 3000
@@ -55,6 +63,8 @@ function createWindow(): void {
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
+      // The spellchecker downloads Hunspell dictionaries from Google on Windows and Linux.
+      spellcheck: false,
     },
   })
 
@@ -69,11 +79,12 @@ function createWindow(): void {
   )
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   win.webContents.on('will-navigate', (event) => event.preventDefault())
+  win.webContents.on('will-redirect', (event) => event.preventDefault())
 
   if (devServerUrl) {
     void win.loadURL(devServerUrl)
   } else {
-    void win.loadFile(join(__dirname, '../renderer/index.html'))
+    void win.loadFile(join(rendererRoot, 'index.html'))
   }
 }
 
@@ -103,8 +114,12 @@ function registerApi(): void {
 
 app.whenReady().then(() => {
   registerApi()
-  session.defaultSession.webRequest.onBeforeRequest((details, callback) => {
-    callback({ cancel: !isAllowedRendererUrl(details.url, devServerUrl) })
+  const ses = session.defaultSession
+  ses.setSpellCheckerEnabled(false)
+  ses.setPermissionRequestHandler((_webContents, permission, callback) => callback(isPermissionAllowed(permission)))
+  ses.setPermissionCheckHandler((_webContents, permission) => isPermissionAllowed(permission))
+  ses.webRequest.onBeforeRequest((details, callback) => {
+    callback({ cancel: !isAllowedRendererUrl(details.url, { rendererRoot, devServerUrl }) })
   })
 
   createWindow()

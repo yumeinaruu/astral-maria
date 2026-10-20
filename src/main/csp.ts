@@ -2,7 +2,10 @@ const BASE = {
   'default-src': ["'self'"],
   'connect-src': ["'self'"],
   'img-src': ["'self'", 'data:', 'blob:'],
-  'style-src': ["'self'", "'unsafe-inline'"]
+  'style-src': ["'self'", "'unsafe-inline'"],
+  'base-uri': ["'none'"],
+  'form-action': ["'none'"],
+  'object-src': ["'none'"]
 }
 
 /** Strict policy for production; pass `dev` to also allow Vite HMR and React Refresh. */
