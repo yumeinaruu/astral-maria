@@ -1,9 +1,10 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import type { HttpResponse, ParsedCookie } from '../../../shared/types'
-import { composeUrl } from '../lib/url'
 import {
   bodyBytes,
   decodeBody,
+  parseContentType,
+  headerValue,
   formatBytes,
   formatDuration,
   LARGE_PREVIEW_CHARS,
@@ -44,10 +45,6 @@ function statusClass(status: number): string {
 
 export function ResponseViewer({ path }: { path: string }): React.JSX.Element {
   const entry = useApp((s) => s.responses[path])
-  const requestUrl = useApp((s) => {
-    const d = s.drafts[path]
-    return d ? composeUrl(d.url, d.params) : ''
-  })
 
   if (!entry || entry.state === 'idle' || (entry.state === 'done' && !entry.result)) {
     return (
@@ -75,16 +72,15 @@ export function ResponseViewer({ path }: { path: string }): React.JSX.Element {
       </div>
     )
   }
-  return <ResponseDetails path={path} response={result.response} requestUrl={requestUrl} />
+  return <ResponseDetails path={path} response={result.response} />
 }
 
 interface DetailsProps {
   path: string
   response: HttpResponse
-  requestUrl: string
 }
 
-function ResponseDetails({ path, response, requestUrl }: DetailsProps): React.JSX.Element {
+function ResponseDetails({ path, response }: DetailsProps): React.JSX.Element {
   const view = useApp((s) => s.responseViews[path]) ?? DEFAULT_RESPONSE_VIEW
   const idBase = useId()
   const decoded = useMemoDecoded(response)
@@ -116,12 +112,12 @@ function ResponseDetails({ path, response, requestUrl }: DetailsProps): React.JS
         <span>{formatDuration(response.totalMs)}</span>
         <span>{formatBytes(response.sizeBytes)}</span>
         {response.redirects > 0 && (
-          <span>{response.redirects === 1 ? '1 redirect' : `${response.redirects} redirects`}</span>
-        )}
-        {response.finalUrl !== requestUrl && (
-          <span className="final-url mono" title={response.finalUrl}>
-            {response.finalUrl}
-          </span>
+          <>
+            <span>{response.redirects === 1 ? '1 redirect' : `${response.redirects} redirects`}</span>
+            <span className="final-url mono" title={response.finalUrl}>
+              {response.finalUrl}
+            </span>
+          </>
         )}
       </div>
 
@@ -241,7 +237,7 @@ function BodyPanel({ path, response, decoded, mode }: BodyPanelProps): React.JSX
       )}
       {text !== undefined && !decoded.large && effective === 'preview' && kind === 'html' && (
         <>
-          <iframe className="html-preview" title="HTML preview" sandbox="" srcDoc={text} />
+          <iframe className="html-preview" title="HTML preview" sandbox="" srcDoc={previewDocument(text)} />
           <p className="muted note">Remote resources are blocked.</p>
         </>
       )}
@@ -293,18 +289,30 @@ function CopyButton({ text }: { text: string | undefined }): React.JSX.Element {
 /** Downloads the body through a temporary link to an object URL; no IPC involved. */
 function saveBody(response: HttpResponse): void {
   const bytes = bodyBytes(response)
-  const blob = new Blob([bytes.buffer as ArrayBuffer], {
-    type: decodeBody(response).mime || 'application/octet-stream',
-  })
+  const mime = parseContentType(headerValue(response, 'content-type')).mime
+  const blob = new Blob([bytes.buffer as ArrayBuffer], { type: mime || 'application/octet-stream' })
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
-  link.href = url
-  link.download = suggestFileName(response)
-  link.hidden = true
-  document.body.append(link)
-  link.click()
-  link.remove()
-  setTimeout(() => URL.revokeObjectURL(url), 0)
+  try {
+    link.href = url
+    link.download = suggestFileName(response)
+    link.hidden = true
+    document.body.append(link)
+    link.click()
+  } finally {
+    link.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 0)
+  }
+}
+
+/** Blocks every network load and script in the preview, whatever the app-wide CSP says. */
+const PREVIEW_POLICY =
+  '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:">'
+
+/** The policy goes before any response markup (after a leading doctype, which must stay first for standards mode). */
+function previewDocument(html: string): string {
+  const doctype = /^\s*<!doctype[^>]*>/i.exec(html)?.[0] ?? ''
+  return doctype + PREVIEW_POLICY + html.slice(doctype.length)
 }
 
 function HeadersTable({ headers }: { headers: [string, string][] }): React.JSX.Element {

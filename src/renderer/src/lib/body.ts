@@ -37,7 +37,7 @@ export function bodyBytes(response: HttpResponse): Uint8Array {
   }
 }
 
-function parseContentType(value: string | undefined): { mime: string; charset: string | null } {
+export function parseContentType(value: string | undefined): { mime: string; charset: string | null } {
   const parts = (value ?? '').split(';')
   const mime = (parts[0] ?? '').trim().toLowerCase()
   let charset: string | null = null
@@ -76,6 +76,18 @@ function decodeText(bytes: Uint8Array, charset: string | null): string | null {
   }
 }
 
+/** Removes a trailing, incomplete UTF-8 sequence (at most 3 bytes); other charsets are left alone. */
+function dropIncompleteUtf8Tail(bytes: Uint8Array, charset: string | null): Uint8Array {
+  if (charset && !/^utf-?8$/i.test(charset)) return bytes
+  for (let back = 1; back <= Math.min(3, bytes.length); back++) {
+    const b = bytes[bytes.length - back]!
+    if ((b & 0xc0) === 0x80) continue // continuation byte: keep looking for its lead byte
+    const needed = b >= 0xf0 ? 4 : b >= 0xe0 ? 3 : b >= 0xc0 ? 2 : 1
+    return needed > back ? bytes.subarray(0, bytes.length - back) : bytes
+  }
+  return bytes
+}
+
 function sniffImage(bytes: Uint8Array): string | null {
   const at = (i: number): number => bytes[i] ?? -1
   if (at(0) === 0x89 && at(1) === 0x50 && at(2) === 0x4e && at(3) === 0x47) return 'image/png'
@@ -95,9 +107,10 @@ function kindFromMime(mime: string): BodyKind | null {
   return null
 }
 
-function sniffTextKind(text: string): BodyKind {
-  const head = text.trimStart()
-  if ((head.startsWith('{') || head.startsWith('[')) && isJson(text)) return 'json'
+/** Guesses the kind of untyped text. Large texts are never parsed, only their first characters are looked at. */
+function sniffTextKind(text: string, large: boolean): BodyKind {
+  const head = text.slice(0, 2048).trimStart()
+  if (!large && (head.startsWith('{') || head.startsWith('[')) && isJson(text)) return 'json'
   if (/^<(!doctype\s+html|html[\s>])/i.test(head)) return 'html'
   if (head.startsWith('<?xml') || /^<[A-Za-z]/.test(head)) return 'xml'
   return 'text'
@@ -126,9 +139,12 @@ export function decodeBody(response: HttpResponse): DecodedBody {
   }
 
   // NUL bytes never occur in the text formats handled here; treating them as binary keeps garbage out of the editor.
-  const text = bytes.includes(0) && charset === null ? null : decodeText(bytes, charset)
+  // A size cap can split a multibyte character; that must not turn the whole body into binary.
+  const textBytes = response.bodyTruncated ? dropIncompleteUtf8Tail(bytes, charset) : bytes
+  const text = bytes.includes(0) && charset === null ? null : decodeText(textBytes, charset)
   if (text === null) return { ...base, kind: 'binary' }
-  return { ...base, kind: declared ?? sniffTextKind(text), text, large: text.length > LARGE_TEXT_CHARS }
+  const large = text.length > LARGE_TEXT_CHARS
+  return { ...base, kind: declared ?? sniffTextKind(text, large), text, large }
 }
 
 /** Indents valid JSON; anything else (including invalid or truncated JSON) is returned unchanged. */

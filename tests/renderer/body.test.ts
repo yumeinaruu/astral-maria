@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   decodeBody,
   formatBytes,
@@ -137,6 +137,45 @@ describe('decodeBody', () => {
     }
     expect(() => decodeBody(response('x', 'text/plain; charset=')).text).not.toThrow()
     expect(() => decodeBody({ ...response('x'), bodyBase64: '!!not base64!!' })).not.toThrow()
+  })
+})
+
+describe('truncated bodies', () => {
+  it('decodes text cut in the middle of a multibyte character', () => {
+    for (const sample of ['привет мир', 'ok 😀😀']) {
+      const full = new TextEncoder().encode(sample)
+      for (let cut = full.length - 1; cut > full.length - 4; cut--) {
+        const d = decodeBody(response(full.slice(0, cut), 'application/json', { bodyTruncated: true }))
+        expect(d.kind).toBe('json')
+        expect(d.text).toBeDefined()
+        expect(sample.startsWith(d.text!)).toBe(true)
+      }
+    }
+  })
+
+  it('still reports genuinely binary truncated bodies as binary', () => {
+    const d = decodeBody(
+      response(new Uint8Array([0xff, 0xfe, 0x00, 0xc3]), 'application/octet-stream', { bodyTruncated: true }),
+    )
+    expect(d.kind).toBe('binary')
+    expect(d.text).toBeUndefined()
+  })
+
+  it('does not forgive an incomplete character in a body that was not truncated', () => {
+    const bytes = new TextEncoder().encode('привет').slice(0, 5)
+    expect(decodeBody(response(bytes, 'text/plain')).kind).toBe('binary')
+  })
+})
+
+describe('large bodies', () => {
+  it('never parses a huge sniffed body as JSON', () => {
+    const big = '{"a":"' + 'x'.repeat(3 * 1024 * 1024) + '"}'
+    const parse = vi.spyOn(JSON, 'parse')
+    const d = decodeBody(response(big))
+    const longest = Math.max(0, ...parse.mock.calls.map(([t]) => String(t).length))
+    parse.mockRestore()
+    expect(d.large).toBe(true)
+    expect(longest).toBeLessThan(10_000)
   })
 })
 

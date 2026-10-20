@@ -4,11 +4,17 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { RequestEditor } from '../../src/renderer/src/components/RequestEditor'
 import { ResponseViewer } from '../../src/renderer/src/components/ResponseViewer'
+import { decodeBody } from '../../src/renderer/src/lib/body'
 import { initialState, useApp } from '../../src/renderer/src/state/store'
 import type { HttpResponse, SendResult } from '../../src/shared/types'
 import { collectionTree, folderNode, installApi, REQUEST_PATH, requestNode } from './helpers'
 
 // CodeMirror needs real layout; a textarea stands in for it here (tests/renderer/codeEditor.test.tsx covers the real one).
+vi.mock('../../src/renderer/src/lib/body', async (importActual) => {
+  const actual = await importActual<typeof import('../../src/renderer/src/lib/body')>()
+  return { ...actual, decodeBody: vi.fn(actual.decodeBody) }
+})
+
 vi.mock('../../src/renderer/src/components/CodeEditor', () => ({
   CodeEditor: (p: { value: string; language: string; label?: string; readOnly?: boolean }) => (
     <textarea
@@ -128,18 +134,24 @@ describe('response summary', () => {
     expect(screen.getByText(`${status} X`)).toHaveClass(cls)
   })
 
-  it('shows redirects and the final url only when relevant', () => {
+  it('shows the final url only after redirects, regardless of the draft', () => {
+    useApp.setState({
+      drafts: { [REQUEST_PATH]: { ...requestNode(REQUEST_PATH, 'x').request, url: '{{baseUrl}}/x' } },
+    })
+    show(ok('', 'text/plain', { redirects: 0, finalUrl: 'https://example.com/x' }))
+    const first = render(<ResponseViewer path={REQUEST_PATH} />)
+    expect(screen.queryByText('https://example.com/x')).not.toBeInTheDocument()
+    expect(screen.queryByText(/redirect/)).not.toBeInTheDocument()
+    first.unmount()
+
     show(ok('', 'text/plain', { redirects: 2, finalUrl: 'https://example.com/final' }))
-    const { unmount } = render(<ResponseViewer path={REQUEST_PATH} />)
+    render(<ResponseViewer path={REQUEST_PATH} />)
     expect(screen.getByText('2 redirects')).toBeInTheDocument()
     expect(screen.getByText('https://example.com/final')).toBeInTheDocument()
-    unmount()
-
-    useApp.setState({
-      drafts: { [REQUEST_PATH]: { ...requestNode(REQUEST_PATH, 'x').request, url: 'https://example.com/final' } },
+    act(() => {
+      useApp.getState().editDraft(REQUEST_PATH, (r) => ({ ...r, url: 'https://elsewhere.test' }))
     })
-    render(<ResponseViewer path={REQUEST_PATH} />)
-    expect(screen.queryByText('https://example.com/final')).not.toBeInTheDocument()
+    expect(screen.getByText('https://example.com/final')).toBeInTheDocument()
   })
 })
 
@@ -323,6 +335,77 @@ describe('save body as file', () => {
     expect(document.querySelector('a[download]')).toBeNull()
     Reflect.deleteProperty(URL, 'createObjectURL')
     Reflect.deleteProperty(URL, 'revokeObjectURL')
+  })
+})
+
+describe('save body details', () => {
+  afterEach(() => {
+    Reflect.deleteProperty(URL, 'createObjectURL')
+    Reflect.deleteProperty(URL, 'revokeObjectURL')
+  })
+
+  it('does not decode the body again and takes the extension from the content type', () => {
+    const created: Blob[] = []
+    Object.assign(URL, { createObjectURL: (b: Blob) => (created.push(b), 'blob:x'), revokeObjectURL: vi.fn() })
+    let name = ''
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      name = this.download
+    })
+    show(ok('x'.repeat(3 * 1024 * 1024), 'application/json'))
+    render(<ResponseViewer path={REQUEST_PATH} />)
+    vi.mocked(decodeBody).mockClear()
+    fireEvent.click(screen.getByRole('button', { name: 'Save body as file' }))
+    expect(decodeBody).not.toHaveBeenCalled()
+    expect(name).toBe('response.json')
+    expect(created[0]!.type).toBe('application/json')
+  })
+
+  it('revokes the object URL even when the click throws', async () => {
+    const revokeObjectURL = vi.fn()
+    Object.assign(URL, { createObjectURL: () => 'blob:y', revokeObjectURL })
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {
+      throw new Error('click failed')
+    })
+    const swallow = (e: ErrorEvent): void => e.preventDefault()
+    window.addEventListener('error', swallow)
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    show(ok('x'))
+    render(<ResponseViewer path={REQUEST_PATH} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Save body as file' }))
+    window.removeEventListener('error', swallow)
+    await waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith('blob:y'))
+    expect(document.querySelector('a[download]')).toBeNull()
+  })
+})
+
+describe('html preview policy', () => {
+  const POLICY =
+    '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:">'
+
+  function previewDoc(html: string): string {
+    show(ok(html, 'text/html'))
+    const { container } = render(<ResponseViewer path={REQUEST_PATH} />)
+    fireEvent.click(screen.getByRole('radio', { name: 'Preview' }))
+    return container.querySelector('iframe')!.getAttribute('srcdoc')!
+  }
+
+  it('puts the policy first and keeps the response markup', () => {
+    const doc = previewDoc('<h1>Hi</h1><img src="https://evil.test/x.png">')
+    expect(doc.startsWith(POLICY)).toBe(true)
+    expect(doc).toContain('<h1>Hi</h1>')
+  })
+
+  it('cannot be undone by a response that closes the head or brings its own meta', () => {
+    const doc = previewDoc(
+      '<html><head></head><meta http-equiv="Content-Security-Policy" content="default-src *"><body>x</body></html>',
+    )
+    expect(doc.startsWith(POLICY)).toBe(true)
+    expect(doc.indexOf(POLICY)).toBe(0)
+  })
+
+  it('keeps a leading doctype in front so the document stays in standards mode', () => {
+    const doc = previewDoc('<!DOCTYPE html><html><body>x</body></html>')
+    expect(doc.startsWith('<!DOCTYPE html>' + POLICY)).toBe(true)
   })
 })
 
