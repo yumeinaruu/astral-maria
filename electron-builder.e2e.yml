@@ -1,0 +1,12 @@
+# Packaged smoke-test build ONLY (`npm run package:e2e`); never ship it.
+# Playwright's Electron driver attaches through the Node inspector, which the production fuses in
+# electron-builder.yml disable, so this build keeps Electron's default fuses. Everything else is the same.
+extends: electron-builder.yml
+directories:
+  output: release-e2e
+electronFuses: null
+mac:
+  identity: null
+  category: public.app-category.developer-tools
+  target:
+    - dir

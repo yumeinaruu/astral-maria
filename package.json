@@ -15,6 +15,7 @@
     "typecheck": "tsc -b",
     "e2e": "npm run build && playwright test",
     "package": "npm run build && electron-builder --mac --dir",
+    "package:e2e": "npm run build && electron-builder --mac --dir --config electron-builder.e2e.yml",
     "package:dmg": "npm run build && electron-builder --mac dmg"
   },
   "devDependencies": {

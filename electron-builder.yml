@@ -5,6 +5,16 @@ directories:
 files:
   - out/**
   - package.json
+# Production fuses: no ELECTRON_RUN_AS_NODE, NODE_OPTIONS or --inspect, and only the integrity-checked app.asar is loaded.
+# The packaged e2e run needs the inspector, so it builds with electron-builder.e2e.yml instead (`npm run package:e2e`).
+electronFuses:
+  runAsNode: false
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true
+  # The build is unsigned (identity: null), so the ad-hoc signature is redone after the fuses are flipped.
+  resetAdHocDarwinSignature: true
 mac:
   identity: null
   category: public.app-category.developer-tools

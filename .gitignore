@@ -6,5 +6,6 @@ dist
 .superpowers
 *.tsbuildinfo
 release
+release-e2e
 test-results
 playwright-report

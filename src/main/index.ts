@@ -1,18 +1,29 @@
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, session } from 'electron'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { API_METHODS, channelName, FLUSH_REQUEST_CHANNEL } from '../shared/api'
 import { createApi } from './api'
 import { FlushCoordinator, interceptOnce, OperationTracker } from './flushGuard'
 import { createSecretCipher } from './secretCipher'
-import { isAllowedRendererUrl } from './security'
+import { devServerUrlFor, isAllowedRendererUrl, isE2eAllowed } from './security'
+
+/** The e2e hooks below are honoured only for a test run on a temp workspace with its own user-data folder. */
+const e2eWorkspace = isE2eAllowed({
+  isPackaged: app.isPackaged,
+  nodeEnv: process.env.NODE_ENV,
+  workspace: process.env.ASTRAL_E2E_WORKSPACE,
+  userDataArgPresent: process.argv.some((a) => a === '--user-data-dir' || a.startsWith('--user-data-dir=')),
+  tmpdir: tmpdir(),
+})
+  ? process.env.ASTRAL_E2E_WORKSPACE
+  : undefined
 
 // E2E only: use Chromium's mock keychain so tests never prompt for, or touch, the real macOS Keychain.
 // Must run before the app is ready.
-if (process.env.NODE_ENV === 'test' && process.env.ASTRAL_E2E_WORKSPACE) {
-  app.commandLine.appendSwitch('use-mock-keychain')
-}
+if (e2eWorkspace) app.commandLine.appendSwitch('use-mock-keychain')
 
-const devServerUrl = process.env['ELECTRON_RENDERER_URL']
+/** A packaged build always loads its own files: a renderer URL from the environment is a development feature only. */
+const devServerUrl = devServerUrlFor({ isPackaged: app.isPackaged, rendererUrl: process.env['ELECTRON_RENDERER_URL'] })
 
 /** How long a quit or window close waits for the renderer to report its drafts written. */
 const FLUSH_TIMEOUT_MS = 3000
@@ -68,7 +79,7 @@ function createWindow(): void {
 
 async function pickDirectory(): Promise<string | null> {
   // E2E hook: the native dialog cannot be driven by Playwright, so tests supply the folder via the environment.
-  if (process.env.NODE_ENV === 'test' && process.env.ASTRAL_E2E_WORKSPACE) return process.env.ASTRAL_E2E_WORKSPACE
+  if (e2eWorkspace) return e2eWorkspace
   const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
   return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0]
 }
