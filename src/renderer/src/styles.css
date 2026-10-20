@@ -1067,7 +1067,7 @@ input[type='radio'] {
   border-radius: var(--radius-default);
 }
 
-.tree-item:hover > .tree-row {
+.tree-row:hover {
   background: var(--highlight-row-hover);
 }
 
@@ -1133,7 +1133,7 @@ input[type='radio'] {
   opacity: 0;
 }
 
-.tree-item:hover > .tree-row > .row-menu,
+.tree-row:hover > .row-menu,
 .tree-item.focused > .tree-row > .row-menu,
 .tree-item.active > .tree-row > .row-menu,
 .env-row:hover .row-menu,
