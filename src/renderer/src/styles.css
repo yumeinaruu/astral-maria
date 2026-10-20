@@ -225,10 +225,26 @@ p {
 }
 
 .main {
+  display: flex;
   flex: 1;
+  flex-direction: column;
   min-width: 0;
+  min-height: 0;
+}
+
+.empty-main {
   padding: var(--space-4);
-  overflow: auto;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 /* ---- banners ---- */
@@ -584,4 +600,241 @@ p {
 
 .code-editor .cm-editor {
   height: 100%;
+}
+
+/* ---- request tabs and editor ---- */
+
+.request-tabs {
+  display: flex;
+  flex: none;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sidebar);
+}
+
+.request-tab {
+  display: flex;
+  align-items: center;
+  flex: none;
+  max-width: 240px;
+  border-right: 1px solid var(--border);
+  border-bottom: 2px solid transparent;
+}
+
+.request-tab-active {
+  background: var(--bg);
+  border-bottom-color: var(--accent);
+}
+
+.request-tab-main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-2) 0 var(--space-2) var(--space-3);
+  font: inherit;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.request-tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.request-tab-close {
+  padding: 0 var(--space-2);
+  line-height: 1.6;
+}
+
+.dirty-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.request-panel {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.request-editor {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.request-pane {
+  display: flex;
+  flex: 3 1 0;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 0;
+  padding: var(--space-3) var(--space-4) 0;
+}
+
+/* Fixed split; the response viewer fills this slot. */
+.response-slot {
+  flex: 2 1 0;
+  min-height: 120px;
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--border);
+  overflow: auto;
+}
+
+.request-head,
+.url-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.request-title {
+  flex: 1;
+  font-weight: 600;
+  border-color: transparent;
+}
+
+.request-title:hover {
+  border-color: var(--border);
+}
+
+.save-status {
+  flex: none;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.save-status-failed {
+  color: var(--danger);
+}
+
+.method-select {
+  font: inherit;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  padding: var(--space-1) var(--space-2);
+  color: var(--m-other-fg);
+  background: var(--m-other-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.url-input {
+  flex: 1;
+}
+
+.section-tabs {
+  display: flex;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--border);
+}
+
+.section-tab {
+  font: inherit;
+  color: var(--text-muted);
+  padding: var(--space-1) var(--space-3);
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+
+.section-tab[aria-selected='true'] {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.section-panel {
+  flex: 1;
+  min-height: 0;
+  padding-bottom: var(--space-3);
+  overflow: auto;
+}
+
+.kv-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: var(--space-2);
+}
+
+.kv-table th {
+  padding: 0 var(--space-1) var(--space-1);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  text-align: left;
+  color: var(--text-muted);
+}
+
+.kv-table td {
+  padding: 2px var(--space-1);
+}
+
+.kv-check,
+.kv-remove {
+  width: 28px;
+  text-align: center;
+}
+
+.kv-input {
+  width: 100%;
+}
+
+.kv-disabled .kv-input {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.body-panel,
+.auth-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.body-editor {
+  height: 220px;
+}
+
+.radio-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.radio {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 480px;
+}
+
+.field-row > span {
+  flex: none;
+  width: 90px;
+  color: var(--text-muted);
+}
+
+.field-row > .text-input {
+  flex: 1;
+}
+
+.note {
+  margin: 0;
 }

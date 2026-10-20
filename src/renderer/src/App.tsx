@@ -1,4 +1,7 @@
+import { useEffect } from 'react'
 import { ErrorBanner } from './components/Banners'
+import { RequestEditor } from './components/RequestEditor'
+import { RequestTabs, tabDomId } from './components/RequestTabs'
 import { Sidebar } from './components/Sidebar'
 import { WorkspaceGate } from './components/WorkspaceGate'
 import { useApp } from './state/store'
@@ -6,6 +9,13 @@ import { useApp } from './state/store'
 export function App(): React.JSX.Element {
   const workspace = useApp((s) => s.workspace)
   const activePath = useApp((s) => s.activePath)
+
+  // Best effort: start any debounced save before the window goes away.
+  useEffect(() => {
+    const flush = (): void => useApp.getState().flushAllSaves()
+    window.addEventListener('beforeunload', flush)
+    return () => window.removeEventListener('beforeunload', flush)
+  }, [])
 
   if (!workspace) {
     return (
@@ -29,8 +39,16 @@ export function App(): React.JSX.Element {
       <div className="layout">
         <Sidebar />
         <main className="main">
-          {/* Task 10 replaces this placeholder with the request tabs and editor. */}
-          {activePath ? <p className="mono muted">{activePath}</p> : <p className="muted">Open a request</p>}
+          {activePath ? (
+            <>
+              <RequestTabs />
+              <div role="tabpanel" className="request-panel" aria-labelledby={tabDomId(activePath)}>
+                <RequestEditor key={activePath} path={activePath} />
+              </div>
+            </>
+          ) : (
+            <p className="muted empty-main">Open a request</p>
+          )}
         </main>
       </div>
     </div>
