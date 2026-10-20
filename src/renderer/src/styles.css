@@ -679,20 +679,38 @@ p {
 
 .request-pane {
   display: flex;
-  flex: 3 1 0;
+  flex: 1 1 0;
   flex-direction: column;
   gap: var(--space-2);
   min-height: 0;
   padding: var(--space-3) var(--space-4) 0;
 }
 
-/* Fixed split; the response viewer fills this slot. */
+/* The response viewer fills this slot; its height is set by the splitter. */
 .response-slot {
-  flex: 2 1 0;
-  min-height: 120px;
-  padding: var(--space-3) var(--space-4);
-  border-top: 1px solid var(--border);
+  display: flex;
+  flex: 0 0 40%;
+  flex-direction: column;
+  min-height: 0;
+  padding: var(--space-2) var(--space-4) var(--space-3);
   overflow: auto;
+}
+
+.splitter {
+  flex: none;
+  height: 5px;
+  background: var(--border);
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.splitter:hover,
+.splitter:focus-visible {
+  background: var(--accent);
+}
+
+.splitter:focus-visible {
+  outline: none;
 }
 
 .request-head,
@@ -841,4 +859,195 @@ p {
 
 .note {
   margin: 0;
+}
+
+/* ---- response viewer ---- */
+
+:root {
+  --st-2xx-fg: #0b6b2f;
+  --st-2xx-bg: #dff3e6;
+  --st-3xx-fg: #0f4fa8;
+  --st-3xx-bg: #dbe8fb;
+  --st-4xx-fg: #7a4300;
+  --st-4xx-bg: #fdebd0;
+  --st-5xx-fg: #a31b1b;
+  --st-5xx-bg: #fbe0e0;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --st-2xx-fg: #7fdc9d;
+    --st-2xx-bg: #12301f;
+    --st-3xx-fg: #8dbcff;
+    --st-3xx-bg: #11284a;
+    --st-4xx-fg: #f5b86a;
+    --st-4xx-bg: #3a2610;
+    --st-5xx-fg: #ff9a9a;
+    --st-5xx-bg: #421616;
+  }
+}
+
+.response-viewer {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 0;
+}
+
+.response-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+}
+
+.status-badge {
+  padding: 1px var(--space-2);
+  font-weight: 600;
+  border-radius: var(--radius);
+  color: var(--m-other-fg);
+  background: var(--m-other-bg);
+}
+
+.status-2xx {
+  color: var(--st-2xx-fg);
+  background: var(--st-2xx-bg);
+}
+
+.status-3xx {
+  color: var(--st-3xx-fg);
+  background: var(--st-3xx-bg);
+}
+
+.status-4xx {
+  color: var(--st-4xx-fg);
+  background: var(--st-4xx-bg);
+}
+
+.status-5xx {
+  color: var(--st-5xx-fg);
+  background: var(--st-5xx-bg);
+}
+
+.final-url {
+  overflow: hidden;
+  max-width: 100%;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+
+.response-panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+}
+
+.body-view {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 0;
+}
+
+.body-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.toolbar-spacer {
+  flex: 1;
+}
+
+.copy-note {
+  min-width: 0;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.copy-failed {
+  color: var(--danger);
+}
+
+.notice {
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-sm);
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  border-radius: var(--radius);
+}
+
+.response-editor {
+  flex: 1;
+  min-height: 80px;
+}
+
+.large-body {
+  flex: 1;
+  min-height: 80px;
+  margin: 0;
+  padding: var(--space-2);
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.html-preview {
+  flex: 1;
+  min-height: 120px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #ffffff;
+}
+
+.image-preview {
+  overflow: auto;
+}
+
+.image-preview img {
+  max-width: 100%;
+}
+
+.response-table td {
+  vertical-align: top;
+  word-break: break-all;
+}
+
+.cookie-attrs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+}
+
+.flag {
+  padding: 0 var(--space-1);
+  font-size: var(--text-xs);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.error-panel {
+  padding: var(--space-3);
+  background: var(--error-bg);
+  border: 1px solid var(--error-border);
+  border-radius: var(--radius);
+}
+
+.error-panel p {
+  margin: 0 0 var(--space-1);
+}
+
+.error-code {
+  font-weight: 600;
+  color: var(--danger);
 }

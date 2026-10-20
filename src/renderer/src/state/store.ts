@@ -19,6 +19,17 @@ export interface SaveStatus {
   error?: string
 }
 
+export type ResponseTab = 'body' | 'headers' | 'cookies'
+export type BodyMode = 'pretty' | 'raw' | 'preview'
+
+/** What the response viewer of a request shows; remembered for the session. */
+export interface ResponseView {
+  tab: ResponseTab
+  mode: BodyMode
+}
+
+export const DEFAULT_RESPONSE_VIEW: ResponseView = { tab: 'body', mode: 'pretty' }
+
 export interface ResponseEntry {
   state: 'idle' | 'sending' | 'done'
   result?: SendResult
@@ -44,6 +55,8 @@ export interface AppState {
   saves: Record<string, SaveStatus>
   /** The latest send per open request. */
   responses: Record<string, ResponseEntry>
+  /** The selected response tab and body mode per request; missing entries mean the defaults. */
+  responseViews: Record<string, ResponseView>
 }
 
 export interface AppActions {
@@ -68,6 +81,7 @@ export interface AppActions {
   flushAllSaves(): void
   send(path: string): Promise<void>
   cancelSend(): Promise<void>
+  setResponseView(path: string, patch: Partial<ResponseView>): void
   setActiveEnvironment(id: string | null): void
   setExpanded(path: string, expanded: boolean): void
   dismissError(): void
@@ -87,6 +101,7 @@ export function initialState(): AppState {
     drafts: {},
     saves: {},
     responses: {},
+    responseViews: {},
   }
 }
 
@@ -324,6 +339,7 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
       drafts: without(s.drafts, paths),
       saves: without(s.saves, paths),
       responses: without(s.responses, paths),
+      responseViews: without(s.responseViews, paths),
     }))
   }
 
@@ -341,6 +357,7 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
       drafts: remapKeys(s.drafts, from, to),
       saves: remapKeys(s.saves, from, to),
       responses: remapKeys(s.responses, from, to),
+      responseViews: remapKeys(s.responseViews, from, to),
     }))
   }
 
@@ -610,7 +627,14 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
       tickets.add(ticket)
       const started = epoch
       const collection = s.collections.find((c) => isWithin(path, c.path))
-      set((cur) => ({ responses: { ...cur.responses, [path]: { state: 'sending' } } }))
+      set((cur) => ({
+        responses: { ...cur.responses, [path]: { state: 'sending' } },
+        // A new send starts on the Body tab but keeps the chosen body mode.
+        responseViews: {
+          ...cur.responseViews,
+          [path]: { ...(cur.responseViews[path] ?? DEFAULT_RESPONSE_VIEW), tab: 'body' },
+        },
+      }))
       try {
         const result = await window.astral.http.send(draft, {
           collectionPath: collection?.path ?? null,
@@ -632,6 +656,14 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
       } catch (e) {
         fail(e)
       }
+    },
+    setResponseView(path, patch) {
+      set((s) => ({
+        responseViews: {
+          ...s.responseViews,
+          [path]: { ...(s.responseViews[path] ?? DEFAULT_RESPONSE_VIEW), ...patch },
+        },
+      }))
     },
     setActiveEnvironment: (id) => set({ activeEnvironmentId: id }),
     setExpanded(path, expanded) {

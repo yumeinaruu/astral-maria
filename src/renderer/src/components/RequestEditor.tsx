@@ -1,9 +1,10 @@
-import { useId, useState } from 'react'
+import { useId, useRef, useState } from 'react'
 import type { Auth, HttpMethod, RequestBody, RequestItem } from '../../../shared/types'
 import { composeUrl, splitUrl } from '../lib/url'
 import { useApp } from '../state/store'
 import { CodeEditor } from './CodeEditor'
 import { KeyValueTable } from './KeyValueTable'
+import { ResponseViewer } from './ResponseViewer'
 
 const METHODS: HttpMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
 const SECTIONS = ['Params', 'Headers', 'Body', 'Auth'] as const
@@ -59,6 +60,8 @@ export function RequestEditor({ path }: { path: string }): React.JSX.Element {
   const sending = useApp((s) => s.responses[path]?.state === 'sending')
   const [section, setSection] = useState<Section>('Params')
   const [typedUrl, setTypedUrl] = useState<string | null>(null)
+  const [responseShare, setShare] = useState(0.4)
+  const editorRef = useRef<HTMLDivElement>(null)
   const sectionId = useId()
 
   if (!draft) return <p className="muted editor-loading">Loading request…</p>
@@ -83,7 +86,7 @@ export function RequestEditor({ path }: { path: string }): React.JSX.Element {
   }
 
   return (
-    <div className="request-editor" onKeyDown={onKeyDown}>
+    <div className="request-editor" ref={editorRef} onKeyDown={onKeyDown}>
       <div className="request-pane">
         <div className="request-head">
           <input
@@ -174,11 +177,71 @@ export function RequestEditor({ path }: { path: string }): React.JSX.Element {
         </div>
       </div>
 
-      {/* Task 11 renders the response viewer here. */}
-      <section className="response-slot" aria-label="Response">
-        <p className="muted">Send the request to see the response.</p>
+      <Splitter value={responseShare} min={MIN_SHARE} max={MAX_SHARE} containerRef={editorRef} onChange={setShare} />
+      <section className="response-slot" aria-label="Response" style={{ flexBasis: `${responseShare * 100}%` }}>
+        <ResponseViewer path={path} />
       </section>
     </div>
+  )
+}
+
+const MIN_SHARE = 0.15
+const MAX_SHARE = 0.8
+const KEY_STEP = 0.05
+
+interface SplitterProps {
+  /** The share (0-1) of the editor height taken by the response area. */
+  value: number
+  min: number
+  max: number
+  containerRef: React.RefObject<HTMLDivElement | null>
+  onChange(value: number): void
+}
+
+/** The draggable and keyboard-resizable divider between the request editor and the response. */
+function Splitter({ value, min, max, containerRef, onChange }: SplitterProps): React.JSX.Element {
+  const clamp = (v: number): number => Math.min(max, Math.max(min, v))
+
+  function onPointerMove(e: React.PointerEvent): void {
+    if (!e.currentTarget.hasPointerCapture(e.pointerId)) return
+    const rect = containerRef.current?.getBoundingClientRect()
+    if (!rect || rect.height === 0) return
+    onChange(clamp((rect.bottom - e.clientY) / rect.height))
+  }
+
+  function onKeyDown(e: React.KeyboardEvent): void {
+    // The divider moves up when the response grows.
+    const next =
+      e.key === 'ArrowUp'
+        ? value + KEY_STEP
+        : e.key === 'ArrowDown'
+          ? value - KEY_STEP
+          : e.key === 'Home'
+            ? max
+            : e.key === 'End'
+              ? min
+              : null
+    if (next === null) return
+    e.preventDefault()
+    e.stopPropagation()
+    onChange(clamp(next))
+  }
+
+  return (
+    <div
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label="Resize response"
+      aria-valuenow={Math.round(value * 100)}
+      aria-valuemin={Math.round(min * 100)}
+      aria-valuemax={Math.round(max * 100)}
+      tabIndex={0}
+      className="splitter"
+      onPointerDown={(e) => e.currentTarget.setPointerCapture(e.pointerId)}
+      onPointerMove={onPointerMove}
+      onPointerUp={(e) => e.currentTarget.releasePointerCapture(e.pointerId)}
+      onKeyDown={onKeyDown}
+    />
   )
 }
 
