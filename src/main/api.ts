@@ -143,7 +143,8 @@ export function createApi(deps: ApiDeps): AstralApi {
       createCollection: async (name) => (await workspace()).collections.createCollection(name),
       createFolder: async (parentPath, name) => (await workspace()).collections.createFolder(parentPath, name),
       createRequest: async (parentPath, name) => (await workspace()).collections.createRequest(parentPath, name),
-      saveRequest: async (p, request) => (await workspace()).collections.saveRequest(p, request),
+      saveRequest: async (p, request, expectedRevision) =>
+        (await workspace()).collections.saveRequest(p, request, expectedRevision),
       rename: async (p, newName) => (await workspace()).collections.rename(p, newName),
       remove: async (p) => (await workspace()).collections.remove(p),
       move: async (p, newParentPath, index) => (await workspace()).collections.move(p, newParentPath, index),

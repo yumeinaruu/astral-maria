@@ -1,5 +1,5 @@
 import * as fs from 'node:fs/promises'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import * as path from 'node:path'
 
 export class CorruptFileError extends Error {
@@ -19,7 +19,24 @@ const CONFLICT_MARKER = /^(<<<<<<<|=======|>>>>>>>)/m
  * any of its content: a hand-edited `.local` file holds plain current values.
  */
 export async function readJson<T>(filePath: string, label: string = filePath): Promise<T> {
-  const text = await fs.readFile(filePath, 'utf8')
+  return parseJson<T>(await fs.readFile(filePath, 'utf8'), filePath, label)
+}
+
+/** The revision of a file: the sha256 (hex) of its bytes. */
+export function revisionOf(bytes: Buffer | string): string {
+  return createHash('sha256').update(bytes).digest('hex')
+}
+
+/** Like `readJson`, also returning the revision of the exact bytes that were parsed. */
+export async function readJsonWithRevision<T>(
+  filePath: string,
+  label: string = filePath
+): Promise<{ data: T; revision: string }> {
+  const bytes = await fs.readFile(filePath)
+  return { data: parseJson<T>(bytes.toString('utf8'), filePath, label), revision: revisionOf(bytes) }
+}
+
+function parseJson<T>(text: string, filePath: string, label: string): T {
   if (CONFLICT_MARKER.test(text)) {
     throw new CorruptFileError(filePath, `File contains merge conflict markers: ${label}`)
   }
@@ -169,11 +186,14 @@ export function jsonErrorOffset(text: string): number | null {
   }
 }
 
-export async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
+/** Writes `data` as JSON (temp file, then rename) and returns the revision of the written bytes. */
+export async function writeJsonAtomic(filePath: string, data: unknown): Promise<string> {
   const tmp = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${randomBytes(6).toString('hex')}.tmp`)
+  const text = JSON.stringify(data, null, 2) + '\n'
   try {
-    await fs.writeFile(tmp, JSON.stringify(data, null, 2) + '\n', 'utf8')
+    await fs.writeFile(tmp, text, 'utf8')
     await fs.rename(tmp, filePath)
+    return revisionOf(text)
   } catch (e) {
     await fs.rm(tmp, { force: true })
     throw e

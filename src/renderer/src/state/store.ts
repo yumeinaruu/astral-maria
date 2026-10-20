@@ -13,9 +13,12 @@ export interface OpenTab {
   path: string
 }
 
-/** Autosave status of a dirty draft; a path without an entry is saved. */
+/**
+ * Autosave status of a dirty draft; a path without an entry is saved. `conflict`: the file changed on disk since the
+ * draft's baseline was read; nothing is saved until the user picks Overwrite or Reload from disk.
+ */
 export interface SaveStatus {
-  state: 'saving' | 'failed'
+  state: 'saving' | 'failed' | 'conflict'
   error?: string
 }
 
@@ -83,6 +86,10 @@ export interface AppActions {
   flushSave(path: string): void
   /** Starts every debounced save immediately (window unload). */
   flushAllSaves(): void
+  /** Resolves a `conflict`: writes the draft over the file on disk. */
+  overwriteOnDisk(path: string): Promise<void>
+  /** Resolves a `conflict`: discards the draft and adopts the file on disk. */
+  reloadFromDisk(path: string): Promise<void>
   send(path: string): Promise<void>
   /** Cancels the send in flight for `path`, if any; sends of other tabs keep running. */
   cancelSend(path: string): Promise<void>
@@ -145,6 +152,24 @@ function requestsByPath(nodes: TreeNode[], into: Map<string, RequestItem>): Map<
   return into
 }
 
+function revisionsByPath(nodes: TreeNode[], into: Map<string, string>): Map<string, string> {
+  for (const node of nodes) {
+    if (node.kind === 'request') into.set(node.path, node.revision)
+    else revisionsByPath(node.children, into)
+  }
+  return into
+}
+
+function revisionFromTree(collections: CollectionTree[], path: string): string | undefined {
+  for (const c of collections) {
+    const found = revisionsByPath(c.children, new Map()).get(path)
+    if (found !== undefined) return found
+  }
+  return undefined
+}
+
+const CHANGED_ON_DISK = 'changed_on_disk'
+
 /** Re-keys a record whose keys are paths after `from` was renamed or moved to `to`. */
 function remapKeys<T>(record: Record<string, T>, from: string, to: string): Record<string, T> {
   return Object.fromEntries(Object.entries(record).map(([p, v]) => [remapPath(p, from, to), v]))
@@ -169,6 +194,10 @@ interface SaveEntry {
   /** The error of the last save of a closed tab; the entry (and its draft) is kept so reopening can recover it. */
   failed: string | null
   dropped: 'closed' | 'removed' | null
+  /** The last save found the file changed on disk; saving waits for Overwrite or Reload from disk. */
+  conflict: boolean
+  /** The next save writes without a revision check (Overwrite). */
+  overwrite: boolean
 }
 
 /** One in-flight send; `id` names it to the main process, `path` follows renames, `dead` marks a closed tab. */
@@ -214,6 +243,14 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
   const tickets = new Set<SendTicket>()
   /** Paths whose files a rename, move or delete is changing; saves below them wait until it is done. */
   let locks: string[] = []
+  /**
+   * The revision of the file each draft (open or still saving after its tab closed) is based on; sent with every save
+   * so a file changed on disk meanwhile is not overwritten. Updated from the tree while the draft is clean and by each
+   * successful save.
+   */
+  const revisions = new Map<string, string | undefined>()
+  /** Paths renamed or moved by the app itself: the next refresh takes their revision even if the draft is dirty. */
+  const adoptRevision = new Set<string>()
 
   function resetEditing(): void {
     for (const e of entries.values()) if (e.timer) clearTimeout(e.timer)
@@ -222,6 +259,8 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
     pending.clear()
     tickets.clear()
     locks = []
+    revisions.clear()
+    adoptRevision.clear()
   }
 
   function isLocked(path: string): boolean {
@@ -241,6 +280,8 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
         deferred: false,
         failed: null,
         dropped: null,
+        conflict: false,
+        overwrite: false,
       }
       entries.set(path, e)
     }
@@ -286,6 +327,8 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
       e.deferred = true
       return
     }
+    // Waits for the user's decision (Overwrite or Reload from disk); the status stays `conflict`.
+    if (e.conflict) return
     if (e.version === e.savedVersion) {
       // Nothing left to write: a stale failed/saving status of this path must not survive.
       if (e.dropped === null) setSave(e.path, null)
@@ -295,11 +338,31 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
     const version = e.version
     const started = epoch
     const path = e.path
+    const overwrite = e.overwrite
+    e.overwrite = false
     if (e.dropped === null) setSave(path, { state: 'saving' })
+    let revision: string | undefined
     try {
-      await window.astral.collections.saveRequest(path, draft)
+      const result = await window.astral.collections.saveRequest(
+        path,
+        draft,
+        overwrite ? undefined : revisions.get(path),
+      )
+      revision = typeof result === 'string' ? result : undefined
     } catch (err) {
       if (epoch !== started || droppedAs(e) === 'removed') return
+      if (messageOf(err).startsWith(CHANGED_ON_DISK)) {
+        e.conflict = true
+        if (droppedAs(e) === 'closed') {
+          e.failed = 'it was changed on disk'
+          set({ error: `Could not save ${e.path}: ${e.failed}` })
+        } else {
+          setSave(e.path, { state: 'conflict' })
+        }
+        return
+      }
+      // An Overwrite that failed for another reason is still an Overwrite when it is retried.
+      if (overwrite) e.overwrite = true
       if (droppedAs(e) === 'closed') {
         if (isGateError(err)) {
           fail(err)
@@ -315,6 +378,7 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
       return
     }
     if (epoch !== started || droppedAs(e) === 'removed') return
+    revisions.set(e.path, revision)
     if (droppedAs(e) === 'closed') {
       // Nobody watches this draft any more, but the tree must show what is on disk when the request is reopened.
       e.savedVersion = version
@@ -349,6 +413,7 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
         waiting.dropped = 'removed'
         pending.delete(p)
       }
+      if (reason === 'removed') revisions.delete(p)
     }
     for (const t of tickets) if (paths.includes(t.path)) t.dead = true
     set((s) => ({
@@ -369,6 +434,13 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
       }
     }
     for (const t of tickets) t.path = remapPath(t.path, from, to)
+    for (const [p, revision] of [...revisions]) {
+      if (!isWithin(p, from)) continue
+      revisions.delete(p)
+      revisions.set(remapPath(p, from, to), revision)
+    }
+    // A rename rewrites the request file (its name), so the old revision is stale; the refresh brings the new one.
+    for (const p of revisions.keys()) if (isWithin(p, to)) adoptRevision.add(p)
     set((s) => ({
       drafts: remapKeys(s.drafts, from, to),
       saves: remapKeys(s.saves, from, to),
@@ -503,7 +575,18 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
       if (mine !== refreshSeq || epoch !== started) return
       if (collections.status === 'fulfilled') {
         const saved = new Map<string, RequestItem>()
-        for (const c of collections.value.collections) requestsByPath(c.children, saved)
+        const onDisk = new Map<string, string>()
+        for (const c of collections.value.collections) {
+          requestsByPath(c.children, saved)
+          revisionsByPath(c.children, onDisk)
+        }
+        // A clean draft follows the disk, so its revision does too; a dirty one keeps the revision its edits are based on.
+        const unsaved = get().saves
+        for (const { path } of get().openTabs) {
+          if (onDisk.has(path) && (!unsaved[path] || adoptRevision.has(path))) revisions.set(path, onDisk.get(path))
+        }
+        for (const p of adoptRevision) if (onDisk.has(p)) revisions.set(p, onDisk.get(p))
+        adoptRevision.clear()
         const vanished = get()
           .openTabs.map((t) => t.path)
           .filter((p) => !saved.has(p))
@@ -620,14 +703,22 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
         revived.failed = null
         entries.set(path, revived)
       }
-      const baseline = get().drafts[path] ? null : (revived?.draft ?? requestFromTree(get().collections, path))
+      const fromTree = get().drafts[path] || revived ? null : requestFromTree(get().collections, path)
+      // A revived draft keeps the revision its edits are based on.
+      if (fromTree) revisions.set(path, revisionFromTree(get().collections, path))
+      const baseline = get().drafts[path] ? null : (revived?.draft ?? fromTree)
+      const revivedStatus: SaveStatus | null = !revived
+        ? null
+        : revived.conflict
+          ? { state: 'conflict' }
+          : failedWith !== null
+            ? { state: 'failed', error: failedWith }
+            : { state: 'saving' }
       set((s) => ({
         openTabs: s.openTabs.some((t) => t.path === path) ? s.openTabs : [...s.openTabs, { path }],
         activePath: path,
         drafts: baseline ? { ...s.drafts, [path]: baseline } : s.drafts,
-        saves: revived
-          ? { ...s.saves, [path]: failedWith !== null ? { state: 'failed', error: failedWith } : { state: 'saving' } }
-          : s.saves,
+        saves: revivedStatus ? { ...s.saves, [path]: revivedStatus } : s.saves,
       }))
     },
     closeTab(path) {
@@ -649,9 +740,10 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
       e.draft = next
       set((s) => ({
         drafts: { ...s.drafts, [path]: next },
-        saves: { ...s.saves, [path]: { state: 'saving' } },
+        // While in conflict nothing is saved automatically; the edit stays in the draft.
+        saves: e.conflict ? s.saves : { ...s.saves, [path]: { state: 'saving' } },
       }))
-      schedule(e)
+      if (!e.conflict) schedule(e)
     },
     saveNow(path) {
       const e = entries.get(path)
@@ -660,6 +752,26 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
     flushSave: flush,
     flushAllSaves() {
       for (const e of entries.values()) if (e.timer) void runSave(e)
+    },
+    overwriteOnDisk(path) {
+      const e = entries.get(path)
+      if (!e?.conflict) return Promise.resolve()
+      e.conflict = false
+      e.overwrite = true
+      setSave(path, { state: 'saving' })
+      return runSave(e)
+    },
+    async reloadFromDisk(path) {
+      const e = entries.get(path)
+      if (!e?.conflict) return
+      if (e.timer) clearTimeout(e.timer)
+      e.timer = null
+      e.conflict = false
+      e.overwrite = false
+      e.savedVersion = e.version
+      // Clean again, so the refresh replaces the draft with the file on disk and takes its revision.
+      setSave(path, null)
+      await get().refresh()
     },
 
     async send(path) {

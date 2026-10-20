@@ -116,6 +116,20 @@ describe('collections end to end', () => {
     expect(node.kind === 'request' && node.request.method).toBe('POST')
   })
 
+  it('passes the expected revision through and returns the new one', async () => {
+    const api = makeApi()
+    const dir = await newWorkspace(api)
+    const c = await api.collections.createCollection('C')
+    const r = await api.collections.createRequest(c.path, 'R')
+    const next = await api.collections.saveRequest(r.path, { ...r.request, url: 'one' }, r.revision)
+    const node = (await api.collections.list()).collections[0].children[0]
+    expect(node.kind === 'request' && node.revision).toBe(next)
+    await fs.writeFile(path.join(dir, r.path), JSON.stringify({ ...r.request, url: 'edited elsewhere' }))
+    await expect(api.collections.saveRequest(r.path, { ...r.request, url: 'two' }, next)).rejects.toThrow(
+      'changed_on_disk',
+    )
+  })
+
   it('stores environments through the same workspace', async () => {
     const api = makeApi()
     await newWorkspace(api)

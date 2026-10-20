@@ -47,6 +47,8 @@ export interface RequestNode {
   name: string
   path: string
   request: RequestItem
+  /** sha256 (hex) of the request file's bytes; passed back to `saveRequest` to detect changes made on disk. */
+  revision: string
 }
 
 export type TreeNode = FolderNode | RequestNode

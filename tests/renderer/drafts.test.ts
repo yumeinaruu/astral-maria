@@ -70,6 +70,7 @@ describe('drafts and autosave', () => {
     expect(api.collections.saveRequest).toHaveBeenCalledWith(
       REQUEST_PATH,
       expect.objectContaining({ url: 'http://ab' }),
+      `rev:${REQUEST_PATH}`,
     )
     expect(useApp.getState().saves[REQUEST_PATH]).toBeUndefined()
   })
@@ -88,9 +89,11 @@ describe('drafts and autosave', () => {
     first.resolve()
     await vi.advanceTimersByTimeAsync(0)
     expect(api.collections.saveRequest).toHaveBeenCalledTimes(2)
+    // The mocked first save resolved without a revision.
     expect(api.collections.saveRequest).toHaveBeenLastCalledWith(
       REQUEST_PATH,
       expect.objectContaining({ url: 'three' }),
+      undefined,
     )
     expect(useApp.getState().saves[REQUEST_PATH]).toBeUndefined()
   })
@@ -106,7 +109,11 @@ describe('drafts and autosave', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(useApp.getState().saves[REQUEST_PATH]).toBeDefined()
     await vi.advanceTimersByTimeAsync(500)
-    expect(api.collections.saveRequest).toHaveBeenLastCalledWith(REQUEST_PATH, expect.objectContaining({ url: 'two' }))
+    expect(api.collections.saveRequest).toHaveBeenLastCalledWith(
+      REQUEST_PATH,
+      expect.objectContaining({ url: 'two' }),
+      undefined,
+    )
     expect(useApp.getState().saves[REQUEST_PATH]).toBeUndefined()
   })
 
@@ -144,7 +151,11 @@ describe('drafts and autosave', () => {
     useApp.getState().openRequest(REQUEST_PATH)
     setUrl(REQUEST_PATH, 'one')
     useApp.getState().openRequest(OTHER_PATH)
-    expect(api.collections.saveRequest).toHaveBeenCalledWith(REQUEST_PATH, expect.objectContaining({ url: 'one' }))
+    expect(api.collections.saveRequest).toHaveBeenCalledWith(
+      REQUEST_PATH,
+      expect.objectContaining({ url: 'one' }),
+      `rev:${REQUEST_PATH}`,
+    )
     await vi.advanceTimersByTimeAsync(1000)
     expect(api.collections.saveRequest).toHaveBeenCalledTimes(1)
   })
@@ -153,7 +164,11 @@ describe('drafts and autosave', () => {
     const api = await setup()
     setUrl(REQUEST_PATH, 'one')
     useApp.getState().closeTab(REQUEST_PATH)
-    expect(api.collections.saveRequest).toHaveBeenCalledWith(REQUEST_PATH, expect.objectContaining({ url: 'one' }))
+    expect(api.collections.saveRequest).toHaveBeenCalledWith(
+      REQUEST_PATH,
+      expect.objectContaining({ url: 'one' }),
+      `rev:${REQUEST_PATH}`,
+    )
     expect(useApp.getState().drafts[REQUEST_PATH]).toBeUndefined()
     await vi.advanceTimersByTimeAsync(0)
     expect(useApp.getState().saves[REQUEST_PATH]).toBeUndefined()
@@ -200,7 +215,11 @@ describe('renames, moves and deletes', () => {
     await done
     await vi.advanceTimersByTimeAsync(600)
     expect(api.collections.saveRequest).toHaveBeenCalledTimes(1)
-    expect(api.collections.saveRequest).toHaveBeenCalledWith(NEW_PATH, expect.objectContaining({ url: 'one' }))
+    expect(api.collections.saveRequest).toHaveBeenCalledWith(
+      NEW_PATH,
+      expect.objectContaining({ url: 'one' }),
+      `rev:${NEW_PATH}`,
+    )
     expect(useApp.getState().drafts[REQUEST_PATH]).toBeUndefined()
     expect(draft(NEW_PATH).url).toBe('one')
     expect(useApp.getState().activePath).toBe(NEW_PATH)
@@ -213,7 +232,7 @@ describe('renames, moves and deletes', () => {
     await useApp.getState().move(REQUEST_PATH, 'collections/shop', 0)
     await vi.advanceTimersByTimeAsync(600)
     expect(api.collections.saveRequest).toHaveBeenCalledTimes(1)
-    expect(api.collections.saveRequest).toHaveBeenCalledWith(NEW_PATH, expect.anything())
+    expect(api.collections.saveRequest).toHaveBeenCalledWith(NEW_PATH, expect.anything(), `rev:${NEW_PATH}`)
   })
 
   it('resumes saving to the old path when the rename fails', async () => {
@@ -221,7 +240,11 @@ describe('renames, moves and deletes', () => {
     setUrl(REQUEST_PATH, 'one')
     await useApp.getState().rename(REQUEST_PATH, 'Renamed')
     await vi.advanceTimersByTimeAsync(600)
-    expect(api.collections.saveRequest).toHaveBeenCalledWith(REQUEST_PATH, expect.objectContaining({ url: 'one' }))
+    expect(api.collections.saveRequest).toHaveBeenCalledWith(
+      REQUEST_PATH,
+      expect.objectContaining({ url: 'one' }),
+      `rev:${REQUEST_PATH}`,
+    )
   })
 
   it('waits for an in-flight save before renaming', async () => {
@@ -290,6 +313,137 @@ describe('external changes', () => {
     await useApp.getState().refresh()
     expect(draft().url).toBe('mine')
     expect(draft().name).toBe('Renamed outside')
+  })
+})
+
+describe('changed on disk (revisions)', () => {
+  const REV = `rev:${REQUEST_PATH}`
+  function external(url: string, revision: string) {
+    const node = requestNode(REQUEST_PATH, 'Get users')
+    node.request = { ...node.request, url }
+    node.revision = revision
+    return treeWith(node, requestNode(OTHER_PATH, 'Other'))
+  }
+  const changedOnDisk = () => Promise.reject(new Error('changed_on_disk'))
+
+  it('sends the revision from the tree, then the one returned by each save', async () => {
+    const api = await setup()
+    api.collections.saveRequest.mockResolvedValueOnce('rev-2').mockResolvedValueOnce('rev-3')
+    // The refresh after a save lists what is on disk now.
+    api.collections.list.mockResolvedValue(external('one', 'rev-2'))
+    setUrl(REQUEST_PATH, 'one')
+    await vi.advanceTimersByTimeAsync(500)
+    expect(api.collections.saveRequest).toHaveBeenLastCalledWith(REQUEST_PATH, expect.anything(), REV)
+    setUrl(REQUEST_PATH, 'two')
+    await vi.advanceTimersByTimeAsync(500)
+    expect(api.collections.saveRequest).toHaveBeenLastCalledWith(REQUEST_PATH, expect.anything(), 'rev-2')
+  })
+
+  it('adopts the revision of a clean draft that follows an external change', async () => {
+    const api = await setup()
+    api.collections.list.mockResolvedValue(external('http://external', 'rev-ext'))
+    await useApp.getState().refresh()
+    setUrl(REQUEST_PATH, 'mine')
+    await vi.advanceTimersByTimeAsync(500)
+    expect(api.collections.saveRequest).toHaveBeenLastCalledWith(
+      REQUEST_PATH,
+      expect.objectContaining({ url: 'mine' }),
+      'rev-ext',
+    )
+  })
+
+  it('keeps the old revision for a dirty draft, so its save reports the conflict and keeps the draft', async () => {
+    const api = await setup()
+    api.collections.saveRequest.mockImplementation((_p: string, _r: RequestItem, rev?: string) =>
+      rev === REV ? changedOnDisk() : Promise.resolve('rev-x'),
+    )
+    setUrl(REQUEST_PATH, 'mine')
+    api.collections.list.mockResolvedValue(external('http://external', 'rev-ext'))
+    await useApp.getState().refresh()
+    await vi.advanceTimersByTimeAsync(500)
+    expect(api.collections.saveRequest).toHaveBeenCalledWith(REQUEST_PATH, expect.anything(), REV)
+    expect(useApp.getState().saves[REQUEST_PATH]).toEqual({ state: 'conflict' })
+    expect(draft().url).toBe('mine')
+    expect(useApp.getState().error).toBeNull()
+  })
+
+  it('does not autosave, flush or saveNow while in conflict; edits stay in the draft', async () => {
+    const api = await setup()
+    api.collections.saveRequest.mockImplementationOnce(changedOnDisk)
+    setUrl(REQUEST_PATH, 'mine')
+    await vi.advanceTimersByTimeAsync(500)
+    expect(useApp.getState().saves[REQUEST_PATH]).toEqual({ state: 'conflict' })
+    setUrl(REQUEST_PATH, 'mine 2')
+    expect(useApp.getState().saves[REQUEST_PATH]).toEqual({ state: 'conflict' })
+    await vi.advanceTimersByTimeAsync(2000)
+    useApp.getState().flushSave(REQUEST_PATH)
+    useApp.getState().flushAllSaves()
+    await useApp.getState().saveNow(REQUEST_PATH)
+    expect(api.collections.saveRequest).toHaveBeenCalledTimes(1)
+    expect(draft().url).toBe('mine 2')
+  })
+
+  it('Overwrite saves the draft without a revision and clears the conflict', async () => {
+    const api = await setup()
+    api.collections.saveRequest.mockImplementationOnce(changedOnDisk).mockResolvedValueOnce('rev-over')
+    setUrl(REQUEST_PATH, 'mine')
+    await vi.advanceTimersByTimeAsync(500)
+    await useApp.getState().overwriteOnDisk(REQUEST_PATH)
+    expect(api.collections.saveRequest).toHaveBeenCalledTimes(2)
+    expect(api.collections.saveRequest.mock.calls[1]).toEqual([
+      REQUEST_PATH,
+      expect.objectContaining({ url: 'mine' }),
+      undefined,
+    ])
+    expect(useApp.getState().saves[REQUEST_PATH]).toBeUndefined()
+    // Later saves are checked against the overwritten revision again.
+    api.collections.list.mockResolvedValue(external('mine', 'rev-over'))
+    await useApp.getState().refresh()
+    setUrl(REQUEST_PATH, 'after')
+    await vi.advanceTimersByTimeAsync(500)
+    expect(api.collections.saveRequest).toHaveBeenLastCalledWith(REQUEST_PATH, expect.anything(), 'rev-over')
+  })
+
+  it('Reload from disk discards the draft and adopts the file on disk and its revision', async () => {
+    const api = await setup()
+    api.collections.saveRequest.mockImplementationOnce(changedOnDisk)
+    setUrl(REQUEST_PATH, 'mine')
+    await vi.advanceTimersByTimeAsync(500)
+    api.collections.list.mockResolvedValue(external('http://resolved', 'rev-resolved'))
+    await useApp.getState().reloadFromDisk(REQUEST_PATH)
+    expect(draft().url).toBe('http://resolved')
+    expect(useApp.getState().saves[REQUEST_PATH]).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(api.collections.saveRequest).toHaveBeenCalledTimes(1)
+    setUrl(REQUEST_PATH, 'next')
+    await vi.advanceTimersByTimeAsync(500)
+    expect(api.collections.saveRequest).toHaveBeenLastCalledWith(REQUEST_PATH, expect.anything(), 'rev-resolved')
+  })
+
+  it('does not report a false conflict for an edit pending across a rename of the request', async () => {
+    const NEW_PATH = 'collections/shop/users/renamed.request.json'
+    const api = await setup({ collections: { rename: vi.fn().mockResolvedValue(NEW_PATH) } })
+    const node = requestNode(NEW_PATH, 'Renamed')
+    node.revision = 'rev-after-rename'
+    api.collections.list.mockResolvedValue(treeWith(node, requestNode(OTHER_PATH, 'Other')))
+    setUrl(REQUEST_PATH, 'one')
+    await useApp.getState().rename(REQUEST_PATH, 'Renamed')
+    await vi.advanceTimersByTimeAsync(600)
+    expect(api.collections.saveRequest).toHaveBeenCalledWith(NEW_PATH, expect.anything(), 'rev-after-rename')
+  })
+
+  it('keeps the conflict of a closed tab: an error is shown and reopening shows the conflict', async () => {
+    const api = await setup()
+    api.collections.saveRequest.mockImplementationOnce(changedOnDisk)
+    setUrl(REQUEST_PATH, 'mine')
+    useApp.getState().closeTab(REQUEST_PATH)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(useApp.getState().error).toBe(`Could not save ${REQUEST_PATH}: it was changed on disk`)
+    useApp.getState().openRequest(REQUEST_PATH)
+    expect(draft().url).toBe('mine')
+    expect(useApp.getState().saves[REQUEST_PATH]).toEqual({ state: 'conflict' })
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(api.collections.saveRequest).toHaveBeenCalledTimes(1)
   })
 })
 

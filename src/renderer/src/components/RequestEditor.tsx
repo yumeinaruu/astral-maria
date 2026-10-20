@@ -111,16 +111,32 @@ export function RequestEditor({ path }: { path: string }): React.JSX.Element {
           />
           <span
             role="status"
-            className={`save-status${save?.state === 'failed' ? ' save-status-failed' : ''}`}
+            className={`save-status${save?.state === 'failed' || save?.state === 'conflict' ? ' save-status-failed' : ''}`}
             title={save?.error}
           >
             {save === undefined
               ? 'Saved'
               : save.state === 'failed'
                 ? `Save failed: ${save.error ?? 'unknown error'}`
-                : 'Saving…'}
+                : save.state === 'conflict'
+                  ? 'Not saved: changed on disk'
+                  : 'Saving…'}
           </span>
         </div>
+        {save?.state === 'conflict' && (
+          <div className="banner banner-error conflict-bar" role="alert" aria-label="Changed on disk">
+            <span className="banner-text">
+              <strong>Changed on disk.</strong> This request&apos;s file was changed outside Astral Maria after it was
+              opened, so your edits were not saved.
+            </span>
+            <button type="button" className="btn" onClick={() => void store().overwriteOnDisk(path)}>
+              Overwrite
+            </button>
+            <button type="button" className="btn" onClick={() => void store().reloadFromDisk(path)}>
+              Reload from disk
+            </button>
+          </div>
+        )}
 
         <div className="url-row">
           <select

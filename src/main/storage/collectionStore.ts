@@ -11,7 +11,7 @@ import type {
   RequestNode,
   TreeNode
 } from '../../shared/types'
-import { CorruptFileError, readJson, resolveInside, writeJsonAtomic } from './fsJson'
+import { CorruptFileError, readJson, readJsonWithRevision, resolveInside, writeJsonAtomic } from './fsJson'
 import { slugify, uniqueSlug } from './slug'
 
 const COLLECTIONS = 'collections'
@@ -229,25 +229,32 @@ export class CollectionStore {
         auth: { type: 'inherit' }
       }
       const file = `${slug}${REQUEST_SUFFIX}`
-      await writeJsonAtomic(path.join(parent.abs, file), request)
+      const revision = await writeJsonAtomic(path.join(parent.abs, file), request)
       await this.writeOrder(parent, [...order, file])
       return {
         kind: 'request',
         id: request.id,
         name,
         path: `${parent.rel}/${file}`,
-        request
+        request,
+        revision
       }
     })
   }
 
-  saveRequest(requestPath: string, request: RequestItem): Promise<void> {
+  /**
+   * Writes `request` and returns the new revision. With `expectedRevision`, rejects with `changed_on_disk` (writing
+   * nothing) unless the file still has that revision; without it, overwrites whatever parses.
+   */
+  saveRequest(requestPath: string, request: RequestItem, expectedRevision?: string): Promise<string> {
     return this.exclusive(async () => {
       const t = this.target(requestPath)
       if (!isRequestFile(path.posix.basename(t.rel))) throw new Error('not_a_request_path')
+      if (expectedRevision !== undefined && typeof expectedRevision !== 'string') throw new Error('invalid_revision')
       // Parsing first guarantees a corrupt (e.g. merge-conflicted) file is never overwritten.
-      await readJson(t.abs, t.rel)
-      await writeJsonAtomic(t.abs, request)
+      const { revision } = await readJsonWithRevision(t.abs, t.rel)
+      if (expectedRevision !== undefined && revision !== expectedRevision) throw new Error('changed_on_disk')
+      return writeJsonAtomic(t.abs, request)
     })
   }
 
@@ -413,13 +420,15 @@ export class CollectionStore {
       const rel = `${dirRel}/${name}`
       if (isRequestFile(name)) {
         try {
-          const request = checkRequest(await readJson<unknown>(path.join(this.root, rel), rel), rel)
+          const { data, revision } = await readJsonWithRevision<unknown>(path.join(this.root, rel), rel)
+          const request = checkRequest(data, rel)
           nodes.push({
             kind: 'request',
             id: request.id,
             name: request.name,
             path: rel,
-            request
+            request,
+            revision
           })
         } catch (e) {
           errors.push({ path: rel, message: errorMessage(e) })

@@ -21,7 +21,11 @@ export interface AstralApi {
     createCollection(name: string): Promise<CollectionTree>
     createFolder(parentPath: string, name: string): Promise<FolderNode>
     createRequest(parentPath: string, name: string): Promise<RequestNode>
-    saveRequest(path: string, request: RequestItem): Promise<void>
+    /**
+     * Writes the request and resolves with its new revision. With `expectedRevision` it rejects with
+     * `changed_on_disk` (writing nothing) if the file no longer has that revision.
+     */
+    saveRequest(path: string, request: RequestItem, expectedRevision?: string): Promise<string>
     rename(path: string, newName: string): Promise<string>
     remove(path: string): Promise<void>
     move(path: string, newParentPath: string, index: number): Promise<string>

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { createHash } from 'node:crypto'
 import * as fsp from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -263,6 +264,79 @@ describe('saveRequest', () => {
     await store.saveRequest(r.path, edited)
     expect(JSON.parse(await read(r.path))).toEqual(edited)
     expect((await read(r.path)).endsWith('\n')).toBe(true)
+  })
+})
+
+describe('revisions', () => {
+  const sha = (text: string) => createHash('sha256').update(text).digest('hex')
+  const listed = async (p: string) => {
+    const find = (nodes: (FolderNode | RequestNode)[]): RequestNode | undefined => {
+      for (const n of nodes) {
+        if (n.kind === 'request' && n.path === p) return n
+        if (n.kind === 'folder') {
+          const hit = find(n.children)
+          if (hit) return hit
+        }
+      }
+      return undefined
+    }
+    for (const c of (await store.list()).collections) {
+      const hit = find(c.children)
+      if (hit) return hit
+    }
+    throw new Error(`not listed: ${p}`)
+  }
+
+  it('lists each request with the sha256 of its file bytes, also on create', async () => {
+    const col = await store.createCollection('C')
+    const r = await store.createRequest(col.path, 'A')
+    expect(r.revision).toBe(sha(await read(r.path)))
+    expect((await listed(r.path)).revision).toBe(r.revision)
+    await fsp.writeFile(path.join(dir, r.path), JSON.stringify({ ...r.request, url: 'x' }))
+    expect((await listed(r.path)).revision).toBe(sha(await read(r.path)))
+  })
+
+  it('saves when the expected revision matches and returns the new one', async () => {
+    const col = await store.createCollection('C')
+    const r = await store.createRequest(col.path, 'A')
+    const next = await store.saveRequest(r.path, { ...r.request, url: 'one' }, r.revision)
+    expect(next).toBe(sha(await read(r.path)))
+    expect(next).not.toBe(r.revision)
+    const third = await store.saveRequest(r.path, { ...r.request, url: 'two' }, next)
+    expect(third).toBe(sha(await read(r.path)))
+  })
+
+  it('rejects with changed_on_disk and writes nothing when the file changed meanwhile', async () => {
+    const col = await store.createCollection('C')
+    const r = await store.createRequest(col.path, 'A')
+    const resolved = JSON.stringify({ ...r.request, url: 'resolved by hand' }, null, 2)
+    await fsp.writeFile(path.join(dir, r.path), resolved)
+    await expect(store.saveRequest(r.path, { ...r.request, url: 'stale' }, r.revision)).rejects.toThrow(
+      'changed_on_disk'
+    )
+    expect(await read(r.path)).toBe(resolved)
+  })
+
+  it('overwrites without an expected revision', async () => {
+    const col = await store.createCollection('C')
+    const r = await store.createRequest(col.path, 'A')
+    await fsp.writeFile(path.join(dir, r.path), JSON.stringify({ ...r.request, url: 'external' }))
+    await store.saveRequest(r.path, { ...r.request, url: 'mine' })
+    expect(JSON.parse(await read(r.path)).url).toBe('mine')
+  })
+
+  it('still reports an unparsable file as corrupt, whatever the revision', async () => {
+    const col = await store.createCollection('C')
+    const r = await store.createRequest(col.path, 'A')
+    await fsp.writeFile(path.join(dir, r.path), '<<<<<<< HEAD\n')
+    await expect(store.saveRequest(r.path, r.request, r.revision)).rejects.toBeInstanceOf(CorruptFileError)
+    await expect(store.saveRequest(r.path, r.request, sha('<<<<<<< HEAD\n'))).rejects.toBeInstanceOf(CorruptFileError)
+  })
+
+  it('rejects an expected revision that is not a string', async () => {
+    const col = await store.createCollection('C')
+    const r = await store.createRequest(col.path, 'A')
+    await expect(store.saveRequest(r.path, r.request, 5 as unknown as string)).rejects.toThrow('invalid_revision')
   })
 })
 

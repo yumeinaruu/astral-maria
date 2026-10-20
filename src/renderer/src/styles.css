@@ -1226,3 +1226,8 @@ p {
   font-size: var(--text-sm);
   color: var(--text-muted);
 }
+
+.conflict-bar {
+  align-items: center;
+  margin-top: var(--space-2);
+}

@@ -20,6 +20,7 @@ export function requestNode(path: string, name: string, method: RequestNode['req
       body: { mode: 'none' },
       auth: { type: 'none' },
     },
+    revision: `rev:${path}`,
   }
 }
 
@@ -59,7 +60,7 @@ export function installApi(overrides: Partial<{ [G in keyof AstralApi]: Partial<
       createCollection: vi.fn().mockResolvedValue(collectionTree('collections/new', 'New')),
       createFolder: vi.fn().mockResolvedValue(folderNode('collections/shop/f', 'f')),
       createRequest: vi.fn().mockResolvedValue(requestNode('collections/shop/r.request.json', 'r')),
-      saveRequest: vi.fn().mockResolvedValue(undefined),
+      saveRequest: vi.fn().mockResolvedValue('rev-saved'),
       rename: vi.fn().mockResolvedValue('collections/renamed'),
       remove: vi.fn().mockResolvedValue(undefined),
       move: vi.fn().mockResolvedValue('collections/moved'),

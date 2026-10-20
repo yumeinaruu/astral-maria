@@ -20,7 +20,8 @@ export function RequestTabs(): React.JSX.Element {
   const [closing, setClosing] = useState<string | null>(null)
 
   function close(path: string): void {
-    if (saves[path]?.state === 'failed') setClosing(path)
+    const state = saves[path]?.state
+    if (state === 'failed' || state === 'conflict') setClosing(path)
     else useApp.getState().closeTab(path)
   }
 
@@ -93,7 +94,11 @@ export function RequestTabs(): React.JSX.Element {
         <ConfirmDialog
           title="Unsaved changes"
           message={`The latest changes to "${closingName}" could not be saved${
-            saves[closing]?.error ? ` (${saves[closing]?.error})` : ''
+            saves[closing]?.state === 'conflict'
+              ? ' (the file was changed on disk)'
+              : saves[closing]?.error
+                ? ` (${saves[closing]?.error})`
+                : ''
           }. Close the tab and discard them?`}
           confirmLabel="Close and discard"
           onConfirm={() => {

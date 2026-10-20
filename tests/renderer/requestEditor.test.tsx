@@ -322,6 +322,7 @@ describe('request editor', () => {
       expect(api.collections.saveRequest).toHaveBeenCalledWith(
         REQUEST_PATH,
         expect.objectContaining({ url: 'http://a' }),
+        `rev:${REQUEST_PATH}`,
       )
       expect(screen.getAllByRole('tabpanel').length).toBeGreaterThan(0)
     })
@@ -346,6 +347,61 @@ describe('request editor', () => {
       await user.click(screen.getByRole('button', { name: 'Close Get users' }))
       await user.click(screen.getByRole('button', { name: 'Close and discard' }))
       expect(useApp.getState().openTabs).toEqual([])
+    })
+
+    describe('changed on disk', () => {
+      async function conflicted() {
+        const ctx = await openedEditor()
+        ctx.api.collections.saveRequest.mockRejectedValueOnce(new Error('changed_on_disk'))
+        typeUrl('http://mine')
+        await tick(500)
+        return ctx
+      }
+
+      it('shows an inline bar with Overwrite and Reload from disk and keeps the draft', async () => {
+        const { api } = await conflicted()
+        const bar = screen.getByRole('alert', { name: 'Changed on disk' })
+        expect(bar).toHaveTextContent('Changed on disk')
+        expect(within(bar).getByRole('button', { name: 'Overwrite' })).toBeInTheDocument()
+        expect(within(bar).getByRole('button', { name: 'Reload from disk' })).toBeInTheDocument()
+        expect(screen.getByRole('status')).toHaveTextContent('Not saved: changed on disk')
+        expect(urlBar()).toHaveValue('http://mine')
+        typeUrl('http://mine2')
+        await tick(2000)
+        expect(api.collections.saveRequest).toHaveBeenCalledTimes(1)
+      })
+
+      it('Overwrite writes the draft without a revision and removes the bar', async () => {
+        const { api, user } = await conflicted()
+        await user.click(screen.getByRole('button', { name: 'Overwrite' }))
+        await tick(0)
+        expect(lastSaved(api)).toEqual([REQUEST_PATH, expect.objectContaining({ url: 'http://mine' }), undefined])
+        expect(screen.queryByRole('alert', { name: 'Changed on disk' })).toBeNull()
+        expect(screen.getByRole('status')).toHaveTextContent('Saved')
+      })
+
+      it('Reload from disk replaces the draft with the file on disk', async () => {
+        const { api, user } = await conflicted()
+        const node = requestNode(REQUEST_PATH, 'Get users')
+        node.request = { ...node.request, url: 'http://resolved' }
+        api.collections.list.mockResolvedValue({
+          collections: [
+            collectionTree('collections/shop', 'Shop', [folderNode('collections/shop/users', 'Users', [node])]),
+          ],
+          errors: [],
+        })
+        await user.click(screen.getByRole('button', { name: 'Reload from disk' }))
+        await tick(0)
+        expect(urlBar()).toHaveValue('http://resolved')
+        expect(screen.queryByRole('alert', { name: 'Changed on disk' })).toBeNull()
+        expect(api.collections.saveRequest).toHaveBeenCalledTimes(1)
+      })
+
+      it('asks before closing a tab in conflict', async () => {
+        const { user } = await conflicted()
+        await user.click(screen.getByRole('button', { name: 'Close Get users' }))
+        expect(screen.getByRole('alertdialog')).toHaveTextContent('changed on disk')
+      })
     })
 
     it('renames through the title field', async () => {
