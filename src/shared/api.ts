@@ -32,11 +32,14 @@ export interface AstralApi {
     remove(id: string): Promise<void>
   }
   http: {
+    /** `sendId` identifies this send (one per send per tab) so it can be cancelled on its own. */
     send(
       request: RequestItem,
       context: { collectionPath: string | null; environmentId: string | null },
+      sendId: string,
     ): Promise<SendResult>
-    cancel(): Promise<void>
+    /** Cancels the send with this id; an unknown or finished id is a no-op. */
+    cancel(sendId: string): Promise<void>
   }
 }
 

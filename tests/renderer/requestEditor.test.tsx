@@ -202,10 +202,11 @@ describe('request editor', () => {
     useApp.getState().setActiveEnvironment('env1')
     typeUrl('http://unsaved')
     await user.click(screen.getByRole('button', { name: 'Send' }))
-    expect(send).toHaveBeenCalledWith(expect.objectContaining({ url: 'http://unsaved', id: `id-${REQUEST_PATH}` }), {
-      collectionPath: 'collections/shop',
-      environmentId: 'env1',
-    })
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({ url: 'http://unsaved', id: `id-${REQUEST_PATH}` }),
+      { collectionPath: 'collections/shop', environmentId: 'env1' },
+      expect.any(String),
+    )
     expect(useApp.getState().responses[REQUEST_PATH]?.state).toBe('done')
     expect(api.collections.saveRequest).toHaveBeenCalled()
     expect(screen.getByRole('button', { name: 'Send' })).toBeInTheDocument()
@@ -220,6 +221,7 @@ describe('request editor', () => {
     expect(screen.queryByRole('button', { name: 'Send' })).toBeNull()
     await user.click(cancel)
     expect(api.http.cancel).toHaveBeenCalledTimes(1)
+    expect(api.http.cancel).toHaveBeenCalledWith(send.mock.calls[0][2])
     await act(async () => finish({ ok: false, error: { code: 'cancelled', message: 'Request cancelled' } }))
     expect(screen.getByRole('button', { name: 'Send' })).toBeInTheDocument()
   })

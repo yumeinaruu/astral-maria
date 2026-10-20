@@ -88,7 +88,7 @@ describe('workspace guard', () => {
     await expect(api.collections.list()).rejects.toThrow('no_workspace_open')
     await expect(api.collections.createCollection('c')).rejects.toThrow('no_workspace_open')
     await expect(api.environments.list()).rejects.toThrow('no_workspace_open')
-    await expect(api.http.send(req(), { collectionPath: null, environmentId: null })).rejects.toThrow(
+    await expect(api.http.send(req(), { collectionPath: null, environmentId: null }, 's')).rejects.toThrow(
       'no_workspace_open',
     )
   })
@@ -141,7 +141,7 @@ describe('http.send', () => {
     const api = makeApi()
     await newWorkspace(api)
     await api.environments.save(env('e1', { baseUrl: base }))
-    const result = await api.http.send(req(), { collectionPath: null, environmentId: 'e1' })
+    const result = await api.http.send(req(), { collectionPath: null, environmentId: 'e1' }, 's')
     expect((await body(result)).url).toBe('/hello')
   })
 
@@ -164,7 +164,11 @@ describe('http.send', () => {
     await api.environments.save(env('e1', { p: 'fromEnv' }))
 
     const request = req({ url: `${base}/{{p}}/{{q}}/{{r}}/{{off}}` })
-    const result = await api.http.send(request, { collectionPath: `${c.path}/some/request.json`, environmentId: 'e1' })
+    const result = await api.http.send(
+      request,
+      { collectionPath: `${c.path}/some/request.json`, environmentId: 'e1' },
+      's',
+    )
     expect((await body(result)).url).toBe('/fromEnv/fromCollection/fromGlobal/fromGlobal')
   })
 
@@ -178,7 +182,11 @@ describe('http.send', () => {
     await fs.writeFile(metaFile, JSON.stringify(meta))
     await api.environments.save(env('e1', { tok: 'abc' }))
     const request = req({ url: `${base}/x`, auth: { type: 'inherit' } })
-    const result = await api.http.send(request, { collectionPath: `${c.path}/r.request.json`, environmentId: 'e1' })
+    const result = await api.http.send(
+      request,
+      { collectionPath: `${c.path}/r.request.json`, environmentId: 'e1' },
+      's',
+    )
     expect((await body(result)).auth).toBe('Bearer abc')
   })
 
@@ -187,56 +195,94 @@ describe('http.send', () => {
     await newWorkspace(api)
     const c = await api.collections.createCollection('c')
     const request = req({ url: `${base}/x`, auth: { type: 'inherit' } })
-    const result = await api.http.send(request, { collectionPath: `${c.path}/r.request.json`, environmentId: null })
+    const result = await api.http.send(
+      request,
+      { collectionPath: `${c.path}/r.request.json`, environmentId: null },
+      's',
+    )
     expect((await body(result)).auth).toBeNull()
   })
 
   it('still sends when the selected environment no longer exists', async () => {
     const api = makeApi()
     await newWorkspace(api)
-    const result = await api.http.send(req({ url: `${base}/ok` }), { collectionPath: null, environmentId: 'deleted' })
+    const result = await api.http.send(
+      req({ url: `${base}/ok` }),
+      { collectionPath: null, environmentId: 'deleted' },
+      's',
+    )
     expect((await body(result)).url).toBe('/ok')
   })
 
   it('returns network failures as results, not rejections', async () => {
     const api = makeApi()
     await newWorkspace(api)
-    const result = await api.http.send(req({ url: 'http://127.0.0.1:1/' }), {
-      collectionPath: null,
-      environmentId: null,
-    })
+    const result = await api.http.send(
+      req({ url: 'http://127.0.0.1:1/' }),
+      {
+        collectionPath: null,
+        environmentId: null,
+      },
+      's',
+    )
     expect(result.ok).toBe(false)
   })
 
-  it('cancel() makes the in-flight send resolve to cancelled', async () => {
+  it('cancel(id) makes that in-flight send resolve to cancelled', async () => {
     const api = makeApi()
     await newWorkspace(api)
-    const pending = api.http.send(req({ url: `${base}/slow` }), { collectionPath: null, environmentId: null })
+    const pending = api.http.send(req({ url: `${base}/slow` }), { collectionPath: null, environmentId: null }, 'a')
     await waitFor(() => seen.length === 1)
-    await api.http.cancel()
+    await api.http.cancel('a')
     const result = await pending
     expect(!result.ok && result.error.code).toBe('cancelled')
   })
 
-  it('a new send cancels the one in flight', async () => {
+  it('runs parallel sends independently', async () => {
     const api = makeApi()
     await newWorkspace(api)
-    const first = api.http.send(req({ url: `${base}/slow` }), { collectionPath: null, environmentId: null })
+    const first = api.http.send(req({ url: `${base}/slow` }), { collectionPath: null, environmentId: null }, 'a')
     await waitFor(() => seen.length === 1)
-    const second = await api.http.send(req({ url: `${base}/fast` }), { collectionPath: null, environmentId: null })
+    const second = await api.http.send(req({ url: `${base}/fast` }), { collectionPath: null, environmentId: null }, 'b')
     expect((await body(second)).url).toBe('/fast')
-    const result = await first
-    expect(!result.ok && result.error.code).toBe('cancelled')
+    for (const finish of slowResponses) finish()
+    const late = await first
+    expect(late.ok && Buffer.from(late.response.bodyBase64, 'base64').toString()).toBe('late')
   })
 
-  it('cancels in-flight sends when another workspace is opened', async () => {
+  it('cancel(A) leaves B running, and an unknown id is a no-op', async () => {
+    const api = makeApi()
+    await newWorkspace(api)
+    const a = api.http.send(req({ url: `${base}/slow/a` }), { collectionPath: null, environmentId: null }, 'a')
+    const b = api.http.send(req({ url: `${base}/slow/b` }), { collectionPath: null, environmentId: null }, 'b')
+    await waitFor(() => seen.length === 2)
+    await api.http.cancel('unknown')
+    await api.http.cancel('a')
+    expect(await a).toMatchObject({ ok: false, error: { code: 'cancelled' } })
+    for (const finish of slowResponses) finish()
+    expect(await b).toMatchObject({ ok: true })
+    // Cancelling a send that already finished does nothing either.
+    await expect(api.http.cancel('a')).resolves.toBeUndefined()
+  })
+
+  it('rejects a send id that is not a non-empty string', async () => {
+    const api = makeApi()
+    await newWorkspace(api)
+    const ctx = { collectionPath: null, environmentId: null }
+    await expect(api.http.send(req({ url: `${base}/x` }), ctx, '' as string)).rejects.toThrow('invalid_send_id')
+    await expect(api.http.send(req({ url: `${base}/x` }), ctx, 5 as unknown as string)).rejects.toThrow(
+      'invalid_send_id',
+    )
+  })
+
+  it('cancels all in-flight sends when another workspace is opened', async () => {
     const api = makeApi()
     await newWorkspace(api, 'one')
-    const pending = api.http.send(req({ url: `${base}/slow` }), { collectionPath: null, environmentId: null })
-    await waitFor(() => seen.length === 1)
+    const a = api.http.send(req({ url: `${base}/slow` }), { collectionPath: null, environmentId: null }, 'a')
+    const b = api.http.send(req({ url: `${base}/slow` }), { collectionPath: null, environmentId: null }, 'b')
+    await waitFor(() => seen.length === 2)
     await newWorkspace(api, 'two')
-    const result = await pending
-    expect(!result.ok && result.error.code).toBe('cancelled')
+    for (const result of await Promise.all([a, b])) expect(!result.ok && result.error.code).toBe('cancelled')
   })
 })
 

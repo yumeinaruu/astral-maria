@@ -51,12 +51,13 @@ function collectionRoot(p: string): string {
 
 export function createApi(deps: ApiDeps): AstralApi {
   let current: Open | null = null
-  let inFlight: AbortController | null = null
+  /** In-flight sends by the renderer's send id; each one can be cancelled on its own. */
+  const inFlight = new Map<string, AbortController>()
   let recentQueue: Promise<unknown> = Promise.resolve()
 
-  const cancelInFlight = (): void => {
-    inFlight?.abort()
-    inFlight = null
+  const cancelAllSends = (): void => {
+    for (const controller of inFlight.values()) controller.abort()
+    inFlight.clear()
   }
 
   /** Returns the open workspace, rejecting if none is open or its folder has disappeared. */
@@ -81,7 +82,7 @@ export function createApi(deps: ApiDeps): AstralApi {
   }
 
   async function activate(info: WorkspaceInfo): Promise<WorkspaceInfo> {
-    cancelInFlight()
+    cancelAllSends()
     current = {
       info,
       collections: new CollectionStore(info.dir),
@@ -153,11 +154,12 @@ export function createApi(deps: ApiDeps): AstralApi {
       remove: async (id) => (await workspace()).environments.remove(id),
     },
     http: {
-      async send(request, context) {
+      async send(request, context, sendId) {
+        if (typeof sendId !== 'string' || sendId === '') throw new Error('invalid_send_id')
         const ws = await workspace()
-        cancelInFlight()
+        inFlight.get(sendId)?.abort()
         const controller = new AbortController()
-        inFlight = controller
+        inFlight.set(sendId, controller)
         try {
           const collection = await findCollection(ws, context.collectionPath)
           const scopes = [
@@ -168,11 +170,14 @@ export function createApi(deps: ApiDeps): AstralApi {
           const resolved = resolveRequest(withInheritedAuth(request, collection), scopes)
           return await sendRequest(resolved, { signal: controller.signal })
         } finally {
-          if (inFlight === controller) inFlight = null
+          if (inFlight.get(sendId) === controller) inFlight.delete(sendId)
         }
       },
-      async cancel() {
-        cancelInFlight()
+      async cancel(sendId) {
+        // An unknown or finished id is a no-op.
+        if (typeof sendId !== 'string') return
+        inFlight.get(sendId)?.abort()
+        inFlight.delete(sendId)
       },
     },
   }

@@ -149,7 +149,7 @@ export function RequestEditor({ path }: { path: string }): React.JSX.Element {
             onBlur={() => setTypedUrl(null)}
           />
           {sending ? (
-            <button type="button" className="btn" onClick={() => void store().cancelSend()}>
+            <button type="button" className="btn" onClick={() => void store().cancelSend(path)}>
               Cancel
             </button>
           ) : (

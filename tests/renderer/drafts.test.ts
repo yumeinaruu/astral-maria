@@ -317,10 +317,11 @@ describe('send', () => {
     const done = useApp.getState().send(REQUEST_PATH)
     expect(useApp.getState().responses[REQUEST_PATH]).toEqual({ state: 'sending' })
     await done
-    expect(api.http.send).toHaveBeenCalledWith(expect.objectContaining({ url: 'http://unsaved' }), {
-      collectionPath: 'collections/shop',
-      environmentId: null,
-    })
+    expect(api.http.send).toHaveBeenCalledWith(
+      expect.objectContaining({ url: 'http://unsaved' }),
+      { collectionPath: 'collections/shop', environmentId: null },
+      expect.stringMatching(/^[0-9a-f-]{36}$/),
+    )
     expect(useApp.getState().responses[REQUEST_PATH]).toEqual({ state: 'done', result: OK })
     // The pending save was flushed by sending.
     expect(api.collections.saveRequest).toHaveBeenCalledTimes(1)
@@ -336,20 +337,70 @@ describe('send', () => {
     await useApp.getState().refresh()
     useApp.getState().setActiveEnvironment('env1')
     await useApp.getState().send(REQUEST_PATH)
-    expect(api.http.send).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ environmentId: 'env1' }))
+    expect(api.http.send).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ environmentId: 'env1' }),
+      expect.any(String),
+    )
   })
 
-  it('does not start a second send while one is in flight, and cancel calls http.cancel', async () => {
+  it('does not start a second send while one is in flight, and cancel cancels that send by its id', async () => {
     const pending = deferred<SendResult>()
     const api = await setup({ http: { send: vi.fn().mockReturnValue(pending.promise) } })
     const first = useApp.getState().send(REQUEST_PATH)
     await useApp.getState().send(REQUEST_PATH)
     expect(api.http.send).toHaveBeenCalledTimes(1)
-    await useApp.getState().cancelSend()
-    expect(api.http.cancel).toHaveBeenCalled()
+    await useApp.getState().cancelSend(REQUEST_PATH)
+    expect(api.http.cancel).toHaveBeenCalledWith(api.http.send.mock.calls[0][2])
     pending.resolve({ ok: false, error: { code: 'cancelled', message: 'Request cancelled' } })
     await first
     expect(useApp.getState().responses[REQUEST_PATH]?.state).toBe('done')
+  })
+
+  it('keeps sends of two tabs independent: each completes on its own and Cancel only targets its tab', async () => {
+    const a = deferred<SendResult>()
+    const b = deferred<SendResult>()
+    const api = await setup({ http: { send: vi.fn().mockReturnValueOnce(a.promise).mockReturnValueOnce(b.promise) } })
+    useApp.getState().openRequest(OTHER_PATH)
+    const sendA = useApp.getState().send(REQUEST_PATH)
+    const sendB = useApp.getState().send(OTHER_PATH)
+    const [idA, idB] = api.http.send.mock.calls.map((c) => c[2] as string)
+    expect(idA).not.toBe(idB)
+
+    await useApp.getState().cancelSend(OTHER_PATH)
+    expect(api.http.cancel).toHaveBeenCalledTimes(1)
+    expect(api.http.cancel).toHaveBeenCalledWith(idB)
+
+    a.resolve(OK)
+    await sendA
+    expect(useApp.getState().responses[REQUEST_PATH]).toEqual({ state: 'done', result: OK })
+    expect(useApp.getState().responses[OTHER_PATH]).toEqual({ state: 'sending' })
+    const cancelled: SendResult = { ok: false, error: { code: 'cancelled', message: 'Request cancelled' } }
+    b.resolve(cancelled)
+    await sendB
+    expect(useApp.getState().responses[OTHER_PATH]).toEqual({ state: 'done', result: cancelled })
+  })
+
+  it('does nothing when cancelling a tab with no send in flight', async () => {
+    const api = await setup()
+    await useApp.getState().cancelSend(REQUEST_PATH)
+    expect(api.http.cancel).not.toHaveBeenCalled()
+  })
+
+  it('cancels by the same id after the request was renamed', async () => {
+    const pending = deferred<SendResult>()
+    const NEW_PATH = 'collections/shop/users/renamed.request.json'
+    const api = await setup({
+      http: { send: vi.fn().mockReturnValue(pending.promise) },
+      collections: { rename: vi.fn().mockResolvedValue(NEW_PATH) },
+    })
+    api.collections.list.mockResolvedValue(treeWith(requestNode(NEW_PATH, 'Renamed'), requestNode(OTHER_PATH, 'Other')))
+    const done = useApp.getState().send(REQUEST_PATH)
+    await useApp.getState().rename(REQUEST_PATH, 'Renamed')
+    await useApp.getState().cancelSend(NEW_PATH)
+    expect(api.http.cancel).toHaveBeenCalledWith(api.http.send.mock.calls[0][2])
+    pending.resolve(OK)
+    await done
   })
 
   it('shows the error banner and stays idle when http.send rejects', async () => {

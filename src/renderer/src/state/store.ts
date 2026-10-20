@@ -84,7 +84,8 @@ export interface AppActions {
   /** Starts every debounced save immediately (window unload). */
   flushAllSaves(): void
   send(path: string): Promise<void>
-  cancelSend(): Promise<void>
+  /** Cancels the send in flight for `path`, if any; sends of other tabs keep running. */
+  cancelSend(path: string): Promise<void>
   setResponseView(path: string, patch: Partial<ResponseView>): void
   setActiveEnvironment(id: string | null): void
   /**
@@ -170,8 +171,9 @@ interface SaveEntry {
   dropped: 'closed' | 'removed' | null
 }
 
-/** One in-flight send; `path` follows renames, `dead` marks a closed tab. */
+/** One in-flight send; `id` names it to the main process, `path` follows renames, `dead` marks a closed tab. */
 interface SendTicket {
+  id: string
   path: string
   dead: boolean
 }
@@ -665,7 +667,7 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
       const draft = s.drafts[path]
       if (!draft || s.responses[path]?.state === 'sending') return
       flush(path)
-      const ticket: SendTicket = { path, dead: false }
+      const ticket: SendTicket = { id: globalThis.crypto.randomUUID(), path, dead: false }
       tickets.add(ticket)
       const started = epoch
       const collection = s.collections.find((c) => isWithin(path, c.path))
@@ -678,10 +680,11 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
         },
       }))
       try {
-        const result = await window.astral.http.send(draft, {
-          collectionPath: collection?.path ?? null,
-          environmentId: s.activeEnvironmentId,
-        })
+        const result = await window.astral.http.send(
+          draft,
+          { collectionPath: collection?.path ?? null, environmentId: s.activeEnvironmentId },
+          ticket.id,
+        )
         if (epoch !== started || ticket.dead) return
         set((cur) => ({ responses: { ...cur.responses, [ticket.path]: { state: 'done', result } } }))
       } catch (e) {
@@ -692,9 +695,11 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
         tickets.delete(ticket)
       }
     },
-    async cancelSend() {
+    async cancelSend(path) {
+      const ticket = [...tickets].find((t) => t.path === path && !t.dead)
+      if (!ticket) return
       try {
-        await window.astral.http.cancel()
+        await window.astral.http.cancel(ticket.id)
       } catch (e) {
         fail(e)
       }
