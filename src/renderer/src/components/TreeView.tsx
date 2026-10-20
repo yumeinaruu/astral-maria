@@ -153,7 +153,7 @@ export function TreeView({
   function dropPlace(target: ItemMeta): { parentPath: string; index: number } | null {
     const from = dragging.current
     const source = from === null ? undefined : index.byPath.get(from)
-    if (!from || !source || source.kind === 'collection') return null
+    if (!from || !source || source.kind === 'collection' || target.path === from) return null
     const parentPath = isContainer(target.kind) ? target.path : target.parentPath
     if (parentPath === null || isWithin(parentPath, from)) return null
     const others = (isContainer(target.kind) ? target.childPaths : target.siblingPaths).filter((p) => p !== from)

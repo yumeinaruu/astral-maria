@@ -80,21 +80,36 @@ function neighbour(tabs: OpenTab[], index: number): string | null {
 }
 
 export const useApp = create<AppState & AppActions>()((set, get) => {
+  /** Incremented whenever the workspace is replaced or lost; follow-up work from an older epoch is discarded. */
+  let epoch = 0
+  let openSeq = 0
+  let refreshSeq = 0
+
   function fail(e: unknown): void {
     const message = messageOf(e)
-    set(GATE_ERRORS.some((code) => message.startsWith(code)) ? { error: message, workspace: null } : { error: message })
+    if (GATE_ERRORS.some((code) => message.startsWith(code))) {
+      epoch++
+      set({ error: message, workspace: null })
+    } else {
+      set({ error: message })
+    }
   }
 
-  /** Runs an API call, turns a rejection into `error`, then reloads the tree (it may have changed on disk). */
-  async function mutate<T>(call: () => Promise<T>): Promise<T | undefined> {
-    let result: T | undefined
+  /**
+   * Runs an API call, turns a rejection into `error`, applies `apply` on success, then reloads the tree (it may have
+   * changed on disk). Nothing is touched if the workspace changed while the call was in flight.
+   */
+  async function mutate<T>(call: () => Promise<T>, apply?: (result: T) => void): Promise<void> {
+    const started = epoch
     try {
-      result = await call()
+      const result = await call()
+      if (epoch !== started) return
+      apply?.(result)
     } catch (e) {
+      if (epoch !== started) return
       fail(e)
     }
     await get().refresh()
-    return result
   }
 
   function remapTabs(from: string, to: string): void {
@@ -106,14 +121,18 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
   }
 
   async function enter(open: () => Promise<WorkspaceInfo>): Promise<void> {
+    const mine = ++openSeq
     try {
       const workspace = await open()
+      if (mine !== openSeq) return
+      epoch++
       set({ ...initialState(), workspace })
     } catch (e) {
-      fail(e)
+      if (mine === openSeq) fail(e)
       return
     }
     await get().refresh()
+    if (mine !== openSeq) return
     set((s) => ({
       expanded: { ...s.expanded, ...Object.fromEntries(s.collections.map((c) => [c.path, true as const])) },
     }))
@@ -127,10 +146,14 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
 
     async refresh() {
       if (!get().workspace) return
+      const started = epoch
+      const mine = ++refreshSeq
       const [collections, environments] = await Promise.allSettled([
         window.astral.collections.list(),
         window.astral.environments.list(),
       ])
+      // Only the latest refresh of the current workspace may apply its result.
+      if (mine !== refreshSeq || epoch !== started) return
       if (collections.status === 'fulfilled') {
         const present = new Set<string>()
         for (const c of collections.value.collections) requestPaths(c.children, present)
@@ -161,38 +184,41 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
       }
     },
 
-    async createCollection(name) {
-      await mutate(() => window.astral.collections.createCollection(name))
-    },
-    async createFolder(parentPath, name) {
-      await mutate(() => window.astral.collections.createFolder(parentPath, name))
-      get().setExpanded(parentPath, true)
-    },
-    async createRequest(parentPath, name) {
-      await mutate(() => window.astral.collections.createRequest(parentPath, name))
-      get().setExpanded(parentPath, true)
-    },
-    async rename(path, name) {
-      await mutate(async () => {
-        remapTabs(path, await window.astral.collections.rename(path, name))
-      })
-    },
-    async move(path, parentPath, index) {
-      await mutate(async () => {
-        remapTabs(path, await window.astral.collections.move(path, parentPath, index))
-      })
-      get().setExpanded(parentPath, true)
-    },
-    async remove(path) {
-      await mutate(async () => {
-        await window.astral.collections.remove(path)
-        const s = get()
-        const closing = s.activePath !== null && isWithin(s.activePath, path)
-        const index = s.openTabs.findIndex((t) => t.path === s.activePath)
-        const openTabs = s.openTabs.filter((t) => !isWithin(t.path, path))
-        set({ openTabs, activePath: closing ? neighbour(openTabs, Math.min(index, openTabs.length)) : s.activePath })
-      })
-    },
+    createCollection: (name) => mutate(() => window.astral.collections.createCollection(name)),
+    createFolder: (parentPath, name) =>
+      mutate(
+        () => window.astral.collections.createFolder(parentPath, name),
+        () => get().setExpanded(parentPath, true),
+      ),
+    createRequest: (parentPath, name) =>
+      mutate(
+        () => window.astral.collections.createRequest(parentPath, name),
+        () => get().setExpanded(parentPath, true),
+      ),
+    rename: (path, name) =>
+      mutate(
+        () => window.astral.collections.rename(path, name),
+        (to) => remapTabs(path, to),
+      ),
+    move: (path, parentPath, index) =>
+      mutate(
+        () => window.astral.collections.move(path, parentPath, index),
+        (to) => {
+          remapTabs(path, to)
+          get().setExpanded(parentPath, true)
+        },
+      ),
+    remove: (path) =>
+      mutate(
+        () => window.astral.collections.remove(path),
+        () => {
+          const s = get()
+          const closing = s.activePath !== null && isWithin(s.activePath, path)
+          const index = s.openTabs.findIndex((t) => t.path === s.activePath)
+          const openTabs = s.openTabs.filter((t) => !isWithin(t.path, path))
+          set({ openTabs, activePath: closing ? neighbour(openTabs, Math.min(index, openTabs.length)) : s.activePath })
+        },
+      ),
 
     openRequest(path) {
       set((s) => ({

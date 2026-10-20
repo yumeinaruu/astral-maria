@@ -225,18 +225,53 @@ describe('Sidebar tree', () => {
     )
   })
 
-  it('does not move a folder into itself', async () => {
-    const api = installApi()
-    await openedApp(api)
-    const data: Record<string, string> = {}
-    const dataTransfer = {
-      setData: (k: string, v: string) => (data[k] = v),
-      getData: (k: string) => data[k] ?? '',
+  describe('invalid drops', () => {
+    function dnd() {
+      const data: Record<string, string> = {}
+      return {
+        setData: (k: string, v: string) => (data[k] = v),
+        getData: (k: string) => data[k] ?? '',
+      }
     }
-    fireEvent.dragStart(screen.getByRole('treeitem', { name: 'Users' }), { dataTransfer })
-    fireEvent.drop(screen.getByRole('treeitem', { name: 'Get users' }), { dataTransfer })
-    fireEvent.drop(screen.getByRole('treeitem', { name: 'Users' }), { dataTransfer })
-    expect(api.collections.move).not.toHaveBeenCalled()
+
+    it('never moves an item onto itself and shows no drop highlight', async () => {
+      const api = installApi()
+      await openedApp(api)
+      const dataTransfer = dnd()
+      for (const name of ['Get users', 'Users']) {
+        const item = screen.getByRole('treeitem', { name })
+        fireEvent.dragStart(item, { dataTransfer })
+        fireEvent.dragOver(item, { dataTransfer })
+        expect(item).not.toHaveClass('drop-target')
+        fireEvent.drop(item, { dataTransfer })
+      }
+      expect(api.collections.move).not.toHaveBeenCalled()
+    })
+
+    it('does not call move for a folder dropped on its own descendant', async () => {
+      const api = installApi()
+      await openedApp(api)
+      const dataTransfer = dnd()
+      fireEvent.dragStart(screen.getByRole('treeitem', { name: 'Users' }), { dataTransfer })
+      fireEvent.dragOver(screen.getByRole('treeitem', { name: 'Get users' }), { dataTransfer })
+      expect(screen.getByRole('treeitem', { name: 'Get users' })).not.toHaveClass('drop-target')
+      fireEvent.drop(screen.getByRole('treeitem', { name: 'Get users' }), { dataTransfer })
+      expect(api.collections.move).not.toHaveBeenCalled()
+    })
+
+    it('shows the API error and keeps the tree when the main process rejects a move', async () => {
+      const api = installApi({
+        collections: { move: vi.fn().mockRejectedValue(new Error('cannot_move_into_descendant')) },
+      })
+      await openedApp(api)
+      const dataTransfer = dnd()
+      // Dropping the request on the collection is valid client-side; the API rejection is simulated.
+      fireEvent.dragStart(screen.getByRole('treeitem', { name: 'Get users' }), { dataTransfer })
+      fireEvent.drop(screen.getByRole('treeitem', { name: 'Shop' }), { dataTransfer })
+      expect(await screen.findByRole('alert')).toHaveTextContent('cannot_move_into_descendant')
+      expect(screen.getByRole('treeitem', { name: 'Users' })).toBeInTheDocument()
+      expect(screen.getByRole('treeitem', { name: 'Get users' })).toBeInTheDocument()
+    })
   })
 })
 

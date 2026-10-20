@@ -160,3 +160,70 @@ describe('store', () => {
     expect(useApp.getState().activeEnvironmentId).toBeNull()
   })
 })
+
+function deferred<T>() {
+  let resolve!: (v: T) => void
+  const promise = new Promise<T>((r) => (resolve = r))
+  return { promise, resolve }
+}
+
+describe('store races', () => {
+  it('lets only the latest refresh apply its result', async () => {
+    const api = installApi()
+    await openDemo()
+    const first = deferred<{ collections: ReturnType<typeof sampleTree>; errors: [] }>()
+    const second = deferred<{ collections: ReturnType<typeof sampleTree>; errors: [] }>()
+    api.collections.list.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    const p1 = useApp.getState().refresh()
+    const p2 = useApp.getState().refresh()
+    second.resolve({ collections: [collectionTree('collections/new', 'Newer')], errors: [] })
+    await p2
+    first.resolve({ collections: [collectionTree('collections/old', 'Older')], errors: [] })
+    await p1
+    expect(useApp.getState().collections.map((c) => c.name)).toEqual(['Newer'])
+  })
+
+  it('discards the error of a stale refresh', async () => {
+    const api = installApi()
+    await openDemo()
+    let reject!: (e: Error) => void
+    api.collections.list.mockReturnValueOnce(new Promise((_, r) => (reject = r)))
+    const p1 = useApp.getState().refresh()
+    await useApp.getState().refresh()
+    reject(new Error('stale failure'))
+    await p1
+    expect(useApp.getState().error).toBeNull()
+  })
+
+  it('ignores an action that resolves after the workspace was replaced', async () => {
+    const api = installApi()
+    await openDemo()
+    const slow = deferred<string>()
+    api.collections.rename.mockReturnValueOnce(slow.promise)
+    const pending = useApp.getState().rename(FOLDER_PATH, 'People')
+    api.workspace.open.mockResolvedValue({ id: 'w2', name: 'Other', dir: '/tmp/other' })
+    await useApp.getState().openWorkspace('/tmp/other')
+    useApp.getState().openRequest(REQUEST_PATH)
+    api.collections.list.mockClear()
+    slow.resolve('collections/shop/people')
+    await pending
+    const s = useApp.getState()
+    expect(s.workspace?.id).toBe('w2')
+    expect(s.openTabs.map((t) => t.path)).toEqual([REQUEST_PATH])
+    expect(s.collections.map((c) => c.name)).toEqual(['Shop'])
+    expect(s.error).toBeNull()
+    expect(api.collections.list).not.toHaveBeenCalled()
+  })
+
+  it('ignores a failing action that settles after the workspace was replaced', async () => {
+    const api = installApi()
+    await openDemo()
+    const slow = deferred<string>()
+    api.collections.rename.mockReturnValueOnce(slow.promise.then(() => Promise.reject(new Error('late'))))
+    const pending = useApp.getState().rename(FOLDER_PATH, 'x')
+    await useApp.getState().openWorkspace('/tmp/other')
+    slow.resolve('')
+    await pending
+    expect(useApp.getState().error).toBeNull()
+  })
+})
