@@ -176,6 +176,8 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
   let openSeq = 0
   let refreshSeq = 0
   const entries = new Map<string, SaveEntry>()
+  /** Entries of closed tabs whose save is still pending or running; kept until it settles. */
+  const pending = new Map<string, SaveEntry>()
   const tickets = new Set<SendTicket>()
   /** Paths whose files a rename, move or delete is changing; saves below them wait until it is done. */
   let locks: string[] = []
@@ -183,6 +185,8 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
   function resetEditing(): void {
     for (const e of entries.values()) if (e.timer) clearTimeout(e.timer)
     entries.clear()
+    for (const e of pending.values()) if (e.timer) clearTimeout(e.timer)
+    pending.clear()
     tickets.clear()
     locks = []
   }
@@ -218,7 +222,11 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
     e.timer = null
     const task = e.running ? e.running.then(() => doSave(e)) : doSave(e)
     const tracked: Promise<void> = task.finally(() => {
-      if (e.running === tracked) e.running = null
+      if (e.running === tracked) {
+        e.running = null
+        // A closed tab's entry is forgotten once nothing is left to save for it.
+        if (e.dropped === 'closed' && !e.deferred && pending.get(e.path) === e) pending.delete(e.path)
+      }
     })
     e.running = tracked
     return tracked
@@ -254,7 +262,13 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
       }
       return
     }
-    if (epoch !== started || droppedAs(e) !== null) return
+    if (epoch !== started || droppedAs(e) === 'removed') return
+    if (droppedAs(e) === 'closed') {
+      // Nobody watches this draft any more, but the tree must show what is on disk when the request is reopened.
+      e.savedVersion = version
+      void get().refresh()
+      return
+    }
     e.savedVersion = version
     if (e.version === version) {
       setSave(e.path, null)
@@ -272,6 +286,12 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
         e.timer = null
         e.dropped = reason
         entries.delete(p)
+        if (reason === 'closed' && (e.running || e.deferred)) pending.set(p, e)
+      }
+      const waiting = pending.get(p)
+      if (waiting && reason === 'removed') {
+        waiting.dropped = 'removed'
+        pending.delete(p)
       }
     }
     for (const t of tickets) if (paths.includes(t.path)) t.dead = true
@@ -283,11 +303,13 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
   }
 
   function remapEditing(from: string, to: string): void {
-    for (const [p, e] of [...entries]) {
-      if (!isWithin(p, from)) continue
-      entries.delete(p)
-      e.path = remapPath(p, from, to)
-      entries.set(e.path, e)
+    for (const map of [entries, pending]) {
+      for (const [p, e] of [...map]) {
+        if (!isWithin(p, from)) continue
+        map.delete(p)
+        e.path = remapPath(p, from, to)
+        map.set(e.path, e)
+      }
     }
     for (const t of tickets) t.path = remapPath(t.path, from, to)
     set((s) => ({
@@ -302,7 +324,7 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
    * first, saves that come due meanwhile resume afterwards, under the new path if there is one.
    */
   async function locked(path: string, fn: () => Promise<void>): Promise<void> {
-    const affected = [...entries.values()].filter((e) => isWithin(e.path, path))
+    const affected = [...entries.values(), ...pending.values()].filter((e) => isWithin(e.path, path))
     for (const e of affected) if (e.timer) e.deferred = true
     locks.push(path)
     try {
@@ -310,7 +332,7 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
       await fn()
     } finally {
       locks.splice(locks.indexOf(path), 1)
-      for (const e of entries.values()) {
+      for (const e of [...entries.values(), ...pending.values()]) {
         if (e.deferred && !isLocked(e.path)) {
           e.deferred = false
           void runSave(e)
@@ -432,7 +454,7 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
         })
         dropEditing(vanished, 'removed')
         // A dirty draft keeps its edits but must not write an outdated name over a rename done on disk.
-        for (const e of entries.values()) {
+        for (const e of [...entries.values(), ...pending.values()]) {
           const name = saved.get(e.path)?.name
           if (name !== undefined && e.draft.name !== name) e.draft = { ...e.draft, name }
         }
@@ -492,7 +514,7 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
               activePath: closing ? neighbour(openTabs, Math.min(index, openTabs.length)) : s.activePath,
             })
             dropEditing(
-              s.openTabs.map((t) => t.path).filter((p) => isWithin(p, path)),
+              [...s.openTabs.map((t) => t.path), ...pending.keys()].filter((p) => isWithin(p, path)),
               'removed',
             )
           },
@@ -502,11 +524,19 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
     openRequest(path) {
       const previous = get().activePath
       if (previous !== path) flush(previous)
-      const baseline = get().drafts[path] ? null : requestFromTree(get().collections, path)
+      // A closed tab's save may still be running: continue from its last draft and queue, not from the stale tree copy.
+      const revived = get().drafts[path] ? undefined : pending.get(path)
+      if (revived) {
+        pending.delete(path)
+        revived.dropped = null
+        entries.set(path, revived)
+      }
+      const baseline = get().drafts[path] ? null : (revived?.draft ?? requestFromTree(get().collections, path))
       set((s) => ({
         openTabs: s.openTabs.some((t) => t.path === path) ? s.openTabs : [...s.openTabs, { path }],
         activePath: path,
         drafts: baseline ? { ...s.drafts, [path]: baseline } : s.drafts,
+        saves: revived ? { ...s.saves, [path]: { state: 'saving' } } : s.saves,
       }))
     },
     closeTab(path) {

@@ -396,3 +396,103 @@ describe('send', () => {
     expect(useApp.getState().responses).toEqual({})
   })
 })
+
+describe('closed tabs with a save still pending or in flight', () => {
+  const FOLDER = 'collections/shop/users'
+  const NEW_FOLDER = 'collections/shop/people'
+  // A mocked disk: saves land in `disk`, the tree is always read from it.
+  async function setupDisk(overrides: Parameters<typeof installApi>[0] = {}) {
+    const disk = new Map<string, RequestItem>([[REQUEST_PATH, requestNode(REQUEST_PATH, 'Get users').request]])
+    const tree = () => {
+      const node = (p: string) => {
+        const n = requestNode(p, 'Get users')
+        return { ...n, request: disk.get(p)! }
+      }
+      return treeWith(...[...disk.keys()].map(node))
+    }
+    const api = await setup({
+      ...overrides,
+      collections: { list: vi.fn().mockImplementation(async () => tree()), ...overrides.collections },
+    })
+    return { api, disk }
+  }
+
+  it('keeps an edit closed within the debounce window: reopening shows it and the disk ends with it', async () => {
+    const { api, disk } = await setupDisk()
+    api.collections.saveRequest.mockImplementation(async (p: string, r: RequestItem) => void disk.set(p, r))
+    setUrl(REQUEST_PATH, 'one')
+    useApp.getState().closeTab(REQUEST_PATH)
+    useApp.getState().openRequest(REQUEST_PATH)
+    expect(draft().url).toBe('one')
+    await vi.advanceTimersByTimeAsync(10)
+    expect(disk.get(REQUEST_PATH)?.url).toBe('one')
+    expect(draft().url).toBe('one')
+    setUrl(REQUEST_PATH, 'two')
+    await vi.advanceTimersByTimeAsync(600)
+    expect(disk.get(REQUEST_PATH)?.url).toBe('two')
+  })
+
+  it('refreshes the tree after a closed tab saved, so a reopened tab starts from the saved copy', async () => {
+    const { api, disk } = await setupDisk()
+    api.collections.saveRequest.mockImplementation(async (p: string, r: RequestItem) => void disk.set(p, r))
+    setUrl(REQUEST_PATH, 'one')
+    useApp.getState().closeTab(REQUEST_PATH)
+    await vi.advanceTimersByTimeAsync(10)
+    useApp.getState().openRequest(REQUEST_PATH)
+    expect(draft().url).toBe('one')
+  })
+
+  it('serialises saves across a close and reopen while one is in flight; the last edit wins', async () => {
+    const first = deferred<void>()
+    const { api, disk } = await setupDisk()
+    const order: string[] = []
+    api.collections.saveRequest.mockImplementation(async (p: string, r: RequestItem) => {
+      order.push(`start ${r.url}`)
+      if (r.url === 'one') await first.promise
+      disk.set(p, r)
+      order.push(`end ${r.url}`)
+    })
+    setUrl(REQUEST_PATH, 'one')
+    await vi.advanceTimersByTimeAsync(500)
+    useApp.getState().closeTab(REQUEST_PATH)
+    useApp.getState().openRequest(REQUEST_PATH)
+    expect(draft().url).toBe('one')
+    setUrl(REQUEST_PATH, 'two')
+    await vi.advanceTimersByTimeAsync(600)
+    expect(order).toEqual(['start one'])
+    first.resolve()
+    await vi.advanceTimersByTimeAsync(10)
+    expect(order).toEqual(['start one', 'end one', 'start two', 'end two'])
+    expect(disk.get(REQUEST_PATH)?.url).toBe('two')
+    expect(useApp.getState().saves[REQUEST_PATH]).toBeUndefined()
+  })
+
+  it('makes a folder rename wait for a closed tab save and writes nothing to the old path afterwards', async () => {
+    const first = deferred<void>()
+    const rename = vi.fn().mockResolvedValue(NEW_FOLDER)
+    const { api, disk } = await setupDisk({ collections: { rename } })
+    api.collections.saveRequest.mockImplementation(async (p: string, r: RequestItem) => {
+      await first.promise
+      disk.set(p, r)
+    })
+    rename.mockImplementation(async () => {
+      const r = disk.get(REQUEST_PATH)!
+      disk.delete(REQUEST_PATH)
+      disk.set(`${NEW_FOLDER}/get-users.request.json`, r)
+      return NEW_FOLDER
+    })
+    setUrl(REQUEST_PATH, 'one')
+    await vi.advanceTimersByTimeAsync(500)
+    useApp.getState().closeTab(REQUEST_PATH)
+    const done = useApp.getState().rename(FOLDER, 'People')
+    await vi.advanceTimersByTimeAsync(10)
+    expect(rename).not.toHaveBeenCalled()
+    first.resolve()
+    await done
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(rename).toHaveBeenCalledTimes(1)
+    expect(api.collections.saveRequest).toHaveBeenCalledTimes(1)
+    expect(disk.has(REQUEST_PATH)).toBe(false)
+    expect(disk.get(`${NEW_FOLDER}/get-users.request.json`)?.url).toBe('one')
+  })
+})

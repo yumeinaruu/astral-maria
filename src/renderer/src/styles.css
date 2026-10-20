@@ -721,8 +721,6 @@ p {
   font-family: var(--font-mono);
   font-weight: 700;
   padding: var(--space-1) var(--space-2);
-  color: var(--m-other-fg);
-  background: var(--m-other-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
 }

@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
+/// <reference types="node" />
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { App } from '../../src/renderer/src/App'
 import { initialState, useApp } from '../../src/renderer/src/state/store'
 import type { SendResult } from '../../src/shared/types'
@@ -87,6 +89,33 @@ describe('request editor', () => {
     await user.selectOptions(select, 'DELETE')
     expect(select).toHaveClass('method-delete')
     expect(useApp.getState().drafts[REQUEST_PATH]?.method).toBe('DELETE')
+  })
+
+  it('applies the method colour to the select (the stylesheet cascade, not just the class)', async () => {
+    const { user } = await openedEditor()
+    const style = document.createElement('style')
+    style.textContent = readFileSync('src/renderer/src/styles.css', 'utf8')
+    document.head.appendChild(style)
+    try {
+      const select = screen.getByRole('combobox', { name: 'Method' })
+      const colours: string[] = []
+      for (const method of ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']) {
+        await user.selectOptions(select, method)
+        const badge = document.createElement('span')
+        badge.className = `method method-${method.toLowerCase()}`
+        document.body.appendChild(badge)
+        const expected = getComputedStyle(badge)
+        const actual = getComputedStyle(select)
+        expect(expected.color).toContain(`--m-${method.toLowerCase()}-fg`)
+        expect(actual.color).toBe(expected.color)
+        expect(actual.backgroundColor || actual.background).toBe(expected.backgroundColor || expected.background)
+        colours.push(actual.color)
+        badge.remove()
+      }
+      expect(new Set(colours).size).toBe(5)
+    } finally {
+      style.remove()
+    }
   })
 
   it('autosaves once, 500 ms after the last URL edit, with url and params split', async () => {
