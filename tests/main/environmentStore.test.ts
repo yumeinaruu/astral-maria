@@ -332,6 +332,75 @@ describe('damaged files', () => {
   })
 })
 
+describe('secrets that cannot be decrypted on this machine', () => {
+  const LOCAL = '.local/environments/staging.json'
+  const tokenVar = { key: 'token', value: '', currentValue: 'hunter2', secret: true, enabled: true }
+  const hostVar = { key: 'host', value: 'example.com', secret: false, enabled: true }
+
+  async function lockedSetup(): Promise<string> {
+    await store.save(env({ variables: [tokenVar, hostVar] }))
+    // Written by another machine (or before the Keychain was reset): not decryptable here.
+    const blob = '{\n  "values": {\n    "token": "foreign-cipher-text"\n  }\n}\n'
+    await write(LOCAL, blob)
+    return blob
+  }
+
+  it('lists such a secret as locked, without a current value', async () => {
+    await lockedSetup()
+    const { environments } = await store.list()
+    expect(environments[0].variables[0]).toEqual({
+      key: 'token',
+      value: '',
+      secret: true,
+      enabled: true,
+      locked: true
+    })
+    expect(environments[0].variables[1]).not.toHaveProperty('locked')
+  })
+
+  it('keeps the stored blob byte-for-byte when another variable is saved', async () => {
+    await lockedSetup()
+    const listed = (await store.list()).environments[0]
+    await store.save({ ...listed, variables: [listed.variables[0], { ...listed.variables[1], value: 'other.test' }] })
+    expect(JSON.parse(await read(LOCAL)).values.token).toBe('foreign-cipher-text')
+    expect((await readJ('environments/staging.json')).variables[1].value).toBe('other.test')
+    expect(await read('environments/staging.json')).not.toContain('locked')
+  })
+
+  it('never deletes the .local file while a retained blob is in it', async () => {
+    const blob = await lockedSetup()
+    const listed = (await store.list()).environments[0]
+    await store.save(listed)
+    expect(await read(LOCAL)).toBe(blob)
+  })
+
+  it('replaces the blob when a new current value is typed', async () => {
+    await lockedSetup()
+    const listed = (await store.list()).environments[0]
+    await store.save({ ...listed, variables: [{ ...listed.variables[0], currentValue: 'fresh' }, listed.variables[1]] })
+    expect(JSON.parse(await read(LOCAL)).values).toEqual({ token: 'enc:fresh' })
+    expect((await store.list()).environments[0].variables[0]).toMatchObject({ currentValue: 'fresh' })
+    expect((await store.list()).environments[0].variables[0]).not.toHaveProperty('locked')
+  })
+
+  it('removes the blob when the variable is deleted', async () => {
+    await lockedSetup()
+    const listed = (await store.list()).environments[0]
+    await store.save({ ...listed, variables: [listed.variables[1]] })
+    expect(await exists(LOCAL)).toBe(false)
+  })
+
+  it('does not keep the blob for a variable that is no longer secret or not flagged locked', async () => {
+    await lockedSetup()
+    const listed = (await store.list()).environments[0]
+    await store.save({ ...listed, variables: [{ ...listed.variables[0], secret: false }, listed.variables[1]] })
+    expect(await exists(LOCAL)).toBe(false)
+    await lockedSetup()
+    await store.save(env({ variables: [{ key: 'token', value: '', secret: true, enabled: true }, hostVar] }))
+    expect(await exists(LOCAL)).toBe(false)
+  })
+})
+
 describe('globals file protection', () => {
   it.each([
     ['empty object', '{}'],

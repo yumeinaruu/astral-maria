@@ -177,7 +177,13 @@ export function EnvironmentEditor({ onClose }: Props): React.JSX.Element {
   }
 
   function setSecret(row: Row, secret: boolean): void {
-    if (!secret) {
+    if (!secret && row.locked) {
+      updateRow(row.uid, {
+        secret: false,
+        locked: undefined,
+        note: 'The value that could not be decrypted is removed when you save.',
+      })
+    } else if (!secret) {
       updateRow(row.uid, { secret: false, note: undefined })
     } else if (row.value === '') {
       updateRow(row.uid, { secret: true, note: undefined })
@@ -334,7 +340,9 @@ export function EnvironmentEditor({ onClose }: Props): React.JSX.Element {
                     {draft.rows.map((row, i) => {
                       const n = i + 1
                       const problem = rowErrors.get(row.uid)
-                      const shown = revealed.has(row.uid)
+                      // Until a new value is typed: the stored one cannot be decrypted here, so there is nothing to reveal.
+                      const locked = row.secret && row.locked === true && !row.currentValue
+                      const shown = revealed.has(row.uid) && !locked
                       const type = row.secret && !shown ? 'password' : 'text'
                       return (
                         <tr key={row.uid} className={row.enabled ? undefined : 'kv-disabled'}>
@@ -378,12 +386,14 @@ export function EnvironmentEditor({ onClose }: Props): React.JSX.Element {
                                 className="text-input kv-input mono"
                                 type={type}
                                 aria-label={`Current value ${n}`}
+                                aria-describedby={locked ? `env-row-${row.uid}-locked` : undefined}
+                                placeholder={locked ? 'Cannot decrypt on this machine' : undefined}
                                 value={row.currentValue ?? ''}
                                 autoComplete="off"
                                 spellCheck={false}
                                 onValue={(currentValue) => updateRow(row.uid, { currentValue })}
                               />
-                              {row.secret && (
+                              {row.secret && !locked && (
                                 <button
                                   type="button"
                                   className="btn btn-ghost"
@@ -394,6 +404,11 @@ export function EnvironmentEditor({ onClose }: Props): React.JSX.Element {
                                 </button>
                               )}
                             </span>
+                            {locked && (
+                              <span id={`env-row-${row.uid}-locked`} className="env-hint">
+                                Cannot decrypt on this machine. Kept unless you type a new value.
+                              </span>
+                            )}
                             {row.note && <span className="env-hint">{row.note}</span>}
                           </td>
                           <td className="kv-check">

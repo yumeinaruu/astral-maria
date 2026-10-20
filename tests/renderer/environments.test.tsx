@@ -227,6 +227,89 @@ describe('environment editor', () => {
     expect(leaks).toEqual([])
   })
 
+  describe('a secret that cannot be decrypted on this machine', () => {
+    const LOCKED: Environment = {
+      id: 'e',
+      name: 'E',
+      variables: [
+        { key: 'token', value: '', secret: true, enabled: true, locked: true },
+        { key: 'host', value: 'a.test', secret: false, enabled: true },
+      ],
+    }
+
+    it('is shown masked and empty with an explanation, without a reveal button', async () => {
+      const { user } = await mount([LOCKED])
+      const dialog = await openEditor(user)
+      await user.click(within(dialog).getByRole('button', { name: 'E' }))
+      const current = rowInput('Current value')
+      expect(current).toHaveAttribute('type', 'password')
+      expect(current).toHaveValue('')
+      expect(current).toHaveAttribute('placeholder', 'Cannot decrypt on this machine')
+      expect(screen.getByText(/Cannot decrypt on this machine\. Kept unless you type a new value/)).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Show value' })).not.toBeInTheDocument()
+    })
+
+    it('is preserved when another variable is edited and saved', async () => {
+      const { user, environments } = await mount([LOCKED])
+      const dialog = await openEditor(user)
+      await user.click(within(dialog).getByRole('button', { name: 'E' }))
+      await user.clear(rowInput('Shared value', 2))
+      await user.type(rowInput('Shared value', 2), 'b.test')
+      await user.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(environments.save).toHaveBeenCalled())
+      expect((environments.save.mock.calls[0][0] as Environment).variables[0]).toEqual({
+        key: 'token',
+        value: '',
+        secret: true,
+        enabled: true,
+        locked: true,
+      })
+    })
+
+    it('is not dirty by itself, and is replaced by a typed value', async () => {
+      const { user, environments } = await mount([LOCKED])
+      const dialog = await openEditor(user)
+      await user.click(within(dialog).getByRole('button', { name: 'E' }))
+      expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+      await user.type(rowInput('Current value'), 'new-secret')
+      await user.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(environments.save).toHaveBeenCalled())
+      expect((environments.save.mock.calls[0][0] as Environment).variables[0]).toEqual({
+        key: 'token',
+        value: '',
+        currentValue: 'new-secret',
+        secret: true,
+        enabled: true,
+      })
+    })
+
+    it('drops the undecryptable value when Secret is unticked', async () => {
+      const { user, environments } = await mount([LOCKED])
+      const dialog = await openEditor(user)
+      await user.click(within(dialog).getByRole('button', { name: 'E' }))
+      await user.click(rowInput('Secret'))
+      expect(screen.getByText(/could not be decrypted is removed when you save/)).toBeInTheDocument()
+      await user.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(environments.save).toHaveBeenCalled())
+      expect((environments.save.mock.calls[0][0] as Environment).variables[0]).toEqual({
+        key: 'token',
+        value: '',
+        secret: false,
+        enabled: true,
+      })
+    })
+
+    it('is not copied by Duplicate', async () => {
+      const { user, environments } = await mount([LOCKED])
+      const dialog = await openEditor(user)
+      await user.click(within(dialog).getByRole('button', { name: 'E' }))
+      await user.click(screen.getByRole('button', { name: 'Duplicate' }))
+      await user.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(environments.save).toHaveBeenCalled())
+      expect((environments.save.mock.calls[0][0] as Environment).variables[0]).not.toHaveProperty('locked')
+    })
+  })
+
   it('does not log anything to the console', async () => {
     const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((m) => vi.spyOn(console, m))
     const { user } = await mount()

@@ -138,18 +138,24 @@ export class EnvironmentStore {
           enabled: v.enabled
         }))
       }
-      const values: Record<string, string> = {}
-      for (const v of env.variables) {
-        if (v.currentValue) values[v.key] = v.secret ? this.cipher.encrypt(v.currentValue) : v.currentValue
-      }
-
       // A damaged .local file is left alone rather than silently replaced.
       let localExists = true
+      let stored: Record<string, string> = {}
       try {
-        checkLocal(await readJson<unknown>(localAbs, localRel), localRel)
+        stored = checkLocal(await readJson<unknown>(localAbs, localRel), localRel)
       } catch (e) {
         if (!isMissing(e)) throw e
         localExists = false
+      }
+
+      const values: Record<string, string> = {}
+      for (const v of env.variables) {
+        if (v.currentValue) {
+          values[v.key] = v.secret ? this.cipher.encrypt(v.currentValue) : v.currentValue
+        } else if (v.secret && v.locked === true && Object.hasOwn(stored, v.key)) {
+          // A secret this machine cannot decrypt (Keychain denied or reset) is kept as is unless it was replaced.
+          values[v.key] = stored[v.key]
+        }
       }
 
       if (Object.keys(values).length > 0) {
@@ -273,7 +279,7 @@ export class EnvironmentStore {
           path: rel,
           message: `Cannot decrypt "${v.key}" in ${rel}: ${errorMessage(e)}`
         })
-        return v
+        return { ...v, locked: true }
       }
     })
     return { id: committed.id, name: committed.name, variables }

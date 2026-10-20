@@ -71,6 +71,11 @@ export interface EnvVar {
   currentValue?: string
   secret: boolean
   enabled: boolean
+  /**
+   * Set by `environments.list` on a secret whose stored value cannot be decrypted on this machine. Saving it back
+   * with `locked: true` and no `currentValue` keeps the stored (encrypted) value; a new `currentValue` replaces it.
+   */
+  locked?: boolean
 }
 
 export interface Environment {
