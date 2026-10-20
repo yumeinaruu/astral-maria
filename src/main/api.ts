@@ -1,7 +1,8 @@
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import type { AstralApi } from '../shared/api'
-import type { Auth, CollectionTree, KeyValue, RequestItem, WorkspaceInfo } from '../shared/types'
+import type { Auth, CollectionTree, Environment, KeyValue, RequestItem, WorkspaceInfo } from '../shared/types'
+import { OperationTracker } from './flushGuard'
 import { resolveRequest, type VariableScope } from './http/resolve'
 import { sendRequest } from './http/sendRequest'
 import { CollectionStore } from './storage/collectionStore'
@@ -13,6 +14,10 @@ export interface ApiDeps {
   cipher: SecretCipher
   pickDirectory: () => Promise<string | null>
   recentFile: string
+  /** Store operations are tracked here so a quit can wait for them. */
+  operations?: OperationTracker
+  /** Called when the renderer acknowledges a flush request (`app.flushed`). */
+  onFlushed?: () => void
 }
 
 interface Open {
@@ -50,6 +55,12 @@ function collectionRoot(p: string): string {
 }
 
 export function createApi(deps: ApiDeps): AstralApi {
+  const operations = deps.operations ?? new OperationTracker()
+  /** Wraps a store method so a quit waits for calls of it that are still running. */
+  const tracked =
+    <A extends unknown[], R>(fn: (...args: A) => Promise<R>) =>
+    (...args: A): Promise<R> =>
+      operations.track(fn(...args))
   let current: Open | null = null
   /** In-flight sends by the renderer's send id; each one can be cancelled on its own. */
   const inFlight = new Map<string, AbortController>()
@@ -121,8 +132,8 @@ export function createApi(deps: ApiDeps): AstralApi {
 
   return {
     workspace: {
-      create: async (dir, name) => activate(await createWorkspace(dir, name)),
-      open: async (dir) => activate(await openWorkspace(dir)),
+      create: tracked(async (dir: string, name: string) => activate(await createWorkspace(dir, name))),
+      open: tracked(async (dir: string) => activate(await openWorkspace(dir))),
       pickDirectory: () => deps.pickDirectory(),
       async recent() {
         await recentQueue
@@ -140,19 +151,26 @@ export function createApi(deps: ApiDeps): AstralApi {
     },
     collections: {
       list: async () => (await workspace()).collections.list(),
-      createCollection: async (name) => (await workspace()).collections.createCollection(name),
-      createFolder: async (parentPath, name) => (await workspace()).collections.createFolder(parentPath, name),
-      createRequest: async (parentPath, name) => (await workspace()).collections.createRequest(parentPath, name),
-      saveRequest: async (p, request, expectedRevision) =>
+      createCollection: tracked(async (name: string) => (await workspace()).collections.createCollection(name)),
+      createFolder: tracked(async (parentPath: string, name: string) =>
+        (await workspace()).collections.createFolder(parentPath, name),
+      ),
+      createRequest: tracked(async (parentPath: string, name: string) =>
+        (await workspace()).collections.createRequest(parentPath, name),
+      ),
+      saveRequest: tracked(async (p: string, request: RequestItem, expectedRevision?: string) =>
         (await workspace()).collections.saveRequest(p, request, expectedRevision),
-      rename: async (p, newName) => (await workspace()).collections.rename(p, newName),
-      remove: async (p) => (await workspace()).collections.remove(p),
-      move: async (p, newParentPath, index) => (await workspace()).collections.move(p, newParentPath, index),
+      ),
+      rename: tracked(async (p: string, newName: string) => (await workspace()).collections.rename(p, newName)),
+      remove: tracked(async (p: string) => (await workspace()).collections.remove(p)),
+      move: tracked(async (p: string, newParentPath: string, index: number) =>
+        (await workspace()).collections.move(p, newParentPath, index),
+      ),
     },
     environments: {
       list: async () => (await workspace()).environments.list(),
-      save: async (env) => (await workspace()).environments.save(env),
-      remove: async (id) => (await workspace()).environments.remove(id),
+      save: tracked(async (env: Environment) => (await workspace()).environments.save(env)),
+      remove: tracked(async (id: string) => (await workspace()).environments.remove(id)),
     },
     http: {
       async send(request, context, sendId) {
@@ -179,6 +197,11 @@ export function createApi(deps: ApiDeps): AstralApi {
         if (typeof sendId !== 'string') return
         inFlight.get(sendId)?.abort()
         inFlight.delete(sendId)
+      },
+    },
+    app: {
+      async flushed() {
+        deps.onFlushed?.()
       },
     },
   }

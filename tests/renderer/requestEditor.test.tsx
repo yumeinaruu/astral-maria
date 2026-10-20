@@ -412,6 +412,35 @@ describe('request editor', () => {
       expect(api.collections.rename).toHaveBeenCalledWith(REQUEST_PATH, 'Fetch users')
     })
 
+    it('writes pending edits on a flush request from main, then acknowledges', async () => {
+      let request: (() => void) | undefined
+      const off = vi.fn()
+      ;(window as unknown as { astralEvents: unknown }).astralEvents = {
+        onFlushRequest: (listener: () => void) => {
+          request = listener
+          return off
+        },
+      }
+      let finishSave!: (rev: string) => void
+      const { api } = await openedEditor()
+      api.collections.saveRequest.mockReturnValueOnce(new Promise<string>((r) => (finishSave = r)))
+      typeUrl('http://typed-just-before-quit')
+      request!()
+      await tick(0)
+      expect(api.collections.saveRequest).toHaveBeenCalledWith(
+        REQUEST_PATH,
+        expect.objectContaining({ url: 'http://typed-just-before-quit' }),
+        `rev:${REQUEST_PATH}`,
+      )
+      expect(api.app.flushed).not.toHaveBeenCalled()
+      await act(async () => finishSave('rev-2'))
+      await tick(0)
+      expect(api.app.flushed).toHaveBeenCalledTimes(1)
+      cleanup()
+      expect(off).toHaveBeenCalled()
+      delete (window as unknown as { astralEvents?: unknown }).astralEvents
+    })
+
     it('flushes pending saves when the window unloads', async () => {
       const { api } = await openedEditor()
       typeUrl('http://a')

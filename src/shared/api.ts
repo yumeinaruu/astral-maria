@@ -45,7 +45,23 @@ export interface AstralApi {
     /** Cancels the send with this id; an unknown or finished id is a no-op. */
     cancel(sendId: string): Promise<void>
   }
+  app: {
+    /** Acknowledges a flush request (see `AstralEvents.onFlushRequest`): every unsaved draft has been written. */
+    flushed(): Promise<void>
+  }
 }
+
+/** Main-to-renderer notifications, exposed as `window.astralEvents`. */
+export interface AstralEvents {
+  /**
+   * The app is about to quit or the window to close: write every unsaved draft, then call `app.flushed()`. Returns a
+   * function that removes the listener.
+   */
+  onFlushRequest(listener: () => void): () => void
+}
+
+/** The channel main uses to send a flush request to the renderer. */
+export const FLUSH_REQUEST_CHANNEL = 'astral:app.flush-request'
 
 /** Method names per group; the preload and the main-process handlers are both generated from this table. */
 export const API_METHODS = {
@@ -53,6 +69,7 @@ export const API_METHODS = {
   collections: ['list', 'createCollection', 'createFolder', 'createRequest', 'saveRequest', 'rename', 'remove', 'move'],
   environments: ['list', 'save', 'remove'],
   http: ['send', 'cancel'],
+  app: ['flushed'],
 } as const satisfies { [G in keyof AstralApi]: readonly (keyof AstralApi[G] & string)[] }
 
 export function channelName(group: string, method: string): string {
@@ -73,5 +90,7 @@ export function unwrapIpcError(e: unknown): Error {
 declare global {
   interface Window {
     astral: AstralApi
+    /** Missing only outside the app (e.g. in tests that do not install it). */
+    astralEvents?: AstralEvents
   }
 }

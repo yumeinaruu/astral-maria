@@ -231,6 +231,18 @@ test('create, send, persist, and keep secrets local', async () => {
     await expect(dialog.getByLabel('Current value 2')).toHaveValue(SECRET)
     expect(second.problems).toEqual([])
   })
+
+  await test.step('an edit typed just before quitting is on disk after the quit', async () => {
+    const p = app!.windows()[0]
+    await p.getByRole('dialog', { name: 'Environments' }).getByRole('button', { name: 'Close' }).click()
+    await p.getByRole('textbox', { name: 'URL', exact: true }).fill('{{baseUrl}}/typed-before-quit')
+    // Well within the 500 ms autosave delay: only the quit flush can have written it.
+    await app!.close()
+    app = undefined
+    const files = (await allFiles(workspace)).filter((f) => f.endsWith('.request.json'))
+    expect(files).toHaveLength(1)
+    expect(JSON.parse(await readFile(files[0], 'utf8')).url).toBe('{{baseUrl}}/typed-before-quit')
+  })
 })
 
 test('a secret is refused, not stored, when OS encryption is unavailable', async () => {

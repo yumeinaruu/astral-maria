@@ -1,5 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { API_METHODS, channelName, unwrapIpcError, type AstralApi } from '../shared/api'
+import {
+  API_METHODS,
+  channelName,
+  FLUSH_REQUEST_CHANNEL,
+  unwrapIpcError,
+  type AstralApi,
+  type AstralEvents
+} from '../shared/api'
 
 /** Built from the same method table the main process registers handlers from. */
 function buildApi(): AstralApi {
@@ -19,4 +26,16 @@ function buildApi(): AstralApi {
   return api as unknown as AstralApi
 }
 
+const events: AstralEvents = {
+  onFlushRequest(listener) {
+    // The IPC event object is not passed on: the renderer gets no handle on ipcRenderer.
+    const handler = (): void => listener()
+    ipcRenderer.on(FLUSH_REQUEST_CHANNEL, handler)
+    return () => {
+      ipcRenderer.removeListener(FLUSH_REQUEST_CHANNEL, handler)
+    }
+  }
+}
+
 contextBridge.exposeInMainWorld('astral', buildApi())
+contextBridge.exposeInMainWorld('astralEvents', events)

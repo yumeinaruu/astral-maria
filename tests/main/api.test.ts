@@ -5,6 +5,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createApi } from '../../src/main/api'
+import { OperationTracker } from '../../src/main/flushGuard'
 import { API_METHODS, CHANNELS, channelName, unwrapIpcError, type AstralApi } from '../../src/shared/api'
 import type { Environment, RequestItem } from '../../src/shared/types'
 
@@ -368,6 +369,43 @@ describe('workspace.recent', () => {
       recentFile: path.join(tmp, 'missing', 'dir', 'r.json'),
     })
     await expect(api.workspace.create(path.join(tmp, 'w'), 'w')).resolves.toMatchObject({ name: 'w' })
+  })
+})
+
+describe('quit support', () => {
+  it('app.flushed reports the acknowledgement to main', async () => {
+    let acks = 0
+    const api = createApi({
+      cipher,
+      pickDirectory: async () => null,
+      recentFile: path.join(tmp, 'recent.json'),
+      onFlushed: () => acks++,
+    })
+    await api.app.flushed()
+    expect(acks).toBe(1)
+  })
+
+  it('tracks store operations so a quit can wait for them', async () => {
+    const operations = new OperationTracker()
+    const api = createApi({
+      cipher,
+      pickDirectory: async () => null,
+      recentFile: path.join(tmp, 'recent.json'),
+      operations,
+    })
+    await newWorkspace(api)
+    const c = await api.collections.createCollection('C')
+    const r = await api.collections.createRequest(c.path, 'R')
+    const order: string[] = []
+    const saving = api.collections
+      .saveRequest(r.path, { ...r.request, url: 'during quit' })
+      .then(() => order.push('save'))
+    const envSaving = api.environments.save(env('e1', { a: '1' })).then(() => order.push('env'))
+    const waiting = operations.idle().then(() => order.push('idle'))
+    await Promise.all([saving, envSaving, waiting])
+    expect(order.indexOf('idle')).toBe(2)
+    const node = (await api.collections.list()).collections[0].children[0]
+    expect(node.kind === 'request' && node.request.url).toBe('during quit')
   })
 })
 

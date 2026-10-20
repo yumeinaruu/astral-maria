@@ -86,6 +86,11 @@ export interface AppActions {
   flushSave(path: string): void
   /** Starts every debounced save immediately (window unload). */
   flushAllSaves(): void
+  /**
+   * Writes every unsaved draft, including closed tabs' and failed ones, after any rename, move or delete in progress;
+   * resolves when all of it is on disk (or failed). Used before the app quits or the window closes.
+   */
+  flushAll(): Promise<void>
   /** Resolves a `conflict`: writes the draft over the file on disk. */
   overwriteOnDisk(path: string): Promise<void>
   /** Resolves a `conflict`: discards the draft and adopts the file on disk. */
@@ -251,6 +256,8 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
   const revisions = new Map<string, string | undefined>()
   /** Paths renamed or moved by the app itself: the next refresh takes their revision even if the draft is dirty. */
   const adoptRevision = new Set<string>()
+  /** Renames, moves and deletes in progress; `flushAll` waits for them. */
+  const lockedOps = new Set<Promise<void>>()
 
   function resetEditing(): void {
     for (const e of entries.values()) if (e.timer) clearTimeout(e.timer)
@@ -454,7 +461,17 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
    * first, saves that come due meanwhile resume afterwards, under the new path if there is one. The tree is reloaded
    * after `fn`, so `fn` itself should not reload it.
    */
-  async function locked(path: string, fn: () => Promise<void>): Promise<void> {
+  function locked(path: string, fn: () => Promise<void>): Promise<void> {
+    const op = runLocked(path, fn)
+    lockedOps.add(op)
+    const forget = (): void => {
+      lockedOps.delete(op)
+    }
+    op.then(forget, forget)
+    return op
+  }
+
+  async function runLocked(path: string, fn: () => Promise<void>): Promise<void> {
     const affected = [...entries.values(), ...pending.values()].filter((e) => isWithin(e.path, path))
     for (const e of affected) if (e.timer) e.deferred = true
     const started = epoch
@@ -783,6 +800,19 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
     flushSave: flush,
     flushAllSaves() {
       for (const e of entries.values()) if (e.timer) void runSave(e)
+    },
+    async flushAll() {
+      const started = epoch
+      // A rename, move or delete first: the saves it deferred resume (under the new path) when it is done.
+      while (lockedOps.size > 0) await Promise.allSettled([...lockedOps])
+      if (epoch !== started) return
+      const all = [...entries.values(), ...pending.values()]
+      await Promise.all(
+        all.map((e) =>
+          // A conflict waits for the user's decision; everything else unsaved is written now (failed ones retried).
+          !e.conflict && (e.timer || e.deferred || e.version !== e.savedVersion) ? runSave(e) : e.running,
+        ),
+      )
     },
     overwriteOnDisk(path) {
       const e = entries.get(path)

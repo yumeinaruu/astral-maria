@@ -18,6 +18,20 @@ export function App(): React.JSX.Element {
     return () => window.removeEventListener('beforeunload', flush)
   }, [])
 
+  // Before quitting or closing the window, main asks for every unsaved draft to be written and waits for the answer.
+  useEffect(
+    () =>
+      window.astralEvents?.onFlushRequest(() => {
+        void useApp
+          .getState()
+          .flushAll()
+          .catch(() => undefined)
+          .then(() => window.astral.app.flushed())
+          .catch(() => undefined)
+      }),
+    []
+  )
+
   if (!workspace) {
     return (
       <>

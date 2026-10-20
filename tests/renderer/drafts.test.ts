@@ -193,6 +193,79 @@ describe('drafts and autosave', () => {
   })
 })
 
+describe('flushAll (before quitting or closing the window)', () => {
+  it('writes debounced, closed-tab and failed drafts and resolves only when they are on disk', async () => {
+    const api = await setup()
+    const disk = new Map<string, string>()
+    const slow = deferred<string>()
+    api.collections.saveRequest.mockImplementation(async (p: string, r: RequestItem) => {
+      disk.set(p, r.url)
+      return 'rev'
+    })
+    // A failed save that is retried.
+    api.collections.saveRequest.mockRejectedValueOnce(new Error('disk full'))
+    setUrl(REQUEST_PATH, 'failed once')
+    await vi.advanceTimersByTimeAsync(500)
+    expect(useApp.getState().saves[REQUEST_PATH]?.state).toBe('failed')
+    // A closed tab whose save is still running, with a newer edit queued behind it.
+    useApp.getState().openRequest(OTHER_PATH)
+    api.collections.saveRequest.mockImplementationOnce(async (p: string, r: RequestItem) => {
+      await slow.promise
+      disk.set(p, r.url)
+      return 'rev'
+    })
+    setUrl(OTHER_PATH, 'other 1')
+    await vi.advanceTimersByTimeAsync(500)
+    setUrl(OTHER_PATH, 'other 2')
+    useApp.getState().closeTab(OTHER_PATH)
+
+    let done = false
+    const flushing = useApp
+      .getState()
+      .flushAll()
+      .then(() => (done = true))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(done).toBe(false)
+    slow.resolve('rev')
+    await flushing
+    expect(disk.get(REQUEST_PATH)).toBe('failed once')
+    expect(disk.get(OTHER_PATH)).toBe('other 2')
+  })
+
+  it('waits for a rename in progress and writes the edit it deferred under the new path', async () => {
+    const NEW_PATH = 'collections/shop/users/renamed.request.json'
+    const rename = deferred<string>()
+    const api = await setup({ collections: { rename: vi.fn().mockReturnValue(rename.promise) } })
+    api.collections.list.mockResolvedValue(treeWith(requestNode(NEW_PATH, 'Renamed'), requestNode(OTHER_PATH, 'Other')))
+    setUrl(REQUEST_PATH, 'edited')
+    const renaming = useApp.getState().rename(REQUEST_PATH, 'Renamed')
+    let done = false
+    const flushing = useApp
+      .getState()
+      .flushAll()
+      .then(() => (done = true))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(done).toBe(false)
+    expect(api.collections.saveRequest).not.toHaveBeenCalled()
+    rename.resolve(NEW_PATH)
+    await Promise.all([renaming, flushing])
+    expect(api.collections.saveRequest).toHaveBeenCalledWith(
+      NEW_PATH,
+      expect.objectContaining({ url: 'edited' }),
+      `rev:${NEW_PATH}`,
+    )
+  })
+
+  it('leaves a draft in conflict alone and resolves', async () => {
+    const api = await setup()
+    api.collections.saveRequest.mockRejectedValueOnce(new Error('changed_on_disk'))
+    setUrl(REQUEST_PATH, 'mine')
+    await vi.advanceTimersByTimeAsync(500)
+    await useApp.getState().flushAll()
+    expect(api.collections.saveRequest).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('renames, moves and deletes', () => {
   const NEW_PATH = 'collections/shop/users/renamed.request.json'
   // What the main process would report after the rename and the save of the edit.

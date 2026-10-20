@@ -77,6 +77,10 @@ export function installApi(overrides: Partial<{ [G in keyof AstralApi]: Partial<
       cancel: vi.fn().mockResolvedValue(undefined),
       ...overrides.http,
     },
+    app: {
+      flushed: vi.fn().mockResolvedValue(undefined),
+      ...overrides.app,
+    },
   } as unknown as MockApi
   ;(window as unknown as { astral: unknown }).astral = api
   return api
