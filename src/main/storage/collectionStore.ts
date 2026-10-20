@@ -103,8 +103,9 @@ function checkRequest(v: unknown, file: string): RequestItem {
   return v as unknown as RequestItem
 }
 
-async function readMeta(abs: string, collection: boolean): Promise<FolderMeta> {
-  return checkMeta(await readJson<unknown>(abs), abs, collection)
+/** `rel` names the file in error messages. */
+async function readMeta(abs: string, rel: string, collection: boolean): Promise<FolderMeta> {
+  return checkMeta(await readJson<unknown>(abs, rel), rel, collection)
 }
 
 async function isFile(p: string): Promise<boolean> {
@@ -148,7 +149,7 @@ export class CollectionStore {
       const metaRel = `${rel}/${COLLECTION_FILE}`
       let meta: Partial<CollectionMeta> = { id: rel, name: dirName, order: [] }
       try {
-        meta = await readMeta(path.join(this.root, metaRel), true)
+        meta = await readMeta(path.join(this.root, metaRel), metaRel, true)
       } catch (e) {
         // A directory without collection.json is not a collection. A broken one is
         // reported but its children are still listed, with default metadata.
@@ -245,7 +246,7 @@ export class CollectionStore {
       const t = this.target(requestPath)
       if (!isRequestFile(path.posix.basename(t.rel))) throw new Error('not_a_request_path')
       // Parsing first guarantees a corrupt (e.g. merge-conflicted) file is never overwritten.
-      await readJson(t.abs)
+      await readJson(t.abs, t.rel)
       await writeJsonAtomic(t.abs, request)
     })
   }
@@ -266,11 +267,11 @@ export class CollectionStore {
 
       const order = parent ? await this.orderedNames(parent) : []
       if (isRequest) {
-        const request = checkRequest(await readJson<unknown>(t.abs), t.abs)
+        const request = checkRequest(await readJson<unknown>(t.abs, t.rel), t.rel)
         await writeJsonAtomic(t.abs, { ...request, name: newName })
       } else {
         const metaFile = path.join(t.abs, parentRel === COLLECTIONS ? COLLECTION_FILE : FOLDER_FILE)
-        const meta = await readMeta(metaFile, parentRel === COLLECTIONS)
+        const meta = await readMeta(metaFile, this.relOf(metaFile), parentRel === COLLECTIONS)
         await writeJsonAtomic(metaFile, { ...meta, name: newName })
       }
       if (newEntry !== oldEntry) await fs.rename(t.abs, newAbs)
@@ -332,6 +333,11 @@ export class CollectionStore {
 
   // ---- helpers ----
 
+  /** Workspace-relative form of an absolute path inside the workspace, with `/` separators. */
+  private relOf(abs: string): string {
+    return path.relative(this.root, abs).split(path.sep).join('/')
+  }
+
   /** Validates an incoming path: inside the workspace and inside `collections/`. */
   private target(p: string): Target {
     const abs = resolveInside(this.workspaceDir, p)
@@ -355,7 +361,7 @@ export class CollectionStore {
     const isCollection = t.rel.split('/').length === 2
     const metaFile = path.join(t.abs, isCollection ? COLLECTION_FILE : FOLDER_FILE)
     try {
-      const meta = await readMeta(metaFile, isCollection)
+      const meta = await readMeta(metaFile, this.relOf(metaFile), isCollection)
       return { ...t, metaFile, meta }
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === 'ENOENT') throw new Error('parent_not_found')
@@ -407,7 +413,7 @@ export class CollectionStore {
       const rel = `${dirRel}/${name}`
       if (isRequestFile(name)) {
         try {
-          const request = checkRequest(await readJson<unknown>(path.join(this.root, rel)), rel)
+          const request = checkRequest(await readJson<unknown>(path.join(this.root, rel), rel), rel)
           nodes.push({
             kind: 'request',
             id: request.id,
@@ -423,7 +429,7 @@ export class CollectionStore {
       const metaRel = `${rel}/${FOLDER_FILE}`
       let meta: FolderMeta = { id: rel, name, order: [] }
       try {
-        meta = await readMeta(path.join(this.root, metaRel), false)
+        meta = await readMeta(path.join(this.root, metaRel), metaRel, false)
       } catch (e) {
         // A directory without folder.json is not a folder (e.g. left behind by a merge); skip it quietly.
         // A broken one is reported but still listed, with default metadata.

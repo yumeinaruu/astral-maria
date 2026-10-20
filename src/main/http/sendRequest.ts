@@ -45,12 +45,18 @@ function enabled(rows: KeyValue[]): KeyValue[] {
 
 const encode = encodeURIComponent
 
+/** The query (and fragment) may carry resolved secrets, so messages only show what comes before it. */
+function withoutQuery(url: string): string {
+  const cut = url.search(/[?#]/)
+  return cut < 0 ? url : `${url.slice(0, cut)}?…`
+}
+
 function buildUrl(request: RequestItem): URL {
   let url: URL
   try {
     url = new URL(request.url)
   } catch {
-    throw new SendError('invalid_url', `Invalid URL: ${request.url === '' ? '(empty)' : request.url}`)
+    throw new SendError('invalid_url', `Invalid URL: ${request.url === '' ? '(empty)' : withoutQuery(request.url)}`)
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new SendError('invalid_url', `Unsupported URL scheme ${url.protocol} (only http: and https: are supported)`)

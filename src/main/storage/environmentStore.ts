@@ -112,7 +112,7 @@ export class EnvironmentStore {
       const rel = this.committedRel(slug)
       let committed: Committed
       try {
-        committed = checkEnvironment(await readJson<unknown>(this.abs(rel)), rel)
+        committed = checkEnvironment(await readJson<unknown>(this.abs(rel), rel), rel)
       } catch (e) {
         errors.push({ path: rel, message: errorMessage(e) })
         continue
@@ -126,7 +126,8 @@ export class EnvironmentStore {
     return this.exclusive(async () => {
       this.checkId(env.id)
       const slug = await this.slugFor(env)
-      const localAbs = this.abs(this.localRel(slug))
+      const localRel = this.localRel(slug)
+      const localAbs = this.abs(localRel)
       const committed: Committed = {
         id: env.id,
         name: env.name,
@@ -145,7 +146,7 @@ export class EnvironmentStore {
       // A damaged .local file is left alone rather than silently replaced.
       let localExists = true
       try {
-        checkLocal(await readJson<unknown>(localAbs), localAbs)
+        checkLocal(await readJson<unknown>(localAbs, localRel), localRel)
       } catch (e) {
         if (!isMissing(e)) throw e
         localExists = false
@@ -225,7 +226,8 @@ export class EnvironmentStore {
   private async find(id: string): Promise<Entry | undefined> {
     for (const slug of await this.slugs()) {
       try {
-        const env = checkEnvironment(await readJson<unknown>(this.abs(this.committedRel(slug))), slug)
+        const rel = this.committedRel(slug)
+        const env = checkEnvironment(await readJson<unknown>(this.abs(rel), rel), rel)
         if (env.id === id) return { slug, env }
       } catch {
         // reported by list(); it cannot be the one we are looking for
@@ -239,7 +241,7 @@ export class EnvironmentStore {
       // Validating first guarantees a corrupt or hand-edited file is never overwritten.
       const rel = this.committedRel(GLOBALS_SLUG)
       try {
-        const existing = checkEnvironment(await readJson<unknown>(this.abs(rel)), rel)
+        const existing = checkEnvironment(await readJson<unknown>(this.abs(rel), rel), rel)
         if (existing.id !== GLOBALS_ID) invalid(rel, 'globals environment')
       } catch (e) {
         if (!isMissing(e)) throw e
@@ -256,7 +258,7 @@ export class EnvironmentStore {
     const rel = this.localRel(slug)
     let values: Record<string, string> = {}
     try {
-      values = checkLocal(await readJson<unknown>(this.abs(rel)), rel)
+      values = checkLocal(await readJson<unknown>(this.abs(rel), rel), rel)
     } catch (e) {
       if (!isMissing(e)) errors.push({ path: rel, message: errorMessage(e) })
     }

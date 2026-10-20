@@ -206,6 +206,11 @@ describe('sendRequest basics', () => {
       if (!r.ok) expect(r.error.code).toBe('invalid_url')
     }
   })
+
+  it('leaves the query string (which may hold resolved secrets) out of an invalid-URL message', async () => {
+    const r = await sendRequest(req({ url: 'http//api.test/x?token=sk-live-abc#frag' }))
+    expect(r).toEqual({ ok: false, error: { code: 'invalid_url', message: 'Invalid URL: http//api.test/x?…' } })
+  })
 })
 
 describe('params, headers, bodies and auth', () => {

@@ -318,6 +318,34 @@ describe('corrupt files', () => {
     expect(await fsp.readFile(file, 'utf8')).toBe('<<<<<<< HEAD\n')
   })
 
+  it('names files by workspace-relative path and never quotes their content in messages', async () => {
+    const col = await store.createCollection('C')
+    const f = await store.createFolder(col.path, 'F')
+    const r = await store.createRequest(col.path, 'R')
+    await fsp.writeFile(path.join(dir, r.path), '{"auth": {"token": sk-live-abcdef}}')
+    await fsp.writeFile(path.join(dir, f.path, 'folder.json'), '{"id": "x", "name": sk-live-abcdef}')
+    await fsp.writeFile(path.join(dir, col.path, 'collection.json'), '{}')
+    const { errors } = await store.list()
+    expect(errors).toEqual([
+      {
+        path: 'collections/c/collection.json',
+        message: 'Invalid collection metadata in collections/c/collection.json'
+      },
+      {
+        path: 'collections/c/f/folder.json',
+        message: 'Invalid JSON in collections/c/f/folder.json (line 1, column 21)'
+      },
+      { path: r.path, message: `Invalid JSON in ${r.path} (line 1, column 20)` }
+    ])
+    await expect(store.saveRequest(r.path, r.request)).rejects.toThrow(`Invalid JSON in ${r.path} (line 1, column 20)`)
+    await expect(store.createRequest(f.path, 'X')).rejects.toThrow(
+      'Invalid JSON in collections/c/f/folder.json (line 1, column 21)'
+    )
+    await expect(store.rename(r.path, 'Y')).rejects.toThrow(
+      'Invalid collection metadata in collections/c/collection.json'
+    )
+  })
+
   describe.each([['null'], ['[]'], ['{}']])('malformed JSON %s', (text) => {
     it('is reported per file for collection.json, folder.json and requests without throwing', async () => {
       const col = await store.createCollection('C')

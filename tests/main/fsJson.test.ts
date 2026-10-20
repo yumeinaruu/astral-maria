@@ -45,6 +45,34 @@ describe('readJson', () => {
     expect(err.path).toBe(p)
   })
 
+  it('reports the line and column of a syntax error and never quotes the file', async () => {
+    const p = path.join(dir, 'secret.json')
+    await fsp.writeFile(p, '{\n  "a": 1,\n  "token": sk-live-abcdef123456\n}\n')
+    const err = (await readJson(p, '.local/environments/secret.json').catch((e: unknown) => e)) as CorruptFileError
+    expect(err).toBeInstanceOf(CorruptFileError)
+    expect(err.path).toBe(p)
+    expect(err.message).toBe('Invalid JSON in .local/environments/secret.json (line 3, column 12)')
+    expect(err.message).not.toContain('sk-live')
+  })
+
+  it.each([
+    ['{"token": sk-live-ab}', 1, 11],
+    ['{"x":"sk-live-ab" "y":1}', 1, 19],
+    ['{"a":"sk-live-ab",}', 1, 19],
+    ['{"a":"sk-live-ab"', 1, 18],
+    ['\n\n  {"a": "sk-live-ab", "b": tru}', 3, 31],
+    ['{"a": "sk-live\u0001"}', 1, 15],
+    ['{"a": "sk-live\\q"}', 1, 16],
+    ['[1, 2] sk-live', 1, 8],
+    ['', 1, 1]
+  ])('locates the error in %j without echoing any of it', async (text, line, column) => {
+    const p = path.join(dir, 'x.json')
+    await fsp.writeFile(p, text)
+    const err = (await readJson(p).catch((e: unknown) => e)) as CorruptFileError
+    expect(err).toBeInstanceOf(CorruptFileError)
+    expect(err.message).toBe(`Invalid JSON in ${p} (line ${line}, column ${column})`)
+  })
+
   it('rejects conflict markers with a specific message', async () => {
     const p = path.join(dir, 'conflict.json')
     await fsp.writeFile(p, '{\n<<<<<<< HEAD\n"a": 1\n=======\n"a": 2\n>>>>>>> x\n}\n')
@@ -52,6 +80,7 @@ describe('readJson', () => {
     expect(err).toBeInstanceOf(CorruptFileError)
     expect(err.path).toBe(p)
     expect(err.message).toMatch(/conflict/i)
+    expect(err.message).not.toContain('"a"')
   })
 
   it('lets ENOENT through', async () => {

@@ -14,15 +14,158 @@ export class CorruptFileError extends Error {
 
 const CONFLICT_MARKER = /^(<<<<<<<|=======|>>>>>>>)/m
 
-export async function readJson<T>(filePath: string): Promise<T> {
+/**
+ * Reads and parses a JSON file. `label` (default: `filePath`) names the file in error messages, which never quote
+ * any of its content: a hand-edited `.local` file holds plain current values.
+ */
+export async function readJson<T>(filePath: string, label: string = filePath): Promise<T> {
   const text = await fs.readFile(filePath, 'utf8')
   if (CONFLICT_MARKER.test(text)) {
-    throw new CorruptFileError(filePath, `File contains merge conflict markers: ${filePath}`)
+    throw new CorruptFileError(filePath, `File contains merge conflict markers: ${label}`)
   }
   try {
     return JSON.parse(text) as T
+  } catch {
+    // V8's message quotes a snippet of the text, so the position is computed here instead.
+    const offset = jsonErrorOffset(text)
+    const where = offset === null ? '' : ` (${lineAndColumn(text, offset)})`
+    throw new CorruptFileError(filePath, `Invalid JSON in ${label}${where}`)
+  }
+}
+
+function lineAndColumn(text: string, offset: number): string {
+  const before = text.slice(0, offset)
+  const line = before.split('\n').length
+  return `line ${line}, column ${offset - before.lastIndexOf('\n')}`
+}
+
+const WHITESPACE = new Set([' ', '\t', '\n', '\r'])
+const ESCAPES = new Set(['"', '\\', '/', 'b', 'f', 'n', 'r', 't'])
+
+class SyntaxAt {
+  constructor(readonly offset: number) {}
+}
+
+/** The offset of the first JSON syntax error in `text`, or null if none is found. Only used once parsing failed. */
+export function jsonErrorOffset(text: string): number | null {
+  let i = 0
+  const fail = (): never => {
+    throw new SyntaxAt(i)
+  }
+  const ws = (): void => {
+    while (i < text.length && WHITESPACE.has(text[i])) i++
+  }
+  const digits = (): void => {
+    if (!/[0-9]/.test(text[i] ?? '')) fail()
+    while (/[0-9]/.test(text[i] ?? '')) i++
+  }
+  const literal = (word: string): void => {
+    for (const ch of word) {
+      if (text[i] !== ch) fail()
+      i++
+    }
+  }
+  const string = (): void => {
+    if (text[i] !== '"') fail()
+    i++
+    for (;;) {
+      if (i >= text.length) fail()
+      const ch = text[i]
+      if (ch === '"') {
+        i++
+        return
+      }
+      if (ch === '\\') {
+        i++
+        if (text[i] === 'u') {
+          i++
+          for (let k = 0; k < 4; k++, i++) if (!/[0-9a-fA-F]/.test(text[i] ?? '')) fail()
+          continue
+        }
+        if (!ESCAPES.has(text[i] ?? '')) fail()
+      } else if (ch.charCodeAt(0) < 0x20) {
+        fail()
+      }
+      i++
+    }
+  }
+  const number = (): void => {
+    if (text[i] === '-') i++
+    if (text[i] === '0') i++
+    else digits()
+    if (text[i] === '.') {
+      i++
+      digits()
+    }
+    if (text[i] === 'e' || text[i] === 'E') {
+      i++
+      if (text[i] === '+' || text[i] === '-') i++
+      digits()
+    }
+  }
+  const value = (): void => {
+    ws()
+    const ch = text[i]
+    if (ch === '{') {
+      i++
+      ws()
+      if (text[i] === '}') {
+        i++
+        return
+      }
+      for (;;) {
+        ws()
+        string()
+        ws()
+        if (text[i] !== ':') fail()
+        i++
+        value()
+        ws()
+        if (text[i] === '}') {
+          i++
+          return
+        }
+        if (text[i] !== ',') fail()
+        i++
+      }
+    } else if (ch === '[') {
+      i++
+      ws()
+      if (text[i] === ']') {
+        i++
+        return
+      }
+      for (;;) {
+        value()
+        ws()
+        if (text[i] === ']') {
+          i++
+          return
+        }
+        if (text[i] !== ',') fail()
+        i++
+      }
+    } else if (ch === '"') {
+      string()
+    } else if (ch === '-' || /[0-9]/.test(ch ?? '')) {
+      number()
+    } else if (ch === 't') {
+      literal('true')
+    } else if (ch === 'f') {
+      literal('false')
+    } else if (ch === 'n') {
+      literal('null')
+    } else {
+      fail()
+    }
+  }
+  try {
+    value()
+    ws()
+    return i < text.length ? i : null
   } catch (e) {
-    throw new CorruptFileError(filePath, `Invalid JSON in ${filePath}: ${(e as Error).message}`)
+    // A RangeError means the nesting is too deep to scan; then there is no position to report.
+    return e instanceof SyntaxAt ? e.offset : null
   }
 }
 

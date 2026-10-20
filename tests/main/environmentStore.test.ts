@@ -285,6 +285,30 @@ describe('damaged files', () => {
     }
   )
 
+  it('never puts current values of a hand-edited .local file into the error message', async () => {
+    await store.save(env({ variables: [{ key: 'host', value: '', currentValue: 'x', secret: false, enabled: true }] }))
+    await write('.local/environments/staging.json', '{"values": {"host": sk-live-abcdef123456}}')
+    const { errors } = await store.list()
+    expect(errors).toEqual([
+      {
+        path: '.local/environments/staging.json',
+        message: 'Invalid JSON in .local/environments/staging.json (line 1, column 21)'
+      }
+    ])
+  })
+
+  it('names files by their workspace-relative path in shape errors', async () => {
+    await write('environments/odd.json', '{}')
+    await write('.local/environments/odd.json', '{"values":{"a":1}}')
+    const { errors } = await store.list()
+    expect(errors).toEqual([{ path: 'environments/odd.json', message: 'Invalid environment in environments/odd.json' }])
+    await expect(store.save(env({ id: 'globals', name: 'Globals' }))).resolves.toBeUndefined()
+    await write('environments/globals.json', '{"id":"other","name":"G","variables":[]}')
+    await expect(store.save(env({ id: 'globals', name: 'Globals' }))).rejects.toThrow(
+      'Invalid globals environment in environments/globals.json'
+    )
+  })
+
   it('reports a secret that fails to decrypt and treats it as empty', async () => {
     await store.save(
       env({
