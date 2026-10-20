@@ -71,24 +71,35 @@ describe('request editor', () => {
   it('shows the open request with its method, url and name', async () => {
     await openedEditor()
     expect(screen.getByRole('tab', { name: /Get users/ })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByRole('combobox', { name: 'Method' })).toHaveValue('GET')
+    expect(screen.getByRole('button', { name: 'Method' })).toHaveTextContent('GET')
     expect(urlBar()).toHaveValue('')
     expect(screen.getByRole('textbox', { name: 'Request name' })).toHaveValue('Get users')
     expect(screen.getByRole('region', { name: 'Response' })).toBeInTheDocument()
   })
 
-  it('offers all seven methods and colours the select like the badge', async () => {
+  it('offers all seven methods in a custom dropdown, each in its colour', async () => {
     const { user } = await openedEditor()
-    const select = screen.getByRole('combobox', { name: 'Method' })
-    expect(
-      within(select)
-        .getAllByRole('option')
-        .map((o) => o.textContent),
-    ).toEqual(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'])
-    expect(select).toHaveClass('method-get')
-    await user.selectOptions(select, 'DELETE')
-    expect(select).toHaveClass('method-delete')
+    const button = screen.getByRole('button', { name: 'Method' })
+    expect(button).toHaveClass('method-get')
+    await user.click(button)
+    const items = within(screen.getByRole('menu', { name: 'Method' })).getAllByRole('menuitemradio')
+    expect(items.map((o) => o.textContent)).toEqual(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'])
+    expect(items[0]).toHaveAttribute('aria-checked', 'true')
+    expect(items[4]).toHaveClass('method-delete')
+    await user.click(items[4]!)
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Method' })).toHaveClass('method-delete')
+    expect(screen.getByRole('button', { name: 'Method' })).toHaveTextContent('DELETE')
     expect(useApp.getState().drafts[REQUEST_PATH]?.method).toBe('DELETE')
+  })
+
+  it('opens the method menu from the keyboard', async () => {
+    const { user } = await openedEditor()
+    screen.getByRole('button', { name: 'Method' }).focus()
+    await user.keyboard('{ArrowDown}')
+    expect(screen.getByRole('menuitemradio', { name: 'GET' })).toHaveFocus()
+    await user.keyboard('{ArrowDown}{Enter}')
+    expect(useApp.getState().drafts[REQUEST_PATH]?.method).toBe('POST')
   })
 
   it('applies the method colour to the select (the stylesheet cascade, not just the class)', async () => {
@@ -97,10 +108,11 @@ describe('request editor', () => {
     style.textContent = readFileSync('src/renderer/src/styles.css', 'utf8')
     document.head.appendChild(style)
     try {
-      const select = screen.getByRole('combobox', { name: 'Method' })
       const colours: string[] = []
       for (const method of ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']) {
-        await user.selectOptions(select, method)
+        await user.click(screen.getByRole('button', { name: 'Method' }))
+        await user.click(screen.getByRole('menuitemradio', { name: method }))
+        const select = screen.getByRole('button', { name: 'Method' })
         const badge = document.createElement('span')
         badge.className = `method method-${method.toLowerCase()}`
         document.body.appendChild(badge)
@@ -108,9 +120,9 @@ describe('request editor', () => {
           const expected = getComputedStyle(badge)
           const actual = getComputedStyle(select)
           // Every method has its own text colour; labels have no background.
-          expect(expected.color).toContain(`--m-${method.toLowerCase()}`)
+          expect(expected.color).toContain(`--method-${method.toLowerCase()}`)
           expect(actual.color).toBe(expected.color)
-          expect(actual.backgroundColor || actual.background).toBe(expected.backgroundColor || expected.background)
+          expect(actual.backgroundColor || actual.background).toMatch(/^(transparent|rgba\(0, 0, 0, 0\)|)$/)
           colours.push(actual.color)
         } finally {
           badge.remove()
@@ -141,6 +153,28 @@ describe('request editor', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Saved')
   })
 
+  it('enables Save only while there are unsaved changes, and Save writes at once', async () => {
+    const { api, user } = await openedEditor()
+    const save = screen.getByRole('button', { name: 'Save' })
+    expect(save).toBeDisabled()
+    typeUrl('http://a/now')
+    expect(save).toBeEnabled()
+    await user.click(save)
+    expect(api.collections.saveRequest).toHaveBeenCalledTimes(1)
+    expect(lastSaved(api)![1].url).toBe('http://a/now')
+    await tick(0)
+    expect(save).toBeDisabled()
+    await tick(1000)
+    expect(api.collections.saveRequest).toHaveBeenCalledTimes(1)
+  })
+
+  it('saves with Cmd/Ctrl+S wherever the focus is', async () => {
+    const { api } = await openedEditor()
+    typeUrl('http://a/s')
+    fireEvent.keyDown(document.body, { key: 's', ctrlKey: true })
+    expect(api.collections.saveRequest).toHaveBeenCalledTimes(1)
+  })
+
   it('shows Saving while an edit is waiting and a failure message when the save fails', async () => {
     const { api } = await openedEditor()
     api.collections.saveRequest.mockRejectedValueOnce(new Error('disk full'))
@@ -155,11 +189,15 @@ describe('request editor', () => {
     const { user } = await openedEditor()
     typeUrl('http://a/x?q=1')
     await user.click(screen.getByRole('tab', { name: /^Params/ }))
+    expect(screen.getByText('Query Params')).toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: 'Param key 1' })).toHaveValue('q')
     expect(screen.getByRole('textbox', { name: 'Param value 1' })).toHaveValue('1')
 
-    await user.click(screen.getByRole('button', { name: 'Add param' }))
+    // The trailing empty row turns into a param as soon as something is typed in it.
+    expect(screen.getByRole('textbox', { name: 'Param key 2' })).toHaveAttribute('placeholder', 'Key')
     await user.type(screen.getByRole('textbox', { name: 'Param key 2' }), 'z')
+    expect(screen.getByRole('textbox', { name: 'Param key 2' })).toHaveFocus()
+    expect(screen.getByRole('textbox', { name: 'Param key 3' })).toHaveValue('')
     await user.type(screen.getByRole('textbox', { name: 'Param value 2' }), 'a b')
     expect(urlBar()).toHaveValue('http://a/x?q=1&z=a%20b')
 
@@ -181,12 +219,113 @@ describe('request editor', () => {
   it('adds a header row and saves it', async () => {
     const { api, user } = await openedEditor()
     await user.click(screen.getByRole('tab', { name: /^Headers/ }))
-    await user.click(screen.getByRole('button', { name: 'Add header' }))
+    expect(screen.getByRole('columnheader', { name: /Description/ })).toBeInTheDocument()
     await user.type(screen.getByRole('textbox', { name: 'Header key 1' }), 'X-Token')
     await user.type(screen.getByRole('textbox', { name: 'Header value 1' }), 'abc')
+    await user.type(screen.getByRole('textbox', { name: 'Header description 1' }), 'auth')
+    expect(screen.getByRole('tab', { name: /^Headers\s*\(1\)/ })).toBeInTheDocument()
     await tick(500)
-    expect(lastSaved(api)![1].headers).toEqual([{ key: 'X-Token', value: 'abc', enabled: true }])
-    expect(screen.queryByText(/description/i)).toBeNull()
+    expect(lastSaved(api)![1].headers).toEqual([{ key: 'X-Token', value: 'abc', enabled: true, description: 'auth' }])
+  })
+
+  it('round-trips the rows through Bulk Edit, with // disabling a line', async () => {
+    const { user } = await openedEditor()
+    act(() =>
+      useApp.getState().editDraft(REQUEST_PATH, (r) => ({
+        ...r,
+        headers: [
+          { key: 'A', value: '1', enabled: true, description: 'kept' },
+          { key: 'B', value: 'x:y', enabled: false },
+        ],
+      })),
+    )
+    await user.click(screen.getByRole('tab', { name: /^Headers/ }))
+    await user.click(screen.getByRole('button', { name: 'Bulk Edit' }))
+    const text = screen.getByRole('textbox', { name: 'Headers as key:value lines' })
+    expect(text).toHaveValue('A:1\n//B:x:y')
+    fireEvent.change(text, { target: { value: 'A:1\n//B:x:y\nC: 3' } })
+    expect(useApp.getState().drafts[REQUEST_PATH]?.headers).toEqual([
+      { key: 'A', value: '1', enabled: true, description: 'kept' },
+      { key: 'B', value: 'x:y', enabled: false },
+      { key: 'C', value: '3', enabled: true },
+    ])
+    await user.click(screen.getByRole('button', { name: 'Key-Value Edit' }))
+    expect(screen.getByRole('textbox', { name: 'Header key 3' })).toHaveValue('C')
+    expect(screen.getByRole('checkbox', { name: 'Header 2 enabled' })).not.toBeChecked()
+    await user.click(screen.getByRole('button', { name: 'Remove header 1' }))
+    expect(useApp.getState().drafts[REQUEST_PATH]?.headers.map((h) => h.key)).toEqual(['B', 'C'])
+  })
+
+  describe('variables', () => {
+    async function withVariables() {
+      const ctx = await openedEditor({
+        environments: {
+          list: vi.fn().mockResolvedValue({
+            environments: [
+              {
+                id: 'env1',
+                name: 'Dev',
+                variables: [
+                  {
+                    key: 'baseUrl',
+                    value: 'http://shared',
+                    currentValue: 'http://local',
+                    secret: false,
+                    enabled: true,
+                  },
+                  { key: 'token', value: '', currentValue: 'hunter2', secret: true, enabled: true },
+                  { key: 'off', value: 'x', secret: false, enabled: false },
+                ],
+              },
+              { id: 'globals', name: 'Globals', variables: [{ key: 'g', value: 'G', secret: false, enabled: true }] },
+            ],
+            errors: [],
+          }),
+        },
+      })
+      await act(() => useApp.getState().refresh())
+      act(() => useApp.getState().setActiveEnvironment('env1'))
+      return ctx
+    }
+
+    const token = (name: string) => document.querySelector(`.var-mirror [data-var="${name}"]`) as HTMLElement | null
+
+    it('colours resolved and missing variables in the URL bar', async () => {
+      await withVariables()
+      typeUrl('{{baseUrl}}/x?a={{nope}}&b={{g}}&c={{off}}')
+      expect(token('baseUrl')).toHaveClass('var-resolved')
+      expect(token('g')).toHaveClass('var-resolved')
+      expect(token('nope')).toHaveClass('var-missing')
+      expect(token('off')).toHaveClass('var-missing')
+      // The real input keeps the text; the mirror only paints it.
+      expect(urlBar()).toHaveValue('{{baseUrl}}/x?a={{nope}}&b={{g}}&c={{off}}')
+      expect(document.querySelector('.var-mirror')).toHaveAttribute('aria-hidden', 'true')
+      act(() => useApp.getState().setActiveEnvironment(null))
+      expect(token('baseUrl')).toHaveClass('var-missing')
+    })
+
+    it('shows the value and its source on hover, masking secrets', async () => {
+      await withVariables()
+      typeUrl('{{baseUrl}}/{{token}}/{{nope}}')
+      const hoverOn = (name: string) => {
+        const el = token(name)!
+        el.getBoundingClientRect = () => new DOMRect(10, 10, 50, 16)
+        fireEvent.mouseMove(urlBar(), { clientX: 20, clientY: 15 })
+        const tip = screen.getByRole('tooltip')
+        el.getBoundingClientRect = () => new DOMRect(0, 0, 0, 0)
+        return tip
+      }
+      const first = hoverOn('baseUrl')
+      expect(first).toHaveTextContent('http://local')
+      expect(first).toHaveTextContent('Environment · Dev')
+      fireEvent.mouseLeave(urlBar())
+      expect(screen.queryByRole('tooltip')).toBeNull()
+      const secret = hoverOn('token')
+      expect(secret).toHaveTextContent('••••')
+      expect(secret).not.toHaveTextContent('hunter2')
+      fireEvent.mouseLeave(urlBar())
+      expect(hoverOn('nope')).toHaveTextContent('Unresolved')
+    })
   })
 
   it('sends the unsaved draft with the collection path and the active environment', async () => {
@@ -249,62 +388,118 @@ describe('request editor', () => {
   })
 
   describe('body', () => {
+    async function pick(user: ReturnType<typeof userEvent.setup>, menu: string, item: string) {
+      await user.click(screen.getByRole('button', { name: menu }))
+      await user.click(screen.getByRole('menuitemradio', { name: item }))
+    }
+
     it('shows the code editor for raw JSON and keeps content across mode switches', async () => {
       const { api, user } = await openedEditor()
       await user.click(screen.getByRole('tab', { name: /^Body/ }))
-      await user.click(screen.getByRole('radio', { name: 'Raw' }))
+      expect(screen.getByRole('button', { name: 'Body type' })).toHaveTextContent('none')
+      expect(screen.getByText('This request does not have a body')).toBeInTheDocument()
+      await pick(user, 'Body type', 'raw')
       const editor = screen.getByRole('textbox', { name: 'Body' })
       expect(editor).toHaveAttribute('data-language', 'text')
-      await user.selectOptions(screen.getByRole('combobox', { name: 'Language' }), 'json')
+      expect(screen.queryByRole('button', { name: 'Beautify' })).toBeNull()
+      await pick(user, 'Language', 'JSON')
       expect(screen.getByRole('textbox', { name: 'Body' })).toHaveAttribute('data-language', 'json')
+      expect(screen.getByRole('tab', { name: /^Body\s*\(configured\)/ })).toBeInTheDocument()
       fireEvent.change(screen.getByRole('textbox', { name: 'Body' }), { target: { value: '{"a":1}' } })
 
-      await user.click(screen.getByRole('radio', { name: 'x-www-form-urlencoded' }))
+      await pick(user, 'Body type', 'x-www-form-urlencoded')
       expect(screen.queryByRole('textbox', { name: 'Body' })).toBeNull()
-      await user.click(screen.getByRole('button', { name: 'Add field' }))
       await user.type(screen.getByRole('textbox', { name: 'Field key 1' }), 'k')
 
-      await user.click(screen.getByRole('radio', { name: 'Raw' }))
+      await pick(user, 'Body type', 'raw')
       expect(screen.getByRole('textbox', { name: 'Body' })).toHaveValue('{"a":1}')
-      await user.click(screen.getByRole('radio', { name: 'x-www-form-urlencoded' }))
+      await pick(user, 'Body type', 'x-www-form-urlencoded')
       expect(screen.getByRole('textbox', { name: 'Field key 1' })).toHaveValue('k')
 
-      await user.click(screen.getByRole('radio', { name: 'None' }))
+      await pick(user, 'Body type', 'none')
       await tick(500)
       expect(lastSaved(api)![1].body).toEqual({ mode: 'none' })
+    })
+
+    it('beautifies JSON and XML bodies', async () => {
+      const { user } = await openedEditor()
+      await user.click(screen.getByRole('tab', { name: /^Body/ }))
+      await pick(user, 'Body type', 'raw')
+      await pick(user, 'Language', 'JSON')
+      fireEvent.change(screen.getByRole('textbox', { name: 'Body' }), { target: { value: '{"a":[1]}' } })
+      await user.click(screen.getByRole('button', { name: 'Beautify' }))
+      expect(screen.getByRole('textbox', { name: 'Body' })).toHaveValue('{\n  "a": [\n    1\n  ]\n}')
+      await pick(user, 'Language', 'XML')
+      fireEvent.change(screen.getByRole('textbox', { name: 'Body' }), { target: { value: '<a><b>x</b><c/></a>' } })
+      await user.click(screen.getByRole('button', { name: 'Beautify' }))
+      expect(screen.getByRole('textbox', { name: 'Body' })).toHaveValue('<a>\n  <b>x</b>\n  <c/>\n</a>')
     })
 
     it('states that form-data supports text fields only', async () => {
       const { user } = await openedEditor()
       await user.click(screen.getByRole('tab', { name: /^Body/ }))
-      await user.click(screen.getByRole('radio', { name: 'form-data' }))
+      await pick(user, 'Body type', 'form-data')
       expect(screen.getByText(/text fields only/i)).toBeInTheDocument()
     })
   })
 
   describe('auth', () => {
+    async function pick(user: ReturnType<typeof userEvent.setup>, menu: string, item: string) {
+      await user.click(screen.getByRole('button', { name: menu }))
+      await user.click(screen.getByRole('menuitemradio', { name: item }))
+    }
+
     it('edits bearer, basic and api key credentials', async () => {
       const { api, user } = await openedEditor()
-      await user.click(screen.getByRole('tab', { name: /^Auth/ }))
-      const type = screen.getByRole('combobox', { name: 'Auth type' })
-      expect(
-        within(type)
-          .getAllByRole('option')
-          .map((o) => o.textContent),
-      ).toEqual(['Inherit from parent', 'No auth', 'Bearer token', 'Basic auth', 'API key'])
-      await user.selectOptions(type, 'bearer')
+      await user.click(screen.getByRole('tab', { name: /^Authorization/ }))
+      await user.click(screen.getByRole('button', { name: 'Auth type' }))
+      expect(screen.getAllByRole('menuitemradio').map((o) => o.textContent)).toEqual([
+        'Inherit from parent',
+        'No auth',
+        'Bearer token',
+        'Basic auth',
+        'API key',
+      ])
+      await user.click(screen.getByRole('menuitemradio', { name: 'Bearer token' }))
       await user.type(screen.getByRole('textbox', { name: 'Token' }), 't0k')
-      await user.selectOptions(type, 'apikey')
+      expect(screen.getByRole('tab', { name: /^Authorization\s*\(configured\)/ })).toBeInTheDocument()
+      await pick(user, 'Auth type', 'API key')
       await user.type(screen.getByRole('textbox', { name: 'Key' }), 'X-Key')
       await user.type(screen.getByRole('textbox', { name: 'Value' }), 'v')
-      await user.selectOptions(screen.getByRole('combobox', { name: 'Add to' }), 'query')
+      await pick(user, 'Add to', 'Query params')
       await tick(500)
       expect(lastSaved(api)![1].auth).toEqual({ type: 'apikey', key: 'X-Key', value: 'v', in: 'query' })
-      await user.selectOptions(type, 'bearer')
+      await pick(user, 'Auth type', 'Bearer token')
       expect(screen.getByRole('textbox', { name: 'Token' })).toHaveValue('t0k')
-      await user.selectOptions(type, 'basic')
+      await pick(user, 'Auth type', 'Basic auth')
       await user.type(screen.getByRole('textbox', { name: 'Username' }), 'me')
       expect(screen.getByLabelText('Password')).toHaveAttribute('type', 'password')
+    })
+
+    it('shows the inherited collection auth read-only, with the secret masked', async () => {
+      const { user } = await openedEditor({
+        collections: {
+          list: vi.fn().mockResolvedValue({
+            collections: [
+              {
+                ...collectionTree('collections/shop', 'Shop', [
+                  folderNode('collections/shop/users', 'Users', [requestNode(REQUEST_PATH, 'Get users')]),
+                ]),
+                auth: { type: 'basic', username: '{{user}}', password: 'pw-secret' },
+              },
+            ],
+            errors: [],
+          }),
+        },
+      })
+      await user.click(screen.getByRole('tab', { name: /^Authorization/ }))
+      await pick(user, 'Auth type', 'Inherit from parent')
+      expect(screen.getByText('Inherited')).toBeInTheDocument()
+      expect(screen.getAllByText('Basic auth').length).toBeGreaterThan(0)
+      expect(screen.getByRole('group', { name: 'Username' })).toHaveTextContent('{{user}}')
+      expect(screen.getByRole('group', { name: 'Password' })).toHaveTextContent('••••')
+      expect(screen.queryByText('pw-secret')).toBeNull()
+      expect(screen.queryByRole('textbox', { name: 'Username' })).toBeNull()
     })
   })
 
@@ -402,6 +597,12 @@ describe('request editor', () => {
         await user.click(screen.getByRole('button', { name: 'Close Get users' }))
         expect(screen.getByRole('alertdialog')).toHaveTextContent('changed on disk')
       })
+    })
+
+    it('shows the collection path before the request name', async () => {
+      await openedEditor()
+      const crumbs = screen.getByRole('navigation', { name: 'Request location' })
+      expect(crumbs).toHaveTextContent('ShopUsers')
     })
 
     it('renames through the title field', async () => {

@@ -10,6 +10,21 @@ export const SIDEBAR_MIN = 220
 export const SIDEBAR_MAX = 520
 export const SIDEBAR_DEFAULT = 300
 
+/** The share (0-1) of the request area the response takes, per layout. */
+export const SHARE_MIN = 0.2
+export const SHARE_MAX = 0.8
+export const SHARE_DEFAULTS: Record<PaneLayout, number> = { side: 0.5, stacked: 0.45 }
+
+export function clampShare(share: number): number {
+  return Math.min(SHARE_MAX, Math.max(SHARE_MIN, share))
+}
+
+const isShares = (v: unknown): v is Record<PaneLayout, number> =>
+  typeof v === 'object' &&
+  v !== null &&
+  isNumber((v as Record<string, unknown>).side) &&
+  isNumber((v as Record<string, unknown>).stacked)
+
 export function clampSidebar(width: number): number {
   return Math.round(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, width)))
 }
@@ -21,11 +36,17 @@ export interface UiState {
   sidebarWidth: number
   sections: Record<SidebarSection, boolean>
   layout: PaneLayout
+  /** How much of the request area the response takes, per layout. */
+  responseShare: Record<PaneLayout, number>
+  /** Long lines of the response body wrap. */
+  responseWrap: boolean
   setTheme(theme: ThemePreference): void
   toggleSidebar(): void
   setSidebarWidth(width: number): void
   setSectionOpen(section: SidebarSection, open: boolean): void
   setLayout(layout: PaneLayout): void
+  setResponseShare(layout: PaneLayout, share: number): void
+  setResponseWrap(wrap: boolean): void
 }
 
 const isSections = (v: unknown): v is Record<SidebarSection, boolean> =>
@@ -35,12 +56,15 @@ const isSections = (v: unknown): v is Record<SidebarSection, boolean> =>
   isBoolean((v as Record<string, unknown>).environments)
 
 export function loadUi(): Omit<UiState, `set${string}` | 'toggleSidebar'> {
+  const shares = readPref('responseShare', SHARE_DEFAULTS, isShares)
   return {
     theme: loadTheme(),
     sidebarVisible: readPref('sidebarVisible', true, isBoolean),
     sidebarWidth: clampSidebar(readPref('sidebarWidth', SIDEBAR_DEFAULT, isNumber)),
     sections: readPref('sections', { collections: true, environments: true }, isSections),
     layout: readPref('layout', 'side', oneOf<PaneLayout>('side', 'stacked')),
+    responseShare: { side: clampShare(shares.side), stacked: clampShare(shares.stacked) },
+    responseWrap: readPref('responseWrap', true, isBoolean),
   }
 }
 
@@ -68,5 +92,14 @@ export const useUi = create<UiState>()((set, get) => ({
   setLayout(layout) {
     writePref('layout', layout)
     set({ layout })
+  },
+  setResponseShare(layout, share) {
+    const responseShare = { ...get().responseShare, [layout]: clampShare(share) }
+    writePref('responseShare', responseShare)
+    set({ responseShare })
+  },
+  setResponseWrap(responseWrap) {
+    writePref('responseWrap', responseWrap)
+    set({ responseWrap })
   },
 }))

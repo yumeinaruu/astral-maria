@@ -6,6 +6,7 @@ import { RequestEditor } from '../../src/renderer/src/components/RequestEditor'
 import { ResponseViewer } from '../../src/renderer/src/components/ResponseViewer'
 import { decodeBody } from '../../src/renderer/src/lib/body'
 import { initialState, useApp } from '../../src/renderer/src/state/store'
+import { loadUi, useUi } from '../../src/renderer/src/state/ui'
 import type { HttpResponse, SendResult } from '../../src/shared/types'
 import { collectionTree, folderNode, installApi, REQUEST_PATH, requestNode } from './helpers'
 
@@ -67,8 +68,15 @@ function stubClipboard(writeText: (t: string) => Promise<void>): void {
 }
 
 beforeEach(() => {
+  localStorage.clear()
   useApp.setState(initialState())
+  useUi.setState(loadUi())
 })
+
+function pickFormat(name: string): void {
+  fireEvent.click(screen.getByRole('button', { name: 'Body format' }))
+  fireEvent.click(screen.getByRole('menuitemradio', { name }))
+}
 afterEach(() => {
   cleanup()
   vi.useRealTimers()
@@ -80,8 +88,8 @@ afterEach(() => {
 describe('response viewer states', () => {
   it('shows a hint before the first send', () => {
     render(<ResponseViewer path={REQUEST_PATH} />)
-    expect(screen.getByText(/Send the request to see the response/)).toBeInTheDocument()
-    expect(screen.getByText(/Enter/)).toBeInTheDocument()
+    expect(screen.getByText('Click Send to get a response')).toBeInTheDocument()
+    expect(screen.queryByRole('tablist')).toBeNull()
   })
 
   it('shows a sending status', () => {
@@ -93,7 +101,7 @@ describe('response viewer states', () => {
   it('does not render a result stored for another request', () => {
     show(ok('other body'), OTHER_PATH)
     render(<ResponseViewer path={REQUEST_PATH} />)
-    expect(screen.getByText(/Send the request to see the response/)).toBeInTheDocument()
+    expect(screen.getByText('Click Send to get a response')).toBeInTheDocument()
     expect(screen.queryByText('200 OK')).not.toBeInTheDocument()
   })
 
@@ -122,6 +130,24 @@ describe('response summary', () => {
     expect(badge).toHaveClass('status-4xx')
     expect(screen.getByText('1.50 s')).toBeInTheDocument()
     expect(screen.getByText('5 B')).toBeInTheDocument()
+  })
+
+  it('explains the time and the sizes in tooltips', () => {
+    show(ok('hello', 'text/plain', { totalMs: 14, sizeBytes: 5 }))
+    render(<ResponseViewer path={REQUEST_PATH} />)
+    const time = screen.getByText('14 ms')
+    fireEvent.mouseEnter(time)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Total time14 ms')
+    fireEvent.mouseLeave(time)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    fireEvent.focus(screen.getByText('5 B'))
+    expect(screen.getByRole('tooltip')).toHaveTextContent(/Headers.*Body5 B/)
+  })
+
+  it('shows the counts as plain numbers on the pill tabs', () => {
+    show(ok('', 'text/plain', { cookies: [{ name: 'a', value: '1', attributes: {} }] }))
+    render(<ResponseViewer path={REQUEST_PATH} />)
+    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Body', 'Cookies 1', 'Headers 1'])
   })
 
   it.each([
@@ -199,9 +225,11 @@ describe('headers and cookies', () => {
   it('moves between tabs with the arrow keys', () => {
     show(ok())
     render(<ResponseViewer path={REQUEST_PATH} />)
-    fireEvent.keyDown(screen.getByRole('tab', { name: 'Body' }), { key: 'ArrowRight' })
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Body' }), { key: 'ArrowLeft' })
     expect(screen.getByRole('tab', { name: /Headers/ })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByRole('tab', { name: /Headers/ })).toHaveFocus()
+    fireEvent.keyDown(screen.getByRole('tab', { name: /Headers/ }), { key: 'ArrowRight' })
+    expect(screen.getByRole('tab', { name: 'Body' })).toHaveFocus()
   })
 })
 
@@ -213,8 +241,31 @@ describe('body', () => {
     expect(editor).toHaveValue('{\n  "a": 1\n}')
     expect(editor).toHaveAttribute('data-language', 'json')
     expect(editor).toHaveAttribute('readonly')
-    fireEvent.click(screen.getByRole('radio', { name: 'Raw' }))
+    expect(screen.getByRole('button', { name: 'Body format' })).toHaveTextContent('JSON')
+    pickFormat('Raw')
     expect(screen.getByRole('textbox', { name: 'Response body' })).toHaveValue('{"a":1}')
+    expect(screen.getByRole('textbox', { name: 'Response body' })).toHaveAttribute('data-language', 'text')
+  })
+
+  it('highlights and pretty-prints in the format picked from the dropdown', () => {
+    show(ok('<a><b>1</b></a>', 'text/plain'))
+    render(<ResponseViewer path={REQUEST_PATH} />)
+    expect(screen.getByRole('button', { name: 'Body format' })).toHaveTextContent('Text')
+    pickFormat('XML')
+    const editor = screen.getByRole('textbox', { name: 'Response body' })
+    expect(editor).toHaveAttribute('data-language', 'xml')
+    expect(editor).toHaveValue('<a>\n  <b>1</b>\n</a>')
+  })
+
+  it('toggles line wrapping and remembers it', () => {
+    show(ok('x'))
+    render(<ResponseViewer path={REQUEST_PATH} />)
+    const wrap = screen.getByRole('button', { name: 'Wrap lines' })
+    const before = wrap.getAttribute('aria-pressed')
+    fireEvent.click(wrap)
+    expect(wrap).toHaveAttribute('aria-pressed', before === 'true' ? 'false' : 'true')
+    expect(useUi.getState().responseWrap).toBe(before !== 'true')
+    useUi.getState().setResponseWrap(true)
   })
 
   it('shows a notice with the real size for a truncated body', () => {
@@ -238,14 +289,15 @@ describe('body', () => {
     const { container } = render(<ResponseViewer path={REQUEST_PATH} />)
     expect(screen.getByText('Large response: showing first 256 KB of 3 MB')).toBeInTheDocument()
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
-    expect(screen.queryByRole('radio')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Body format' })).not.toBeInTheDocument()
     expect(container.querySelector('pre')?.textContent).toHaveLength(256 * 1024)
   })
 
   it('previews HTML in a sandbox without permissions and says remote resources are blocked', () => {
     show(ok('<h1>Hi</h1><script>alert(1)</script>', 'text/html'))
     const { container } = render(<ResponseViewer path={REQUEST_PATH} />)
-    fireEvent.click(screen.getByRole('radio', { name: 'Preview' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
+    expect(screen.getByRole('button', { name: 'Preview' })).toHaveAttribute('aria-pressed', 'true')
     const frame = container.querySelector('iframe')!
     expect(frame.getAttribute('sandbox')).toBe('')
     expect(frame.getAttribute('sandbox')).not.toContain('allow-scripts')
@@ -265,7 +317,9 @@ describe('body', () => {
     show(ok('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>', 'image/svg+xml'))
     const { container } = render(<ResponseViewer path={REQUEST_PATH} />)
     expect(container.querySelector('img')?.getAttribute('src')).toMatch(/^data:image\/svg\+xml;base64,/)
-    expect(container.querySelector('svg')).toBeNull()
+    // The only inline svgs are the toolbar icons; the response's svg is never put in the DOM.
+    expect(container.querySelector('.image-preview svg')).toBeNull()
+    for (const svg of container.querySelectorAll('svg')) expect(svg).toHaveClass('lucide')
     expect(container.querySelector('script')).toBeNull()
   })
 })
@@ -385,7 +439,7 @@ describe('html preview policy', () => {
   function previewDoc(html: string): string {
     show(ok(html, 'text/html'))
     const { container } = render(<ResponseViewer path={REQUEST_PATH} />)
-    fireEvent.click(screen.getByRole('radio', { name: 'Preview' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
     return container.querySelector('iframe')!.getAttribute('srcdoc')!
   }
 
@@ -414,7 +468,7 @@ describe('remembered view state', () => {
     show(ok('{"a":1}', 'application/json'), REQUEST_PATH)
     show(ok('plain', 'text/plain', { status: 201, statusText: 'Created' }), OTHER_PATH)
     const { rerender } = render(<ResponseViewer path={REQUEST_PATH} />)
-    fireEvent.click(screen.getByRole('radio', { name: 'Raw' }))
+    pickFormat('Raw')
     fireEvent.click(screen.getByRole('tab', { name: /Headers/ }))
 
     rerender(<ResponseViewer path={OTHER_PATH} />)
@@ -425,14 +479,15 @@ describe('remembered view state', () => {
     expect(screen.getByText('200 OK')).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: /Headers/ })).toHaveAttribute('aria-selected', 'true')
     fireEvent.click(screen.getByRole('tab', { name: 'Body' }))
-    expect(screen.getByRole('radio', { name: 'Raw' })).toBeChecked()
+    expect(screen.getByRole('button', { name: 'Body format' })).toHaveTextContent('Raw')
   })
 
   it('falls back to the first mode when the remembered one does not apply', () => {
     useApp.getState().setResponseView(REQUEST_PATH, { mode: 'preview' })
     show(ok('{"a":1}', 'application/json'))
     render(<ResponseViewer path={REQUEST_PATH} />)
-    expect(screen.getByRole('radio', { name: 'Pretty' })).toBeChecked()
+    expect(screen.getByRole('button', { name: 'Body format' })).toHaveTextContent('JSON')
+    expect(screen.queryByRole('button', { name: 'Preview' })).toBeNull()
   })
 })
 
@@ -477,8 +532,9 @@ describe('view state in the store', () => {
 })
 
 describe('layout', () => {
-  async function editor() {
+  async function editor(layout: 'side' | 'stacked' = 'stacked') {
     installApi()
+    useUi.setState({ layout, responseShare: { side: 0.5, stacked: 0.4 } })
     useApp.setState({
       drafts: { [REQUEST_PATH]: requestNode(REQUEST_PATH, 'Get users').request },
     })
@@ -489,7 +545,31 @@ describe('layout', () => {
   it('embeds the viewer under the editor', async () => {
     await editor()
     const region = screen.getByRole('region', { name: 'Response' })
-    expect(within(region).getByText(/Send the request to see the response/)).toBeInTheDocument()
+    expect(within(region).getByText('Click Send to get a response')).toBeInTheDocument()
+  })
+
+  it('puts the response beside the request by default and follows the layout toggle', async () => {
+    useUi.setState(loadUi())
+    installApi()
+    useApp.setState({ drafts: { [REQUEST_PATH]: requestNode(REQUEST_PATH, 'Get users').request } })
+    const { container } = render(<RequestEditor path={REQUEST_PATH} />)
+    expect(container.querySelector('.request-split')).toHaveClass('split-side')
+    expect(screen.getByRole('separator')).toHaveAttribute('aria-orientation', 'vertical')
+    act(() => useUi.getState().setLayout('stacked'))
+    expect(container.querySelector('.request-split')).toHaveClass('split-stacked')
+    expect(screen.getByRole('separator')).toHaveAttribute('aria-orientation', 'horizontal')
+    expect(loadUi().layout).toBe('stacked')
+  })
+
+  it('resizes side by side with the arrow keys and persists the ratio per layout', async () => {
+    const sep = await editor('side')
+    expect(sep).toHaveAttribute('aria-valuenow', '50')
+    fireEvent.keyDown(sep, { key: 'ArrowLeft' })
+    expect(sep).toHaveAttribute('aria-valuenow', '55')
+    expect(loadUi().responseShare).toEqual({ side: 0.55, stacked: 0.4 })
+    fireEvent.keyDown(sep, { key: 'ArrowRight' })
+    fireEvent.keyDown(sep, { key: 'ArrowRight' })
+    expect(sep).toHaveAttribute('aria-valuenow', '45')
   })
 
   it('has a horizontal separator that resizes with the arrow keys within its limits', async () => {
@@ -505,12 +585,12 @@ describe('layout', () => {
     for (let i = 0; i < 30; i++) fireEvent.keyDown(sep, { key: 'ArrowUp' })
     expect(sep).toHaveAttribute('aria-valuenow', '80')
     fireEvent.keyDown(sep, { key: 'End' })
-    expect(sep).toHaveAttribute('aria-valuenow', '15')
+    expect(sep).toHaveAttribute('aria-valuenow', '20')
   })
 
   it('resizes by dragging', async () => {
     const sep = await editor()
-    const root = sep.parentElement!
+    const root = sep.parentElement! // the split area
     root.getBoundingClientRect = () => ({
       top: 0,
       bottom: 1000,

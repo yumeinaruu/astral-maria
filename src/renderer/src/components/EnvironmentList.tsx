@@ -115,7 +115,7 @@ export function EnvironmentList(): React.JSX.Element {
               onClick={() => useApp.getState().setActiveEnvironment(active ? null : env.id)}
             >
               {active ? (
-                <CheckCircle2 size={16} aria-hidden="true" fill="currentColor" stroke="var(--bg-chrome)" />
+                <CheckCircle2 size={16} aria-hidden="true" fill="currentColor" stroke="var(--background-secondary)" />
               ) : (
                 <Circle size={15} aria-hidden="true" />
               )}

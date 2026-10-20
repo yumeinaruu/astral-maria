@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import '@testing-library/jest-dom/vitest'
 import { EditorView } from '@codemirror/view'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { CodeEditor } from '../../src/renderer/src/components/CodeEditor'
+import { CodeEditor, type CodeEditorHandle } from '../../src/renderer/src/components/CodeEditor'
 
 // jsdom has no layout and Range lacks the geometry methods CodeMirror measures with; stub them and restore afterwards.
 const rangeStubs = {
@@ -72,6 +72,24 @@ describe('CodeEditor', () => {
     expect(viewOf().state.readOnly).toBe(true)
     unmount()
     expect(document.querySelector('.cm-editor')).toBeNull()
+  })
+
+  it('marks {{variables}} when asked to and opens the search panel on request', () => {
+    const handle: { current: CodeEditorHandle | null } = { current: null }
+    render(<CodeEditor value='{"u":"{{user}}"}' language="json" onChange={() => {}} variables ref={handle} />)
+    expect(document.querySelector('.cm-var')).toHaveTextContent('{{user}}')
+    act(() => handle.current!.openSearch())
+    expect(document.querySelector('.cm-search')).not.toBeNull()
+  })
+
+  it('shows line numbers and toggles wrapping without recreating the view', () => {
+    const { rerender } = render(<CodeEditor value="a" language="text" onChange={() => {}} />)
+    const before = viewOf()
+    expect(document.querySelector('.cm-lineNumbers')).not.toBeNull()
+    expect(document.querySelector('.cm-lineWrapping')).not.toBeNull()
+    rerender(<CodeEditor value="a" language="text" onChange={() => {}} wrap={false} />)
+    expect(viewOf()).toBe(before)
+    expect(document.querySelector('.cm-lineWrapping')).toBeNull()
   })
 
   it('switches language without recreating the document', () => {

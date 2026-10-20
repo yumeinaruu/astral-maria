@@ -233,7 +233,7 @@ export function TreeView({
         }}
         {...dragHandlers(meta)}
       >
-        <div className="tree-row" style={{ paddingLeft: `calc(2px + ${depth} * var(--indent))` }}>
+        <div className="tree-row" style={{ paddingLeft: `calc(12px + ${depth} * var(--indent))` }}>
           <span className="twisty" aria-hidden="true">
             {container && (open ? <ChevronDown size={14} /> : <ChevronRight size={14} />)}
           </span>
@@ -261,7 +261,12 @@ export function TreeView({
           </button>
         </div>
         {open && (
-          <ul role="group" className="tree-group">
+          <ul
+            role="group"
+            className="tree-group"
+            // The guide line runs under the twisty of this item, the parent of the group.
+            style={{ '--guide-x': `calc(20px + ${depth} * var(--indent))` } as React.CSSProperties}
+          >
             {edit?.mode === 'create' && edit.parentPath === meta.path && (
               <CreateRow depth={depth + 1} onCommit={onCommitEdit} onCancel={onCancelEdit} />
             )}
@@ -323,7 +328,7 @@ export function TreeView({
 function CreateRow({ depth, onCommit, onCancel }: { depth: number; onCommit(n: string): void; onCancel(): void }) {
   return (
     <li role="none">
-      <div className="tree-row" style={{ paddingLeft: `calc(2px + ${depth} * var(--indent))` }}>
+      <div className="tree-row" style={{ paddingLeft: `calc(12px + ${depth} * var(--indent))` }}>
         <span className="twisty" aria-hidden="true" />
         <NameInput onCommit={onCommit} onCancel={onCancel} />
       </div>

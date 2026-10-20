@@ -8,6 +8,10 @@ export interface MenuItem {
   checked?: boolean
   danger?: boolean
   disabled?: boolean
+  /** Extra class of the item, e.g. a method colour. */
+  className?: string
+  /** A small dot after the label, e.g. for a configured request section. */
+  marker?: boolean
 }
 
 /** An item, or a non-interactive heading, muted note or separator. */
@@ -114,7 +118,7 @@ export function ContextMenu({ x, y, align = 'start', label, items, onClose, anch
               type="button"
               role={radio ? 'menuitemradio' : 'menuitem'}
               aria-checked={radio ? entry.checked : undefined}
-              className={`menu-item${entry.danger ? ' menu-item-danger' : ''}`}
+              className={`menu-item${entry.danger ? ' menu-item-danger' : ''}${entry.className ? ` ${entry.className}` : ''}`}
               disabled={entry.disabled}
               tabIndex={-1}
               onClick={() => {
@@ -128,6 +132,7 @@ export function ContextMenu({ x, y, align = 'start', label, items, onClose, anch
                 </span>
               )}
               <span className="menu-label">{entry.label}</span>
+              {entry.marker && <span className="config-dot" aria-hidden="true" />}
             </button>
           </li>
         )
