@@ -166,14 +166,33 @@ test('create, send, persist, and keep secrets local', async () => {
     await editor.getByLabel('Environment name').fill('Local')
     // Typing into the trailing empty row creates the variable.
     await editor.getByLabel('Variable name 1').fill('baseUrl')
-    await editor.getByLabel('Initial value 1').fill(baseUrl)
+    await editor.getByLabel('Value 1', { exact: true }).fill(baseUrl)
     await editor.getByLabel('Variable name 2').fill('token')
-    await editor.getByLabel('Type 2').selectOption('secret')
-    await editor.getByLabel('Current value 2').fill(SECRET)
+    await pick(page, 'Type 2', 'Secret')
+    await editor.getByLabel('Value 2', { exact: true }).fill(SECRET)
+    // A local-only value and a disabled variable, for the screenshots.
+    await editor.getByLabel('Variable name 3').fill('userId')
+    await editor.getByLabel('Value 3', { exact: true }).fill('56')
+    await page.getByRole('button', { name: 'Storage of value 3', exact: true }).click()
+    await page.getByRole('menuitemradio', { name: /^Local:/ }).click()
+    await editor.getByLabel('Variable name 4').fill('legacyHost')
+    await editor.getByLabel('Value 4', { exact: true }).fill('http://old.example.test')
+    await page.getByRole('button', { name: 'Actions for variable 4', exact: true }).click()
+    await page.getByRole('menuitem', { name: 'Disable' }).click()
+    await expect(editor.getByLabel('Variable name 4').locator('xpath=ancestor::tr')).toHaveClass(/grid-disabled/)
     await shotBoth(page, '1-environment-tab-unsaved')
     await editor.getByRole('button', { name: 'Save', exact: true }).click()
     await expect(editor.getByRole('alert')).toHaveCount(0)
     await expect(envRow(page, 'Local')).toBeVisible()
+    await editor.getByLabel('Variable name 3').hover()
+    await shotBoth(page, 'c1-environment-variables')
+    await page.getByRole('button', { name: 'Storage of value 3', exact: true }).click()
+    await expect(page.getByRole('menu', { name: 'Where the value is kept' })).toBeVisible()
+    await shotBoth(page, 'c2-environment-sync-menu')
+    await page.keyboard.press('Escape')
+    await page.getByRole('button', { name: 'Variable options', exact: true }).click()
+    await shotBoth(page, 'c3-environment-options-menu')
+    await page.keyboard.press('Escape')
     // Activated from the sidebar check, as the selector would.
     await page.getByRole('button', { name: 'Activate Local' }).click()
     await expect(page.getByRole('button', { name: 'Environment', exact: true })).toHaveText('Local')
@@ -258,6 +277,13 @@ test('create, send, persist, and keep secrets local', async () => {
     for (const f of files.filter((f) => !f.startsWith('.local/'))) {
       expect(await readFile(join(workspace, f), 'utf8'), f).not.toContain(SECRET)
     }
+    // A local value is not shared; a disabled variable is still saved.
+    const envFile = files.find((f) => /^environments\/[^/]+\.json$/.test(f) && !f.endsWith('globals.json'))
+    const committed = JSON.parse(await readFile(join(workspace, envFile!), 'utf8')) as {
+      variables: { key: string; value: string; enabled: boolean }[]
+    }
+    expect(committed.variables.find((v) => v.key === 'userId')).toMatchObject({ value: '' })
+    expect(committed.variables.find((v) => v.key === 'legacyHost')).toMatchObject({ enabled: false })
     // The secret is stored somewhere under .local, and only encrypted.
     for (const f of files.filter((f) => f.startsWith('.local/'))) {
       expect(await readFile(join(workspace, f), 'utf8'), f).not.toContain(SECRET)
@@ -288,9 +314,15 @@ test('create, send, persist, and keep secrets local', async () => {
     await envRow(p, 'Local').click()
     const editor = p.getByRole('tabpanel')
     await expect(editor.getByLabel('Variable name 1')).toHaveValue('baseUrl')
-    await expect(editor.getByLabel('Initial value 1')).toHaveValue(baseUrl)
+    await expect(editor.getByLabel('Value 1', { exact: true })).toHaveValue(baseUrl)
     await expect(editor.getByLabel('Variable name 2')).toHaveValue('token')
-    await expect(editor.getByLabel('Current value 2')).toHaveValue(SECRET)
+    await expect(editor.getByLabel('Value 2', { exact: true })).toHaveValue(SECRET)
+    await expect(editor.getByLabel('Value 3', { exact: true })).toHaveValue('56')
+    await expect(p.getByRole('button', { name: 'Storage of value 3', exact: true })).toHaveAttribute(
+      'title',
+      /^Local/
+    )
+    await expect(editor.getByLabel('Variable name 4').locator('xpath=ancestor::tr')).toHaveClass(/grid-disabled/)
     expect(second.problems).toEqual([])
   })
 
@@ -408,8 +440,8 @@ test('a secret is refused, not stored, when OS encryption is unavailable', async
   const editor = page.getByRole('tabpanel')
   await editor.getByLabel('Environment name').fill('Locked')
   await editor.getByLabel('Variable name 1').fill('token')
-  await editor.getByLabel('Type 1').selectOption('secret')
-  await editor.getByLabel('Current value 1').fill(SECRET)
+  await pick(page, 'Type 1', 'Secret')
+  await editor.getByLabel('Value 1', { exact: true }).fill(SECRET)
   await editor.getByRole('button', { name: 'Save', exact: true }).click()
   await expect(editor.getByRole('alert')).toBeVisible()
   for (const f of await allFiles(dir)) expect(await readFile(f, 'utf8'), f).not.toContain(SECRET)
