@@ -117,7 +117,9 @@ function registerApi(): void {
 
 app.whenReady().then(() => {
   // No Close Window accelerator: Cmd/Ctrl+W reaches the renderer, which closes the active tab.
-  Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate(process.platform, app.name, { devTools: !app.isPackaged })))
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate(appMenuTemplate(process.platform, app.name, { devTools: !app.isPackaged })),
+  )
   registerApi()
   const ses = session.defaultSession
   ses.setSpellCheckerEnabled(false)

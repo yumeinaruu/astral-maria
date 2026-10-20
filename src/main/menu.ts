@@ -58,7 +58,9 @@ export function appMenuTemplate(
   })
   menus.push({
     label: 'Window',
-    submenu: mac ? [{ role: 'minimize' }, { role: 'zoom' }, { type: 'separator' }, { role: 'front' }] : [{ role: 'minimize' }],
+    submenu: mac
+      ? [{ role: 'minimize' }, { role: 'zoom' }, { type: 'separator' }, { role: 'front' }]
+      : [{ role: 'minimize' }],
   })
   return menus
 }

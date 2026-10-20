@@ -7,15 +7,18 @@ function flatten(items: MenuItemConstructorOptions[]): MenuItemConstructorOption
 }
 
 describe('application menu', () => {
-  it.each(['darwin', 'win32', 'linux'] as const)('has no close accelerator on %s, but keeps quit and edit', (platform) => {
-    const items = flatten(appMenuTemplate(platform, 'Astral Maria'))
-    const roles = items.map((i) => i.role).filter(Boolean)
-    expect(roles).not.toContain('close')
-    expect(roles).not.toContain('windowMenu')
-    expect(roles).not.toContain('fileMenu')
-    expect(items.some((i) => typeof i.accelerator === 'string' && /\+W$/i.test(i.accelerator))).toBe(false)
-    expect(roles).toEqual(expect.arrayContaining(['quit', 'copy', 'paste', 'undo', 'selectAll']))
-  })
+  it.each(['darwin', 'win32', 'linux'] as const)(
+    'has no close accelerator on %s, but keeps quit and edit',
+    (platform) => {
+      const items = flatten(appMenuTemplate(platform, 'Astral Maria'))
+      const roles = items.map((i) => i.role).filter(Boolean)
+      expect(roles).not.toContain('close')
+      expect(roles).not.toContain('windowMenu')
+      expect(roles).not.toContain('fileMenu')
+      expect(items.some((i) => typeof i.accelerator === 'string' && /\+W$/i.test(i.accelerator))).toBe(false)
+      expect(roles).toEqual(expect.arrayContaining(['quit', 'copy', 'paste', 'undo', 'selectAll']))
+    },
+  )
 })
 
 describe('window background', () => {

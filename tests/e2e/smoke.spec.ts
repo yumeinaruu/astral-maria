@@ -34,6 +34,10 @@ test.beforeAll(async () => {
       res.setHeader('content-type', 'text/html')
       // The tracker image must never be fetched by the preview.
       res.end(`<h1>Preview heading</h1><img src="${baseUrl}/tracker">`)
+    } else if (req.url?.startsWith('/missing')) {
+      res.statusCode = 404
+      res.setHeader('content-type', 'application/json')
+      res.end(JSON.stringify({ status: 404, code: 'not_found', message: 'No such user', path: '/missing' }))
     } else if (req.url === '/image') {
       res.setHeader('content-type', 'image/png')
       res.end(PNG)
@@ -90,6 +94,23 @@ async function shotBoth(page: Page, name: string): Promise<void> {
     await shot(page, `${name}-${colorScheme}`)
   }
   await page.emulateMedia({ colorScheme: null })
+}
+
+/** Opens a request sub-section, through the pill tabs or (narrow pane) the section dropdown. */
+async function openSection(page: Page, name: string): Promise<void> {
+  const pane = page.locator('.request-pane')
+  const dropdown = pane.getByRole('button', { name: 'Request section' })
+  if (await dropdown.count()) {
+    await dropdown.click()
+    await page.getByRole('menuitemradio', { name }).click()
+  } else {
+    await pane.getByRole('tab', { name: new RegExp(`^${name}`) }).click()
+  }
+}
+
+async function pick(page: Page, menu: string, item: string): Promise<void> {
+  await page.getByRole('button', { name: menu, exact: true }).click()
+  await page.getByRole('menuitemradio', { name: item, exact: true }).click()
 }
 
 /** The sidebar row of an environment (its name button opens the editor tab). */
@@ -162,7 +183,7 @@ test('create, send, persist, and keep secrets local', async () => {
 
   await test.step('send the request and see the response', async () => {
     await page.getByRole('textbox', { name: 'URL', exact: true }).fill('{{baseUrl}}/hello?key={{token}}')
-    await expect(page.getByRole('status').filter({ hasText: 'Saved' })).toBeVisible()
+    await expect(page.locator('.save-status')).toHaveText('Saved')
     await page.getByRole('button', { name: 'Send', exact: true }).click()
     await expect(page.locator('.status-badge')).toHaveText('200 OK')
     await expect(page.locator('.response-viewer .cm-content')).toContainText(BODY.greeting)
@@ -171,9 +192,8 @@ test('create, send, persist, and keep secrets local', async () => {
   })
 
   await test.step('the request editor accepts typing in CodeMirror', async () => {
-    await page.getByRole('tab', { name: 'Body' }).first().click()
-    const raw = page.getByRole('radio', { name: /raw/i })
-    if (await raw.count()) await raw.first().check()
+    await openSection(page, 'Body')
+    await pick(page, 'Body type', 'raw')
     const editor = page.locator('.request-pane .cm-content').first()
     await editor.click()
     await page.keyboard.type('{"a":1}')
@@ -219,7 +239,7 @@ test('create, send, persist, and keep secrets local', async () => {
   await test.step('HTML preview (srcdoc iframe) and image preview (data: URL) work under the CSP', async () => {
     await page.getByRole('textbox', { name: 'URL', exact: true }).fill('{{baseUrl}}/page')
     await page.getByRole('button', { name: 'Send', exact: true }).click()
-    await page.getByRole('radio', { name: 'Preview' }).check()
+    await page.getByRole('button', { name: 'Preview' }).click()
     await expect(page.frameLocator('iframe[title="HTML preview"]').getByRole('heading')).toHaveText('Preview heading')
     await shot(page, '5-html-preview')
     await page.getByRole('textbox', { name: 'URL', exact: true }).fill('{{baseUrl}}/image')
@@ -288,6 +308,77 @@ test('create, send, persist, and keep secrets local', async () => {
     await shot(p, '8-light-theme-setting')
     await p.getByRole('button', { name: 'Settings' }).click()
     await p.getByRole('menuitemradio', { name: 'System' }).click()
+  })
+
+  await test.step('the redesigned request and response panes', async () => {
+    const p = app!.windows()[0]
+    await app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(1512, 982))
+    // The active environment is chosen per session.
+    await p.getByRole('button', { name: 'Activate Local' }).click()
+    await p.getByRole('treeitem', { name: 'Hello' }).click()
+    await expect(p.getByText('Click Send to get a response')).toBeVisible()
+    await shotBoth(p, 'b1-empty-response')
+
+    const url = p.getByRole('textbox', { name: 'URL', exact: true })
+    await url.fill('{{baseUrl}}/missing?page=1&limit={{limit}}')
+    await openSection(p, 'Params')
+    await expect(p.getByText('Query Params')).toBeVisible()
+    await expect(p.locator('.url-box .var-missing')).toHaveText('{{limit}}')
+    await expect(p.locator('.url-box .var-resolved')).toHaveText('{{baseUrl}}')
+    // The token is painted by a mirror that ignores the pointer; the input under it shows the tooltip.
+    const box = (await p.locator('.url-box .var-resolved').boundingBox())!
+    await p.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    await expect(p.getByRole('tooltip')).toContainText(baseUrl)
+    await p.getByRole('button', { name: 'Send', exact: true }).click()
+    await expect(p.locator('.status-badge')).toHaveText('404 Not Found')
+    await p.mouse.move(0, 0)
+    await shotBoth(p, 'b2-params-404-side-by-side')
+
+    await url.fill('{{baseUrl}}/hello')
+    await openSection(p, 'Body')
+    await pick(p, 'Body type', 'raw')
+    await pick(p, 'Language', 'JSON')
+    const body = p.locator('.request-pane .cm-content').first()
+    await body.click()
+    await p.keyboard.press('ControlOrMeta+a')
+    await p.keyboard.type('{"user": "{{user}}", "token": "{{token}}", "count": 3, "ok": true}')
+    await p.getByRole('button', { name: 'Beautify' }).click()
+    await expect(body).toContainText('"count": 3')
+    await p.getByRole('button', { name: 'Send', exact: true }).click()
+    await expect(p.locator('.status-badge')).toHaveText('200 OK')
+    await shotBoth(p, 'b3-json-body-200-side-by-side')
+
+    await openSection(p, 'Headers')
+    await p.getByRole('textbox', { name: 'Header key 1' }).fill('Accept')
+    await p.getByRole('textbox', { name: 'Header value 1' }).fill('application/json')
+    await p.getByRole('textbox', { name: 'Header key 2' }).fill('X-Token')
+    await p.getByRole('textbox', { name: 'Header value 2' }).fill('{{token}}')
+    await p.getByRole('textbox', { name: 'Header description 2' }).fill('From the environment')
+    await p.mouse.move(0, 0)
+    await shotBoth(p, 'b4-headers-grid')
+
+    await openSection(p, 'Authorization')
+    await pick(p, 'Auth type', 'Bearer token')
+    await p.getByRole('textbox', { name: 'Token' }).fill('{{token}}')
+    await shotBoth(p, 'b5-auth-bearer')
+    await pick(p, 'Auth type', 'Inherit from parent')
+    await shotBoth(p, 'b6-auth-inherit')
+
+    await p.getByRole('button', { name: 'Show the response below the request' }).click()
+    await expect(p.getByRole('separator', { name: 'Resize response' })).toHaveAttribute(
+      'aria-orientation',
+      'horizontal',
+    )
+    await openSection(p, 'Params')
+    await shotBoth(p, 'b7-stacked')
+    await p.getByRole('button', { name: 'Show the response beside the request' }).click()
+
+    // Cmd/Ctrl+W closes the tab, not the window.
+    await p.getByRole('textbox', { name: 'URL', exact: true }).click()
+    await p.keyboard.press('ControlOrMeta+w')
+    await expect(p.getByRole('tab', { name: /Hello/ })).toHaveCount(0)
+    expect(app!.windows()).toHaveLength(1)
+    await p.getByRole('treeitem', { name: 'Hello' }).click()
   })
 
   await test.step('an edit typed just before quitting is on disk after the quit', async () => {
