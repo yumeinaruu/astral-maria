@@ -1,32 +1,69 @@
-import { useEffect, useRef } from 'react'
+import { Check } from 'lucide-react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 export interface MenuItem {
   label: string
   onSelect(): void
+  /** Makes the item a radio choice (`menuitemradio`), checked or not. */
+  checked?: boolean
+  danger?: boolean
+  disabled?: boolean
 }
+
+/** An item, or a non-interactive heading, muted note or separator. */
+export type MenuEntry = MenuItem | { heading: string } | { note: string; title?: string } | { separator: true }
 
 interface Props {
   x: number
   y: number
+  /** `end`: `x` is where the menu's right edge goes (for menus opened from the right side of the window). */
+  align?: 'start' | 'end'
   label: string
-  items: MenuItem[]
+  items: MenuEntry[]
   onClose(): void
+  /** Presses on this element do not count as outside (the button that toggles the menu handles them). */
+  anchor?: HTMLElement | null
 }
 
-export function ContextMenu({ x, y, label, items, onClose }: Props): React.JSX.Element {
+const ITEM = '[role^="menuitem"]:not(:disabled)'
+const MARGIN = 8
+
+function isItem(entry: MenuEntry): entry is MenuItem {
+  return 'label' in entry
+}
+
+export function ContextMenu({ x, y, align = 'start', label, items, onClose, anchor }: Props): React.JSX.Element {
   const ref = useRef<HTMLUListElement>(null)
+  const [place, setPlace] = useState<{ left: number; top: number } | null>(null)
+
+  // Kept inside the window: flipped left of `x` or above `y` when there is no room.
+  useLayoutEffect(() => {
+    const menu = ref.current
+    if (!menu) return
+    const { width, height } = menu.getBoundingClientRect()
+    let left = align === 'end' ? x - width : x
+    left = Math.max(MARGIN, Math.min(left, window.innerWidth - width - MARGIN))
+    let top = y
+    if (top + height > window.innerHeight - MARGIN) top = Math.max(MARGIN, window.innerHeight - height - MARGIN)
+    setPlace({ left, top })
+  }, [x, y, align])
 
   useEffect(() => {
-    ref.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus()
+    const menu = ref.current
+    const start =
+      menu?.querySelector<HTMLElement>(`${ITEM}[aria-checked="true"]`) ?? menu?.querySelector<HTMLElement>(ITEM)
+    start?.focus()
     const onOutside = (e: MouseEvent): void => {
-      if (!ref.current?.contains(e.target as Node)) onClose()
+      const target = e.target as Node
+      if (ref.current?.contains(target) || anchor?.contains(target)) return
+      onClose()
     }
     document.addEventListener('mousedown', onOutside)
     return () => document.removeEventListener('mousedown', onOutside)
-  }, [onClose])
+  }, [onClose, anchor])
 
   function onKeyDown(e: React.KeyboardEvent): void {
-    const buttons = Array.from(ref.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])
+    const buttons = Array.from(ref.current?.querySelectorAll<HTMLElement>(ITEM) ?? [])
     const at = buttons.indexOf(document.activeElement as HTMLElement)
     const go = (i: number): void => {
       e.preventDefault()
@@ -49,25 +86,52 @@ export function ContextMenu({ x, y, label, items, onClose }: Props): React.JSX.E
       className="menu"
       role="menu"
       aria-label={label}
-      style={{ left: x, top: y }}
+      style={place ?? { left: x, top: y, visibility: 'hidden' }}
       onKeyDown={onKeyDown}
       onClick={(e) => e.stopPropagation()}
+      onContextMenu={(e) => e.preventDefault()}
     >
-      {items.map((item) => (
-        <li key={item.label} role="none">
-          <button
-            type="button"
-            role="menuitem"
-            className="menu-item"
-            onClick={() => {
-              onClose()
-              item.onSelect()
-            }}
-          >
-            {item.label}
-          </button>
-        </li>
-      ))}
+      {items.map((entry, i) => {
+        if ('separator' in entry) return <li key={`sep-${i}`} role="separator" className="menu-separator" />
+        if ('heading' in entry) {
+          return (
+            <li key={`h-${entry.heading}`} role="presentation" className="menu-heading">
+              {entry.heading}
+            </li>
+          )
+        }
+        if ('note' in entry) {
+          return (
+            <li key={`n-${i}`} role="presentation" className="menu-note" title={entry.title}>
+              {entry.note}
+            </li>
+          )
+        }
+        const radio = isItem(entry) && entry.checked !== undefined
+        return (
+          <li key={entry.label} role="none">
+            <button
+              type="button"
+              role={radio ? 'menuitemradio' : 'menuitem'}
+              aria-checked={radio ? entry.checked : undefined}
+              className={`menu-item${entry.danger ? ' menu-item-danger' : ''}`}
+              disabled={entry.disabled}
+              tabIndex={-1}
+              onClick={() => {
+                onClose()
+                entry.onSelect()
+              }}
+            >
+              {radio && (
+                <span className="menu-check" aria-hidden="true">
+                  {entry.checked && <Check size={14} strokeWidth={2.25} />}
+                </span>
+              )}
+              <span className="menu-label">{entry.label}</span>
+            </button>
+          </li>
+        )
+      })}
     </ul>
   )
 }

@@ -1,16 +1,19 @@
+import { ChevronDown, ChevronRight, Folder, MoreHorizontal, Plus } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CollectionTree } from '../../../shared/types'
 import { useApp } from '../state/store'
 import { ContextMenu, type MenuItem } from './ContextMenu'
 import { MethodBadge } from './MethodBadge'
 import { NameInput } from './NameInput'
-import { buildIndex, isContainer, isWithin, type ItemKind, type ItemMeta } from './treeIndex'
+import { buildIndex, filterPaths, isContainer, isWithin, type ItemKind, type ItemMeta } from './treeIndex'
 
 export type Edit =
   { mode: 'create'; kind: ItemKind; parentPath: string | null } | { mode: 'rename'; path: string; initial: string }
 
 interface Props {
   collections: CollectionTree[]
+  /** Narrows the tree to requests whose name contains it, with their folders and collections. */
+  filter?: string
   edit: Edit | null
   onCommitEdit(name: string): void
   onCancelEdit(): void
@@ -29,6 +32,7 @@ const itemId = (path: string): string => `treeitem-${encodeURIComponent(path)}`
 
 export function TreeView({
   collections,
+  filter = '',
   edit,
   onCommitEdit,
   onCancelEdit,
@@ -42,7 +46,9 @@ export function TreeView({
   const openRequest = useApp((s) => s.openRequest)
   const move = useApp((s) => s.move)
 
-  const index = useMemo(() => buildIndex(collections, expanded), [collections, expanded])
+  const keep = useMemo(() => filterPaths(collections, filter), [collections, filter])
+  const index = useMemo(() => buildIndex(collections, expanded, keep), [collections, expanded, keep])
+  const isOpen = (path: string): boolean => (keep ? keep.has(path) : Boolean(expanded[path]))
   const [focused, setFocused] = useState<string | null>(null)
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [dropTarget, setDropTarget] = useState<string | null>(null)
@@ -116,13 +122,13 @@ export function TreeView({
       case 'ArrowRight':
         if (!meta || !isContainer(meta.kind)) return
         e.preventDefault()
-        if (!expanded[meta.path]) setExpanded(meta.path, true)
+        if (!isOpen(meta.path)) setExpanded(meta.path, true)
         else if (meta.childPaths[0] !== undefined) setFocused(meta.childPaths[0])
         return
       case 'ArrowLeft':
         if (!meta) return
         e.preventDefault()
-        if (isContainer(meta.kind) && expanded[meta.path]) setExpanded(meta.path, false)
+        if (isContainer(meta.kind) && isOpen(meta.path)) setExpanded(meta.path, false)
         else if (meta.parentPath !== null) setFocused(meta.parentPath)
         return
       case 'Enter':
@@ -197,7 +203,7 @@ export function TreeView({
 
   function renderItem(meta: ItemMeta, depth: number, children: React.ReactNode): React.JSX.Element {
     const container = isContainer(meta.kind)
-    const open = container && Boolean(expanded[meta.path])
+    const open = container && isOpen(meta.path)
     const renaming = edit?.mode === 'rename' && edit.path === meta.path
     const classes = [
       'tree-item',
@@ -227,17 +233,16 @@ export function TreeView({
         }}
         {...dragHandlers(meta)}
       >
-        <div className="tree-row" style={{ paddingLeft: `calc(var(--space-2) + ${depth} * var(--indent))` }}>
+        <div className="tree-row" style={{ paddingLeft: `calc(2px + ${depth} * var(--indent))` }}>
           <span className="twisty" aria-hidden="true">
-            {container ? (open ? '▾' : '▸') : ''}
+            {container && (open ? <ChevronDown size={14} /> : <ChevronRight size={14} />)}
           </span>
+          {meta.kind === 'folder' && <Folder className="tree-icon" size={14} aria-hidden="true" />}
           {meta.method && <MethodBadge method={meta.method} />}
           {renaming ? (
             <NameInput initial={edit.initial} onCommit={onCommitEdit} onCancel={onCancelEdit} />
           ) : (
-            <span className={meta.kind === 'collection' ? 'tree-name tree-name-collection' : 'tree-name'}>
-              {meta.name}
-            </span>
+            <span className="tree-name">{meta.name}</span>
           )}
           <button
             type="button"
@@ -245,13 +250,14 @@ export function TreeView({
             tabIndex={-1}
             aria-label={`Actions for ${meta.name}`}
             aria-haspopup="menu"
+            aria-expanded={menu?.path === meta.path}
             onClick={(e) => {
               e.stopPropagation()
               const rect = e.currentTarget.getBoundingClientRect()
-              openMenu(meta.path, rect.left, rect.bottom)
+              openMenu(meta.path, rect.left, rect.bottom + 2)
             }}
           >
-            …
+            <MoreHorizontal size={15} aria-hidden="true" />
           </button>
         </div>
         {open && (
@@ -270,7 +276,8 @@ export function TreeView({
     return paths.map((path) => {
       const meta = index.byPath.get(path)
       if (!meta) return null
-      const open = isContainer(meta.kind) && Boolean(expanded[path])
+      if (keep && !keep.has(path)) return null
+      const open = isContainer(meta.kind) && isOpen(path)
       return renderItem(meta, depth, open ? renderNodes(meta.childPaths, depth + 1) : null)
     })
   }
@@ -296,7 +303,16 @@ export function TreeView({
           0,
         )}
       </ul>
-      {collections.length === 0 && edit === null && <p className="muted empty">No collections yet.</p>}
+      {collections.length === 0 && edit === null && (
+        <div className="section-empty">
+          <p>No collections yet</p>
+          <button type="button" className="btn" onClick={() => onStartCreate('collection', null)}>
+            <Plus size={14} aria-hidden="true" />
+            Create collection
+          </button>
+        </div>
+      )}
+      {keep !== null && keep.size === 0 && collections.length > 0 && <p className="empty">No matching requests</p>}
       {menu && menuMeta && (
         <ContextMenu x={menu.x} y={menu.y} label={menuMeta.name} items={menuItems(menuMeta)} onClose={closeMenu} />
       )}
@@ -307,7 +323,7 @@ export function TreeView({
 function CreateRow({ depth, onCommit, onCancel }: { depth: number; onCommit(n: string): void; onCancel(): void }) {
   return (
     <li role="none">
-      <div className="tree-row" style={{ paddingLeft: `calc(var(--space-2) + ${depth} * var(--indent))` }}>
+      <div className="tree-row" style={{ paddingLeft: `calc(2px + ${depth} * var(--indent))` }}>
         <span className="twisty" aria-hidden="true" />
         <NameInput onCommit={onCommit} onCancel={onCancel} />
       </div>

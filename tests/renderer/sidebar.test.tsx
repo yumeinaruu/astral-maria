@@ -73,11 +73,16 @@ describe('WorkspaceGate', () => {
   })
 })
 
+async function chooseSwitchWorkspace(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole('button', { name: /^Workspace / }))
+  await user.click(screen.getByRole('menuitem', { name: 'Switch workspace…' }))
+}
+
 describe('Switch workspace', () => {
   it('returns to the gate, which lists the recent workspaces', async () => {
     const api = installApi({ workspace: { recent: vi.fn().mockResolvedValue([WS]) } })
     const { user } = await openedApp(api)
-    await user.click(screen.getByRole('button', { name: 'Switch workspace…' }))
+    await chooseSwitchWorkspace(user)
     expect(await screen.findByRole('button', { name: 'Open workspace' })).toBeInTheDocument()
     expect(api.workspace.close).toHaveBeenCalledTimes(1)
     expect(await screen.findByRole('button', { name: /Demo workspace/ })).toBeInTheDocument()
@@ -89,14 +94,14 @@ describe('Switch workspace', () => {
     api.collections.saveRequest.mockRejectedValue(new Error('disk full'))
     await user.click(screen.getByRole('treeitem', { name: 'Get users' }))
     useApp.getState().editDraft(REQUEST_PATH, (r) => ({ ...r, url: 'unsaved' }))
-    await user.click(screen.getByRole('button', { name: 'Switch workspace…' }))
+    await chooseSwitchWorkspace(user)
     const dialog = await screen.findByRole('alertdialog')
     expect(dialog).toHaveTextContent(REQUEST_PATH)
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     expect(api.workspace.close).not.toHaveBeenCalled()
     expect(screen.queryByRole('button', { name: 'Open workspace' })).not.toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: 'Switch workspace…' }))
+    await chooseSwitchWorkspace(user)
     await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Discard and switch' }))
     expect(await screen.findByRole('button', { name: 'Open workspace' })).toBeInTheDocument()
     expect(api.workspace.close).toHaveBeenCalledTimes(1)
@@ -359,7 +364,7 @@ describe('errors and disappearing data', () => {
     await useApp.getState().refresh()
     expect(await screen.findByRole('alert')).toHaveTextContent(`${REQUEST_PATH} was removed on disk`)
     expect(screen.queryByRole('tab', { name: /Get users/ })).not.toBeInTheDocument()
-    expect(screen.getByText('Open a request')).toBeInTheDocument()
+    expect(screen.getByText(/^Open a request from the sidebar/)).toBeInTheDocument()
   })
 
   it('returns to the workspace gate with an error when the workspace folder disappears', async () => {
