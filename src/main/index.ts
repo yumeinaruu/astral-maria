@@ -1,9 +1,10 @@
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, session } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, safeStorage, session } from 'electron'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { API_METHODS, channelName, FLUSH_REQUEST_CHANNEL } from '../shared/api'
 import { createApi } from './api'
 import { FlushCoordinator, interceptOnce, OperationTracker } from './flushGuard'
+import { appMenuTemplate, windowBackground } from './menu'
 import { createSecretCipher } from './secretCipher'
 import { devServerUrlFor, isAllowedRendererUrl, isE2eAllowed, isPermissionAllowed } from './security'
 
@@ -58,6 +59,8 @@ function createWindow(): void {
     width: 1200,
     height: 800,
     title: 'Astral Maria',
+    // Matches the renderer's first paint, so the window does not flash white in dark mode.
+    backgroundColor: windowBackground(nativeTheme.shouldUseDarkColors),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -113,6 +116,8 @@ function registerApi(): void {
 }
 
 app.whenReady().then(() => {
+  // No Close Window accelerator: Cmd/Ctrl+W reaches the renderer, which closes the active tab.
+  Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate(process.platform, app.name, { devTools: !app.isPackaged })))
   registerApi()
   const ses = session.defaultSession
   ses.setSpellCheckerEnabled(false)
