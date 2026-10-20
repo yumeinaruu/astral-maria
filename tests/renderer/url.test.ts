@@ -5,6 +5,11 @@ import type { KeyValue } from '../../src/shared/types'
 const kv = (key: string, value: string, enabled = true): KeyValue => ({ key, value, enabled })
 
 describe('composeUrl', () => {
+  it('ignores ? and # inside {{variables}} of the base', () => {
+    expect(composeUrl('http://h/{{x#y}}', [kv('q', '1')])).toBe('http://h/{{x#y}}?q=1')
+    expect(composeUrl('http://h/{{a?b}}', [kv('q', '1')])).toBe('http://h/{{a?b}}?q=1')
+  })
+
   it('appends enabled params only and encodes them', () => {
     expect(composeUrl('http://a/x', [kv('q', '1 2'), kv('z', '9', false)])).toBe('http://a/x?q=1%202')
   })
@@ -57,8 +62,24 @@ describe('splitUrl', () => {
     expect(splitUrl('{{baseUrl}}/p?x={{y}}&b=%zz', []).params).toEqual([kv('x', '{{y}}'), kv('b', '%zz')])
   })
 
+  it('does not split on ?, #, & or = inside {{variables}}', () => {
+    expect(splitUrl('http://h/{{a?b}}/p', [])).toEqual({ url: 'http://h/{{a?b}}/p', params: [] })
+    expect(splitUrl('http://h/{{x#y}}?q=1', [])).toEqual({ url: 'http://h/{{x#y}}', params: [kv('q', '1')] })
+    expect(splitUrl('http://h?k={{a&b=c}}&z={{p#q}}', []).params).toEqual([kv('k', '{{a&b=c}}'), kv('z', '{{p#q}}')])
+    expect(splitUrl('http://h?{{k=v}}=1', []).params).toEqual([kv('{{k=v}}', '1')])
+    // An unclosed `{{` is plain text.
+    expect(splitUrl('http://h/{{a?b=1', [])).toEqual({ url: 'http://h/{{a', params: [kv('b', '1')] })
+  })
+
   it('round-trips urls unchanged', () => {
-    for (const full of ['{{baseUrl}}/path?x={{y}}', 'http://a/x?q=1&r=2#frag', 'http://a/x', 'http://a/x?q=1%202']) {
+    for (const full of [
+      '{{baseUrl}}/path?x={{y}}',
+      'http://h/{{a?b}}/p?q=1',
+      'http://h/{{x#y}}?q={{a&b}}#f',
+      'http://a/x?q=1&r=2#frag',
+      'http://a/x',
+      'http://a/x?q=1%202',
+    ]) {
       const { url, params } = splitUrl(full, [])
       expect(composeUrl(url, params)).toBe(full)
     }
