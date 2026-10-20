@@ -255,7 +255,11 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
       e.deferred = true
       return
     }
-    if (e.version === e.savedVersion) return
+    if (e.version === e.savedVersion) {
+      // Nothing left to write: a stale failed/saving status of this path must not survive.
+      if (e.dropped === null) setSave(e.path, null)
+      return
+    }
     const draft = e.draft
     const version = e.version
     const started = epoch
@@ -283,6 +287,7 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
     if (droppedAs(e) === 'closed') {
       // Nobody watches this draft any more, but the tree must show what is on disk when the request is reopened.
       e.savedVersion = version
+      if (e.version === version) e.failed = null
       // The entry stays until the refresh has applied, so a reopen in between still starts from its draft.
       await get().refresh()
       if (epoch !== started) return
@@ -550,7 +555,7 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
       if (revived) {
         pending.delete(path)
         revived.dropped = null
-        failedWith = revived.failed
+        failedWith = revived.version !== revived.savedVersion ? revived.failed : null
         revived.failed = null
         entries.set(path, revived)
       }
