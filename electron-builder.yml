@@ -1,0 +1,13 @@
+appId: dev.local.astral-maria
+productName: Astral Maria
+directories:
+  output: release
+files:
+  - out/**
+  - package.json
+mac:
+  identity: null
+  category: public.app-category.developer-tools
+  target:
+    - dir
+    - dmg

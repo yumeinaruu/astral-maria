@@ -5,6 +5,12 @@ import { createApi } from './api'
 import { createSecretCipher } from './secretCipher'
 import { isAllowedRendererUrl } from './security'
 
+// E2E only: use Chromium's mock keychain so tests never prompt for, or touch, the real macOS Keychain.
+// Must run before the app is ready.
+if (process.env.NODE_ENV === 'test' && process.env.ASTRAL_E2E_WORKSPACE) {
+  app.commandLine.appendSwitch('use-mock-keychain')
+}
+
 const devServerUrl = process.env['ELECTRON_RENDERER_URL']
 
 function createWindow(): void {

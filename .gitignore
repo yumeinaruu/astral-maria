@@ -5,3 +5,6 @@ dist
 .idea
 .superpowers
 *.tsbuildinfo
+release
+test-results
+playwright-report
