@@ -165,7 +165,7 @@ describe('drafts and autosave', () => {
     setUrl(REQUEST_PATH, 'one')
     useApp.getState().closeTab(REQUEST_PATH)
     await vi.advanceTimersByTimeAsync(0)
-    expect(useApp.getState().error).toBe('disk full')
+    expect(useApp.getState().error).toContain('disk full')
   })
 
   it('flushes all pending saves for beforeunload', async () => {
@@ -494,5 +494,82 @@ describe('closed tabs with a save still pending or in flight', () => {
     expect(api.collections.saveRequest).toHaveBeenCalledTimes(1)
     expect(disk.has(REQUEST_PATH)).toBe(false)
     expect(disk.get(`${NEW_FOLDER}/get-users.request.json`)?.url).toBe('one')
+  })
+
+  it('does not leave a closed tab stuck at "saving": a reopened clean tab follows external changes', async () => {
+    const first = deferred<void>()
+    const { api, disk } = await setupDisk()
+    api.collections.saveRequest.mockImplementation(async (p: string, r: RequestItem) => void disk.set(p, r))
+    api.collections.saveRequest.mockImplementationOnce(async (p: string, r: RequestItem) => {
+      await first.promise
+      disk.set(p, r)
+    })
+    setUrl(REQUEST_PATH, 'one')
+    await vi.advanceTimersByTimeAsync(500)
+    setUrl(REQUEST_PATH, 'two')
+    useApp.getState().closeTab(REQUEST_PATH)
+    first.resolve()
+    await vi.advanceTimersByTimeAsync(50)
+    expect(disk.get(REQUEST_PATH)?.url).toBe('two')
+    useApp.getState().openRequest(REQUEST_PATH)
+    expect(useApp.getState().saves[REQUEST_PATH]).toBeUndefined()
+    disk.set(REQUEST_PATH, { ...disk.get(REQUEST_PATH)!, url: 'external' })
+    await useApp.getState().refresh()
+    expect(draft().url).toBe('external')
+  })
+
+  describe('a closed tab whose save failed', () => {
+    async function failedClose() {
+      const first = deferred<void>()
+      const ctx = await setupDisk({ collections: { remove: vi.fn() } })
+      ctx.api.collections.saveRequest.mockImplementation(async (p: string, r: RequestItem) => void ctx.disk.set(p, r))
+      ctx.api.collections.saveRequest.mockReturnValueOnce(first.promise)
+      ctx.api.collections.remove.mockImplementation(async (p: string) => void ctx.disk.delete(p))
+      setUrl(REQUEST_PATH, 'one')
+      await vi.advanceTimersByTimeAsync(500)
+      useApp.getState().closeTab(REQUEST_PATH)
+      first.reject(new Error('disk full'))
+      await vi.advanceTimersByTimeAsync(50)
+      return ctx
+    }
+
+    it('keeps the draft: reopening shows it as failed, and a save retry succeeds', async () => {
+      const { api, disk } = await failedClose()
+      expect(useApp.getState().error).toContain(REQUEST_PATH)
+      expect(useApp.getState().error).toContain('disk full')
+      useApp.getState().openRequest(REQUEST_PATH)
+      expect(draft().url).toBe('one')
+      expect(useApp.getState().saves[REQUEST_PATH]).toEqual({ state: 'failed', error: 'disk full' })
+      await useApp.getState().saveNow(REQUEST_PATH)
+      expect(api.collections.saveRequest).toHaveBeenCalledTimes(2)
+      expect(disk.get(REQUEST_PATH)?.url).toBe('one')
+      expect(useApp.getState().saves[REQUEST_PATH]).toBeUndefined()
+    })
+
+    it('is dropped without saving when the request is deleted', async () => {
+      const { api } = await failedClose()
+      await useApp.getState().remove(REQUEST_PATH)
+      useApp.getState().openRequest(REQUEST_PATH)
+      expect(useApp.getState().drafts[REQUEST_PATH]).toBeUndefined()
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(api.collections.saveRequest).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it('revives the draft when reopened while the refresh after a closed save has not applied yet', async () => {
+    const gate = deferred<ReturnType<typeof treeWith>>()
+    const { api, disk } = await setupDisk()
+    api.collections.saveRequest.mockImplementation(async (p: string, r: RequestItem) => void disk.set(p, r))
+    api.collections.list.mockImplementationOnce(() => gate.promise)
+    setUrl(REQUEST_PATH, 'one')
+    useApp.getState().closeTab(REQUEST_PATH)
+    await vi.advanceTimersByTimeAsync(10)
+    useApp.getState().openRequest(REQUEST_PATH)
+    expect(draft().url).toBe('one')
+    const saved = requestNode(REQUEST_PATH, 'Get users')
+    gate.resolve(treeWith({ ...saved, request: disk.get(REQUEST_PATH)! }))
+    await vi.advanceTimersByTimeAsync(50)
+    expect(draft().url).toBe('one')
+    expect(useApp.getState().saves[REQUEST_PATH]).toBeUndefined()
   })
 })

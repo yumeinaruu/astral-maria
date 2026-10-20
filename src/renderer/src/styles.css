@@ -454,6 +454,12 @@ p {
   background: var(--m-delete-bg);
 }
 
+.method-head,
+.method-options {
+  color: var(--m-other-fg);
+  background: var(--m-other-bg);
+}
+
 /* ---- context menu and dialog ---- */
 
 .menu {

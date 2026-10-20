@@ -136,6 +136,8 @@ interface SaveEntry {
   draft: RequestItem
   /** A save came due while a rename/move/delete of this path was running. */
   deferred: boolean
+  /** The error of the last save of a closed tab; the entry (and its draft) is kept so reopening can recover it. */
+  failed: string | null
   dropped: 'closed' | 'removed' | null
 }
 
@@ -198,7 +200,17 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
   function entryFor(path: string, draft: RequestItem): SaveEntry {
     let e = entries.get(path)
     if (!e) {
-      e = { path, version: 0, savedVersion: 0, timer: null, running: null, draft, deferred: false, dropped: null }
+      e = {
+        path,
+        version: 0,
+        savedVersion: 0,
+        timer: null,
+        running: null,
+        draft,
+        deferred: false,
+        failed: null,
+        dropped: null,
+      }
       entries.set(path, e)
     }
     return e
@@ -225,7 +237,7 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
       if (e.running === tracked) {
         e.running = null
         // A closed tab's entry is forgotten once nothing is left to save for it.
-        if (e.dropped === 'closed' && !e.deferred && pending.get(e.path) === e) pending.delete(e.path)
+        if (e.dropped === 'closed' && !e.deferred && !e.failed && pending.get(e.path) === e) pending.delete(e.path)
       }
     })
     e.running = tracked
@@ -248,13 +260,18 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
     const version = e.version
     const started = epoch
     const path = e.path
-    setSave(path, { state: 'saving' })
+    if (e.dropped === null) setSave(path, { state: 'saving' })
     try {
       await window.astral.collections.saveRequest(path, draft)
     } catch (err) {
       if (epoch !== started || droppedAs(e) === 'removed') return
       if (droppedAs(e) === 'closed') {
-        fail(err)
+        if (isGateError(err)) {
+          fail(err)
+        } else {
+          e.failed = messageOf(err)
+          set({ error: `Could not save ${e.path}: ${e.failed}` })
+        }
       } else if (isGateError(err)) {
         fail(err)
       } else {
@@ -266,7 +283,10 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
     if (droppedAs(e) === 'closed') {
       // Nobody watches this draft any more, but the tree must show what is on disk when the request is reopened.
       e.savedVersion = version
-      void get().refresh()
+      // The entry stays until the refresh has applied, so a reopen in between still starts from its draft.
+      await get().refresh()
+      if (epoch !== started) return
+      if (droppedAs(e) === null && e.version === e.savedVersion) setSave(e.path, null)
       return
     }
     e.savedVersion = version
@@ -452,7 +472,7 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
               : neighbour(openTabs, oldIndex < 0 ? 0 : Math.min(oldIndex, openTabs.length)),
           }
         })
-        dropEditing(vanished, 'removed')
+        dropEditing([...vanished, ...[...pending.keys()].filter((p) => !saved.has(p))], 'removed')
         // A dirty draft keeps its edits but must not write an outdated name over a rename done on disk.
         for (const e of [...entries.values(), ...pending.values()]) {
           const name = saved.get(e.path)?.name
@@ -526,9 +546,12 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
       if (previous !== path) flush(previous)
       // A closed tab's save may still be running: continue from its last draft and queue, not from the stale tree copy.
       const revived = get().drafts[path] ? undefined : pending.get(path)
+      let failedWith: string | null = null
       if (revived) {
         pending.delete(path)
         revived.dropped = null
+        failedWith = revived.failed
+        revived.failed = null
         entries.set(path, revived)
       }
       const baseline = get().drafts[path] ? null : (revived?.draft ?? requestFromTree(get().collections, path))
@@ -536,7 +559,9 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
         openTabs: s.openTabs.some((t) => t.path === path) ? s.openTabs : [...s.openTabs, { path }],
         activePath: path,
         drafts: baseline ? { ...s.drafts, [path]: baseline } : s.drafts,
-        saves: revived ? { ...s.saves, [path]: { state: 'saving' } } : s.saves,
+        saves: revived
+          ? { ...s.saves, [path]: failedWith !== null ? { state: 'failed', error: failedWith } : { state: 'saving' } }
+          : s.saves,
       }))
     },
     closeTab(path) {

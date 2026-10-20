@@ -99,20 +99,24 @@ describe('request editor', () => {
     try {
       const select = screen.getByRole('combobox', { name: 'Method' })
       const colours: string[] = []
-      for (const method of ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']) {
+      for (const method of ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']) {
         await user.selectOptions(select, method)
         const badge = document.createElement('span')
         badge.className = `method method-${method.toLowerCase()}`
         document.body.appendChild(badge)
-        const expected = getComputedStyle(badge)
-        const actual = getComputedStyle(select)
-        expect(expected.color).toContain(`--m-${method.toLowerCase()}-fg`)
-        expect(actual.color).toBe(expected.color)
-        expect(actual.backgroundColor || actual.background).toBe(expected.backgroundColor || expected.background)
-        colours.push(actual.color)
-        badge.remove()
+        try {
+          const expected = getComputedStyle(badge)
+          const actual = getComputedStyle(select)
+          const key = method === 'HEAD' || method === 'OPTIONS' ? 'other' : method.toLowerCase()
+          expect(expected.color).toContain(`--m-${key}-fg`)
+          expect(actual.color).toBe(expected.color)
+          expect(actual.backgroundColor || actual.background).toBe(expected.backgroundColor || expected.background)
+          colours.push(actual.color)
+        } finally {
+          badge.remove()
+        }
       }
-      expect(new Set(colours).size).toBe(5)
+      expect(new Set(colours).size).toBe(6)
     } finally {
       style.remove()
     }
