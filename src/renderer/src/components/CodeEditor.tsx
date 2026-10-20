@@ -46,10 +46,11 @@ const theme = EditorView.theme({
 
 const highlight = syntaxHighlighting(
   HighlightStyle.define([
-    { tag: [tags.propertyName, tags.attributeName], color: 'var(--m-put-fg)' },
-    { tag: [tags.string, tags.attributeValue], color: 'var(--m-get-fg)' },
-    { tag: [tags.number, tags.bool, tags.null], color: 'var(--m-post-fg)' },
-    { tag: [tags.tagName, tags.keyword], color: 'var(--m-patch-fg)' },
+    { tag: [tags.propertyName, tags.attributeName], color: 'var(--syn-property)' },
+    { tag: [tags.string, tags.attributeValue], color: 'var(--syn-string)' },
+    { tag: [tags.number, tags.bool, tags.null], color: 'var(--syn-number)' },
+    { tag: [tags.tagName, tags.keyword], color: 'var(--syn-keyword)' },
+    { tag: [tags.punctuation, tags.bracket, tags.separator], color: 'var(--syn-punct)' },
     { tag: [tags.comment, tags.meta], color: 'var(--text-muted)' },
     { tag: tags.invalid, color: 'var(--danger)' },
   ]),

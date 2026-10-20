@@ -107,8 +107,8 @@ describe('request editor', () => {
         try {
           const expected = getComputedStyle(badge)
           const actual = getComputedStyle(select)
-          const key = method === 'HEAD' || method === 'OPTIONS' ? 'other' : method.toLowerCase()
-          expect(expected.color).toContain(`--m-${key}-fg`)
+          // Every method has its own text colour; labels have no background.
+          expect(expected.color).toContain(`--m-${method.toLowerCase()}`)
           expect(actual.color).toBe(expected.color)
           expect(actual.backgroundColor || actual.background).toBe(expected.backgroundColor || expected.background)
           colours.push(actual.color)
@@ -116,7 +116,7 @@ describe('request editor', () => {
           badge.remove()
         }
       }
-      expect(new Set(colours).size).toBe(6)
+      expect(new Set(colours).size).toBe(7)
     } finally {
       style.remove()
     }
@@ -331,7 +331,7 @@ describe('request editor', () => {
       const { user } = await openedEditor()
       await user.click(screen.getByRole('button', { name: 'Close Get users' }))
       expect(useApp.getState().openTabs).toEqual([])
-      expect(screen.getByText('Open a request')).toBeInTheDocument()
+      expect(screen.getByText(/^Open a request from the sidebar/)).toBeInTheDocument()
     })
 
     it('asks before closing a tab whose save failed', async () => {
