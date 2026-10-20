@@ -9,6 +9,13 @@ export interface Row extends EnvVar {
   uid: number
   /** Explains a change the editor made to the row (e.g. a shared value moved to the current value). */
   note?: string
+  /**
+   * The side the Value cell shows and writes: the current (local) value, or the initial (shared) one. Decided when the
+   * row is loaded and changed only through the sync control, so typing never flips it. Secrets are always local.
+   */
+  local: boolean
+  /** Created in this editor and not saved yet: switching it to local leaves its initial value empty. */
+  fresh?: boolean
 }
 
 export interface Draft {
@@ -25,13 +32,56 @@ export function toDraft(env: Environment, isNew = false): Draft {
   return {
     id: env.id,
     name: env.name,
-    rows: env.variables.map((v) => ({ ...v, uid: nextUid++ })),
+    rows: env.variables.map((v) => toRow(v)),
     isNew,
   }
 }
 
+function toRow(v: EnvVar): Row {
+  const row: Row = { ...v, uid: nextUid++, local: v.currentValue !== undefined && v.currentValue !== v.value }
+  // Remembered so a rename can tell the store where the undecryptable value is kept.
+  if (v.secret && v.locked) row.lockedKey = v.lockedKey ?? v.key
+  return row
+}
+
 export function blankRow(): Row {
-  return { uid: nextUid++, key: '', value: '', secret: false, enabled: true }
+  return { uid: nextUid++, key: '', value: '', secret: false, enabled: true, local: false }
+}
+
+/** True when the Value cell shows and writes the current (local) value. */
+export function isLocal(row: Row): boolean {
+  return row.secret || row.local
+}
+
+/** The effective value the Value cell shows: the local one for local rows, otherwise the shared one. */
+export function shownValue(row: Row): string {
+  return isLocal(row) ? (row.currentValue ?? '') : row.value
+}
+
+/** The change of typing `text` into the Value cell: it goes to whichever side the row shows. */
+export function writeValue(row: Row, text: string): Partial<Row> {
+  if (isLocal(row)) return { currentValue: text }
+  // A shared row's current value is absent or equal to the initial one; dropping it keeps the two from drifting.
+  return { value: text, currentValue: undefined }
+}
+
+/**
+ * The change of moving a row's shown value to the shared or the local side. Local keeps the initial value, except
+ * on a variable created in this editor, whose initial value stays empty.
+ */
+export function switchSync(row: Row, to: 'shared' | 'local'): Partial<Row> {
+  const shown = shownValue(row)
+  if (to === 'shared') return { value: shown, currentValue: undefined, local: false }
+  return { currentValue: shown, value: row.fresh ? '' : row.value, local: true }
+}
+
+/** A copy of a row with a free name, placed by the caller; an undecryptable value cannot be copied. */
+export function duplicateRow(row: Row, taken: string[]): Row {
+  const used = new Set(taken)
+  let key = `${row.key}_copy`
+  for (let i = 2; used.has(key); i++) key = `${row.key}_copy${i}`
+  const { lockedKey: _key, locked: _locked, note: _note, ...rest } = row
+  return { ...rest, key, uid: nextUid++, fresh: true }
 }
 
 function isBlank(v: EnvVar): boolean {
@@ -57,7 +107,10 @@ export function toEnvironment(draft: Draft): Environment {
       const v: EnvVar = { key: r.key, value: r.secret ? '' : r.value, secret: r.secret, enabled: r.enabled }
       if (r.currentValue) v.currentValue = r.currentValue
       // An undecryptable secret round-trips its flag so the store keeps its stored value, until a new one is typed.
-      else if (r.secret && r.locked) v.locked = true
+      else if (r.secret && r.locked) {
+        v.locked = true
+        if (r.lockedKey !== undefined && r.lockedKey !== r.key) v.lockedKey = r.lockedKey
+      }
       return v
     }),
   }
@@ -65,14 +118,29 @@ export function toEnvironment(draft: Draft): Environment {
 
 /** A comparable form of an environment (also of what the store returns) for dirty and changed-on-disk checks. */
 export function fingerprint(env: Environment): string {
-  return JSON.stringify(
-    toEnvironment({
-      id: env.id,
-      name: env.name,
-      rows: env.variables.map((v) => ({ ...v, uid: 0 })),
-      isNew: false,
+  const { variables } = toEnvironment({
+    id: env.id,
+    name: env.name,
+    rows: env.variables.map((v) => ({ ...v, uid: 0, local: false })),
+    isNew: false,
+  })
+  // Where a renamed locked value comes from is bookkeeping, not content: the store never returns it.
+  return JSON.stringify({
+    id: env.id,
+    name: env.name.trim(),
+    variables: variables.map(({ lockedKey: _from, ...v }) => v),
+  })
+}
+
+/** The draft after a successful save: renamed locked values now live under their new keys, and no row is new. */
+export function afterSave(draft: Draft): Draft {
+  return {
+    ...draft,
+    rows: draft.rows.map((r) => {
+      const { fresh: _fresh, ...rest } = r
+      return r.lockedKey !== undefined ? { ...rest, lockedKey: r.key } : rest
     }),
-  )
+  }
 }
 
 /** A copy for "Duplicate": variables are kept, secret values are not (only their keys). */

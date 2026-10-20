@@ -15,7 +15,12 @@ export interface MenuItem {
 }
 
 /** An item, or a non-interactive heading, muted note or separator. */
-export type MenuEntry = MenuItem | { heading: string } | { note: string; title?: string } | { separator: true }
+export type MenuEntry =
+  | MenuItem
+  | { heading: string }
+  /** `wrap` lets a longer note run over several lines instead of being cut off. */
+  | { note: string; title?: string; wrap?: boolean }
+  | { separator: true }
 
 interface Props {
   x: number
@@ -106,7 +111,12 @@ export function ContextMenu({ x, y, align = 'start', label, items, onClose, anch
         }
         if ('note' in entry) {
           return (
-            <li key={`n-${i}`} role="presentation" className="menu-note" title={entry.title}>
+            <li
+              key={`n-${i}`}
+              role="presentation"
+              className={`menu-note${entry.wrap ? ' menu-note-wrap' : ''}`}
+              title={entry.title}
+            >
               {entry.note}
             </li>
           )

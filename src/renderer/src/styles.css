@@ -1572,6 +1572,13 @@ input[type='radio'] {
   white-space: nowrap;
 }
 
+.menu-note-wrap {
+  max-width: 300px;
+  overflow: visible;
+  line-height: var(--line-height-s);
+  white-space: normal;
+}
+
 .menu-separator {
   height: 1px;
   margin: var(--spacing-xs) 0;
@@ -1751,10 +1758,6 @@ input[type='radio'] {
   vertical-align: middle;
 }
 
-.grid-table .grid-type {
-  width: 104px;
-}
-
 .grid-table .grid-actions {
   width: 36px;
   border-left: 0;
@@ -1842,8 +1845,8 @@ select.grid-input {
   flex: none;
   align-items: center;
   gap: var(--spacing-m);
-  height: 48px;
-  padding: 0 var(--spacing-xl);
+  height: var(--crumb-height);
+  padding: 0 var(--spacing-l);
 }
 
 .env-editor-head > svg {
@@ -1861,52 +1864,47 @@ select.grid-input {
 
 .env-name-input {
   width: min(360px, 100%);
-  height: 30px;
-  padding: 0 6px;
+  height: var(--controls-size-default);
+  padding: 0 var(--spacing-xs);
   font: inherit;
-  font-size: 14px;
-  font-weight: 600;
+  font-size: var(--text-size-m);
+  font-weight: var(--font-weight-bold);
   color: var(--content-primary);
   background: transparent;
   border: 1px solid transparent;
-  border-radius: var(--radius-default);
+  border-radius: var(--radius-s);
 }
 
 .env-name-input:hover {
-  border-color: var(--border-input);
+  background: var(--highlight-primary);
 }
 
 .env-name-input:focus {
-  border-color: var(--brand);
+  background: var(--background-primary);
+  border-color: var(--border-focus);
   outline: none;
 }
 
 .env-name-heading {
   flex: 1;
-  padding: 0 6px;
-  font-size: 14px;
-  font-weight: 600;
+  padding: 0 var(--spacing-xs);
+  font-size: var(--text-size-m);
+  font-weight: var(--font-weight-bold);
 }
 
 .env-editor-actions {
   display: flex;
   flex: none;
   align-items: center;
-  gap: var(--spacing-m);
+  gap: var(--spacing-xs);
   margin-left: auto;
 }
 
 .env-editor-body {
   flex: 1;
   min-height: 0;
-  padding: 0 var(--spacing-xl) var(--spacing-xl);
+  padding: 0 var(--spacing-l) var(--spacing-l);
   overflow: auto;
-}
-
-.env-help {
-  margin-bottom: var(--spacing-l);
-  font-size: var(--text-size-s);
-  color: var(--content-secondary);
 }
 
 .env-fieldset {
@@ -1916,18 +1914,108 @@ select.grid-input {
   border: 0;
 }
 
+.env-col-name {
+  width: 40%;
+}
+
+.env-table td {
+  position: relative;
+}
+
+.env-table th:last-child {
+  padding-right: 2px;
+}
+
+.env-value-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.env-value-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.env-search {
+  width: min(220px, 50%);
+  height: var(--controls-size-small);
+  padding: 0 var(--spacing-s);
+  font: inherit;
+  font-weight: var(--font-weight-regular);
+  color: var(--content-primary);
+  background: var(--background-primary);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-s);
+}
+
+.env-search:focus {
+  border-color: var(--border-focus);
+  outline: none;
+}
+
+.env-cell {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: var(--spacing-xs);
+}
+
+.env-cell .grid-input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The type and sync controls: a 20px icon with a small caret. */
+.env-cell-btn {
+  gap: 1px;
+  width: auto;
+  height: var(--controls-size-small);
+  padding: 0 3px;
+  border-radius: var(--radius-s);
+}
+
+/* Shown for secrets; on other rows only on hover or focus. Row actions likewise. */
+.env-type-btn:not(.env-type-secret),
+.env-hover-btn {
+  opacity: 0;
+}
+
+.env-var:hover .env-type-btn,
+.env-var:focus-within .env-type-btn,
+.env-type-btn[aria-expanded='true'],
+.env-var:hover .env-hover-btn,
+.env-var:focus-within .env-hover-btn,
+.env-hover-btn[aria-expanded='true'] {
+  opacity: 1;
+}
+
+.env-trailing .grid-input::placeholder {
+  color: var(--content-tertiary);
+}
+
+.env-var .grid-input::placeholder {
+  color: var(--content-tertiary);
+}
+
+.env-empty {
+  padding: var(--spacing-l) var(--spacing-m);
+  color: var(--content-tertiary);
+}
+
 .env-problem {
   font-size: var(--text-size-s);
   color: var(--content-error);
 }
 
 .env-state {
+  margin-right: var(--spacing-xs);
   font-size: var(--text-size-s);
   color: var(--content-secondary);
 }
 
 .env-error {
-  margin: 0 var(--spacing-xl) var(--spacing-l);
+  margin: 0 var(--spacing-l) var(--spacing-m);
   padding: 6px var(--spacing-l);
   font-size: var(--text-size-s);
   color: var(--status-error-fg);
@@ -1936,7 +2024,7 @@ select.grid-input {
 }
 
 .env-editor .banner {
-  margin: 0 var(--spacing-xl) var(--spacing-l);
+  margin: 0 var(--spacing-l) var(--spacing-m);
   border: 1px solid var(--border-warning);
   border-radius: var(--radius-default);
 }

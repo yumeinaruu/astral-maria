@@ -60,7 +60,20 @@ function rowInput(label: string, n = 1): HTMLInputElement {
 }
 
 async function makeSecret(user: ReturnType<typeof userEvent.setup>, n = 1, secret = true) {
-  await user.selectOptions(screen.getByLabelText(`Type ${n}`), secret ? 'secret' : 'default')
+  await user.click(screen.getByRole('button', { name: `Type ${n}` }))
+  await user.click(screen.getByRole('menuitemradio', { name: secret ? 'Secret' : 'Default' }))
+}
+
+/** Picks an item of the "⋯" menu of variable `n`. */
+async function rowAction(user: ReturnType<typeof userEvent.setup>, n: number, item: string) {
+  await user.click(screen.getByRole('button', { name: `Actions for variable ${n}` }))
+  await user.click(screen.getByRole('menuitem', { name: item }))
+}
+
+/** Moves the value of variable `n` to the shared or the local side. */
+async function setStorage(user: ReturnType<typeof userEvent.setup>, n: number, to: 'Shared' | 'Local') {
+  await user.click(screen.getByRole('button', { name: `Storage of value ${n}` }))
+  await user.click(screen.getByRole('menuitemradio', { name: new RegExp(`^${to}:`) }))
 }
 
 const MOD = IS_MAC ? 'Meta' : 'Control'
@@ -226,7 +239,7 @@ describe('environment editor', () => {
     await openEditor(user, 'Dev')
     expect(rowInput('Variable name', 2)).toHaveValue('')
     await user.type(rowInput('Variable name', 2), 'token')
-    await user.type(rowInput('Initial value', 2), 'abc')
+    await user.type(rowInput('Value', 2), 'abc')
     // A new trailing row follows the one that was typed into.
     expect(rowInput('Variable name', 3)).toHaveValue('')
     await user.click(screen.getByRole('button', { name: 'Save' }))
@@ -239,10 +252,10 @@ describe('environment editor', () => {
     expect(useApp.getState().environments.find((e) => e.id === 'dev')?.variables).toHaveLength(2)
   })
 
-  it('removes a variable with its trash button', async () => {
+  it('removes a variable from its row menu', async () => {
     const { user, environments } = await mount()
     await openEditor(user, 'Dev')
-    await user.click(screen.getByRole('button', { name: 'Delete variable 1' }))
+    await rowAction(user, 1, 'Delete')
     await user.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(environments.save).toHaveBeenCalled())
     expect((environments.save.mock.calls[0][0] as Environment).variables).toEqual([])
@@ -257,23 +270,24 @@ describe('environment editor', () => {
     expect(environments.save.mock.calls[0][0]).toMatchObject({ id: 'globals', name: 'Globals' })
   })
 
-  it('masks secret rows, moves the initial value into the current value and saves secret: true', async () => {
+  it('masks secret rows, keeps the local value and saves secret: true', async () => {
     const { user, environments } = await mount()
     await openEditor(user, 'Dev')
-    expect(rowInput('Initial value')).toHaveAttribute('type', 'text')
+    expect(rowInput('Value')).toHaveAttribute('type', 'text')
+    expect(rowInput('Value')).toHaveValue('localhost')
 
     await makeSecret(user)
-    expect(rowInput('Initial value')).toHaveAttribute('type', 'password')
-    expect(rowInput('Current value')).toHaveAttribute('type', 'password')
-    expect(rowInput('Initial value')).toBeDisabled()
-    expect(rowInput('Initial value')).toHaveValue('')
-    expect(rowInput('Initial value')).toHaveAttribute('placeholder', 'Secrets are never shared')
-    expect(rowInput('Current value')).toHaveValue('localhost')
+    expect(rowInput('Value')).toHaveAttribute('type', 'password')
+    expect(rowInput('Value')).toHaveValue('localhost')
+    expect(screen.getByText(/shared value removed; the local value was kept/i)).toBeInTheDocument()
+    // Secrets are always local: no sync control, and the type control shows the lock.
+    expect(screen.queryByRole('button', { name: 'Storage of value 1' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Type 1' })).toHaveAttribute('title', 'Type: secret')
 
-    await user.click(screen.getByRole('button', { name: 'Show value' }))
-    expect(rowInput('Current value')).toHaveAttribute('type', 'text')
-    await user.click(screen.getByRole('button', { name: 'Hide value' }))
-    expect(rowInput('Current value')).toHaveAttribute('type', 'password')
+    await user.click(screen.getByRole('button', { name: 'Show value 1' }))
+    expect(rowInput('Value')).toHaveAttribute('type', 'text')
+    await user.click(screen.getByRole('button', { name: 'Hide value 1' }))
+    expect(rowInput('Value')).toHaveAttribute('type', 'password')
 
     await user.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(environments.save).toHaveBeenCalled())
@@ -286,7 +300,7 @@ describe('environment editor', () => {
     })
   })
 
-  it('tells where the initial value went when made secret, and keeps the current value when made default', async () => {
+  it('moves a shared value to this machine when made secret, and keeps it local when made default', async () => {
     const env: Environment = {
       id: 'e',
       name: 'E',
@@ -295,12 +309,44 @@ describe('environment editor', () => {
     const { user } = await mount([env])
     await openEditor(user, 'E')
     await makeSecret(user)
-    expect(rowInput('Current value')).toHaveValue('shared-text')
-    expect(screen.getByText(/moved to the current value/i)).toBeInTheDocument()
+    expect(rowInput('Value')).toHaveValue('shared-text')
+    expect(screen.getByText(/shared value now stays on this machine/i)).toBeInTheDocument()
     await makeSecret(user, 1, false)
-    expect(rowInput('Initial value')).toBeEnabled()
-    expect(rowInput('Initial value')).toHaveValue('')
-    expect(rowInput('Current value')).toHaveValue('shared-text')
+    expect(rowInput('Value')).toHaveAttribute('type', 'text')
+    expect(rowInput('Value')).toHaveValue('shared-text')
+    expect(screen.getByRole('button', { name: 'Storage of value 1' })).toHaveAttribute(
+      'title',
+      expect.stringMatching(/^Local/),
+    )
+  })
+
+  it('shows and hides every secret from the options menu', async () => {
+    const env: Environment = {
+      id: 'e',
+      name: 'E',
+      variables: [
+        { key: 'a', value: '', currentValue: 'one', secret: true, enabled: true },
+        { key: 'b', value: '', currentValue: 'two', secret: true, enabled: true },
+        { key: 'c', value: 'plain', secret: false, enabled: true },
+      ],
+    }
+    const { user } = await mount([env])
+    await openEditor(user, 'E')
+    expect(rowInput('Value', 1)).toHaveAttribute('type', 'password')
+    expect(rowInput('Value', 2)).toHaveAttribute('type', 'password')
+    expect(rowInput('Value', 3)).toHaveAttribute('type', 'text')
+    await user.click(screen.getByRole('button', { name: 'Variable options' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Show secrets' }))
+    expect(rowInput('Value', 1)).toHaveAttribute('type', 'text')
+    expect(rowInput('Value', 2)).toHaveAttribute('type', 'text')
+    // Hiding one again turns the menu back to Show secrets.
+    await user.click(screen.getByRole('button', { name: 'Hide value 2' }))
+    await user.click(screen.getByRole('button', { name: 'Variable options' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Show secrets' }))
+    await user.click(screen.getByRole('button', { name: 'Variable options' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Hide secrets' }))
+    expect(rowInput('Value', 1)).toHaveAttribute('type', 'password')
+    expect(rowInput('Value', 2)).toHaveAttribute('type', 'password')
   })
 
   it('never puts secret values into DOM attributes', async () => {
@@ -311,9 +357,9 @@ describe('environment editor', () => {
     }
     const { user } = await mount([env])
     await openEditor(user, 'E')
-    await user.click(screen.getByRole('button', { name: 'Show value' }))
-    await user.type(rowInput('Current value'), '-more')
-    expect(rowInput('Current value')).toHaveValue(`${SECRET_TEXT}-more`)
+    await user.click(screen.getByRole('button', { name: 'Show value 1' }))
+    await user.type(rowInput('Value'), '-more')
+    expect(rowInput('Value')).toHaveValue(`${SECRET_TEXT}-more`)
     const leaks: string[] = []
     for (const el of document.body.querySelectorAll('*')) {
       for (const attr of el.getAttributeNames()) {
@@ -336,19 +382,22 @@ describe('environment editor', () => {
     it('is shown masked and empty with an explanation, without a reveal button', async () => {
       const { user } = await mount([LOCKED])
       await openEditor(user, 'E')
-      const current = rowInput('Current value')
+      const current = rowInput('Value')
       expect(current).toHaveAttribute('type', 'password')
       expect(current).toHaveValue('')
       expect(current).toHaveAttribute('placeholder', 'Cannot decrypt on this machine')
       expect(screen.getByText(/Cannot decrypt on this machine\. Kept unless you type a new value/)).toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: 'Show value' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /Show value/ })).not.toBeInTheDocument()
+      await user.click(screen.getByRole('button', { name: 'Variable options' }))
+      await user.click(screen.getByRole('menuitem', { name: 'Show secrets' }))
+      expect(current).toHaveAttribute('type', 'password')
     })
 
     it('is preserved when another variable is edited and saved', async () => {
       const { user, environments } = await mount([LOCKED])
       await openEditor(user, 'E')
-      await user.clear(rowInput('Initial value', 2))
-      await user.type(rowInput('Initial value', 2), 'b.test')
+      await user.clear(rowInput('Value', 2))
+      await user.type(rowInput('Value', 2), 'b.test')
       await user.click(screen.getByRole('button', { name: 'Save' }))
       await waitFor(() => expect(environments.save).toHaveBeenCalled())
       expect((environments.save.mock.calls[0][0] as Environment).variables[0]).toEqual({
@@ -364,7 +413,7 @@ describe('environment editor', () => {
       const { user, environments } = await mount([LOCKED])
       await openEditor(user, 'E')
       expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
-      await user.type(rowInput('Current value'), 'new-secret')
+      await user.type(rowInput('Value'), 'new-secret')
       await user.click(screen.getByRole('button', { name: 'Save' }))
       await waitFor(() => expect(environments.save).toHaveBeenCalled())
       expect((environments.save.mock.calls[0][0] as Environment).variables[0]).toEqual({
@@ -465,8 +514,8 @@ describe('environment editor', () => {
     await user.click(dup)
     expect(useApp.getState().openTabs).toHaveLength(2)
     expect(screen.getByLabelText('Environment name')).toHaveValue('E copy')
-    expect(rowInput('Current value', 1)).toHaveValue('c')
-    expect(rowInput('Current value', 2)).toHaveValue('')
+    expect(rowInput('Value', 1)).toHaveValue('c')
+    expect(rowInput('Value', 2)).toHaveValue('')
     await user.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(environments.save).toHaveBeenCalled())
     const saved = environments.save.mock.calls[0][0] as Environment
@@ -539,23 +588,26 @@ describe('environment editor', () => {
   it('keeps the draft while another tab is shown, and marks the tab as changed', async () => {
     const { user, environments } = await mount()
     await openEditor(user, 'Dev')
-    await user.type(rowInput('Initial value'), 'X')
+    await user.type(rowInput('Value'), 'X')
     expect(screen.getByRole('tab', { name: /Dev/ })).toHaveTextContent('Unsaved changes')
     await openEditor(user, 'Prod')
     expect(screen.getByLabelText('Environment name')).toHaveValue('Prod')
     await user.click(screen.getByRole('tab', { name: /Dev/ }))
-    expect(rowInput('Initial value')).toHaveValue('dev.example.comX')
+    expect(rowInput('Value')).toHaveValue('localhostX')
     expect(environments.save).not.toHaveBeenCalled()
   })
 
   it('saves the draft when its tab is closed', async () => {
     const { user, environments } = await mount()
     await openEditor(user, 'Dev')
-    await user.type(rowInput('Initial value'), 'X')
+    await user.type(rowInput('Value'), 'X')
     await user.click(screen.getByRole('button', { name: 'Close Dev' }))
     expect(screen.queryByRole('tabpanel')).toBeNull()
     await waitFor(() => expect(environments.save).toHaveBeenCalledTimes(1))
-    expect((environments.save.mock.calls[0][0] as Environment).variables[0].value).toBe('dev.example.comX')
+    expect((environments.save.mock.calls[0][0] as Environment).variables[0]).toMatchObject({
+      value: 'dev.example.com',
+      currentValue: 'localhostX',
+    })
   })
 
   it('asks before closing a tab whose draft cannot be saved, and keeps it on Cancel', async () => {
@@ -578,7 +630,7 @@ describe('environment editor', () => {
   it('saves with Cmd/Ctrl+S inside the editor', async () => {
     const { user, environments } = await mount()
     await openEditor(user, 'Dev')
-    await user.type(rowInput('Initial value'), 'X')
+    await user.type(rowInput('Value'), 'X')
     await user.keyboard(`{${MOD}>}s{/${MOD}}`)
     await waitFor(() => expect(environments.save).toHaveBeenCalledTimes(1))
   })
@@ -588,12 +640,12 @@ describe('environment editor', () => {
     const { user, environments } = await mount()
     environments.save.mockImplementationOnce(() => new Promise<void>((r) => (finish = r)))
     await openEditor(user, 'Dev')
-    await user.type(rowInput('Initial value'), 'X')
+    await user.type(rowInput('Value'), 'X')
     await user.click(screen.getByRole('button', { name: 'Save' }))
-    expect(rowInput('Initial value')).toBeDisabled()
+    expect(rowInput('Value')).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
     finish()
-    await waitFor(() => expect(rowInput('Initial value')).toBeEnabled())
+    await waitFor(() => expect(rowInput('Value')).toBeEnabled())
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
   })
 
@@ -605,11 +657,11 @@ describe('environment editor', () => {
       disk.envs[0] = structuredClone(env)
     })
     await openEditor(user, 'Dev')
-    await user.type(rowInput('Initial value'), 'X')
+    await user.type(rowInput('Value'), 'X')
     await user.click(screen.getByRole('button', { name: 'Save' }))
     await openEditor(user, 'Prod')
     finish()
-    await waitFor(() => expect(useApp.getState().environments[0].variables[0].value).toBe('dev.example.comX'))
+    await waitFor(() => expect(useApp.getState().environments[0].variables[0].currentValue).toBe('localhostX'))
     await user.click(screen.getByRole('tab', { name: /Dev/ }))
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
     expect(screen.queryByText('Changed on disk')).toBeNull()
@@ -618,30 +670,30 @@ describe('environment editor', () => {
   it('keeps the draft and shows Changed on disk when the environment changed meanwhile', async () => {
     const { user, disk } = await mount()
     await openEditor(user, 'Dev')
-    await user.type(rowInput('Initial value'), 'X')
+    await user.type(rowInput('Value'), 'X')
     disk.envs[0] = { ...DEV, variables: [{ ...DEV.variables[0], value: 'other' }] }
     await useApp.getState().refresh()
     expect(await screen.findByText('Changed on disk')).toBeInTheDocument()
-    expect(rowInput('Initial value')).toHaveValue('dev.example.comX')
+    expect(rowInput('Value')).toHaveValue('localhostX')
   })
 
   it('adopts changes from disk while the draft is clean', async () => {
     const { user, disk } = await mount()
     await openEditor(user, 'Dev')
-    disk.envs[0] = { ...DEV, variables: [{ ...DEV.variables[0], value: 'other' }] }
+    disk.envs[0] = { ...DEV, variables: [{ ...DEV.variables[0], currentValue: 'other' }] }
     await useApp.getState().refresh()
-    await waitFor(() => expect(rowInput('Initial value')).toHaveValue('other'))
+    await waitFor(() => expect(rowInput('Value')).toHaveValue('other'))
     expect(screen.queryByText('Changed on disk')).toBeNull()
   })
 
   it('shows an error and keeps the draft when the environment was deleted on disk', async () => {
     const { user, disk } = await mount()
     const panel = await openEditor(user, 'Dev')
-    await user.type(rowInput('Initial value'), 'X')
+    await user.type(rowInput('Value'), 'X')
     disk.envs = disk.envs.filter((e) => e.id !== 'dev')
     await useApp.getState().refresh()
     expect(await within(panel).findByRole('alert')).toHaveTextContent(/deleted on disk/i)
-    expect(rowInput('Initial value')).toHaveValue('dev.example.comX')
+    expect(rowInput('Value')).toHaveValue('localhostX')
   })
 
   it('closes a clean editor of an environment deleted on disk', async () => {
@@ -665,14 +717,273 @@ describe('environment editor', () => {
     expect(api.environments.list).toHaveBeenCalled()
   })
 
-  it('explains where initial and current values are kept', async () => {
+  it('explains where initial and current values are kept, in the options menu', async () => {
     const { user } = await mount()
     await openEditor(user)
+    await user.click(screen.getByRole('button', { name: 'Variable options' }))
     expect(
       screen.getByText(
         'Initial values are saved in the workspace folder and synced with git. Current values and secrets stay on this machine.',
       ),
     ).toBeInTheDocument()
+  })
+})
+
+describe('two-column variables', () => {
+  const MIXED: Environment = {
+    id: 'm',
+    name: 'Mixed',
+    variables: [
+      { key: 'shared', value: 's-init', secret: false, enabled: true },
+      { key: 'local', value: 'l-init', currentValue: 'l-cur', secret: false, enabled: true },
+      { key: 'same', value: 'eq', currentValue: 'eq', secret: false, enabled: true },
+      { key: 'onlyLocal', value: '', currentValue: 'mine', secret: false, enabled: true },
+    ],
+  }
+
+  async function saved(user: ReturnType<typeof userEvent.setup>, environments: ReturnType<typeof diskApi>) {
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(environments.save).toHaveBeenCalled())
+    return (environments.save.mock.calls.at(-1)![0] as Environment).variables
+  }
+
+  function storage(n: number): string | null {
+    return screen.getByRole('button', { name: `Storage of value ${n}` }).getAttribute('title')
+  }
+
+  it('shows the effective value: the current one when set, otherwise the initial one', async () => {
+    const { user } = await mount([MIXED])
+    await openEditor(user, 'Mixed')
+    expect(rowInput('Value', 1)).toHaveValue('s-init')
+    expect(rowInput('Value', 2)).toHaveValue('l-cur')
+    expect(rowInput('Value', 3)).toHaveValue('eq')
+    expect(rowInput('Value', 4)).toHaveValue('mine')
+    expect(storage(1)).toMatch(/^Shared/)
+    expect(storage(2)).toMatch(/^Local/)
+    // A current value equal to the initial one counts as shared.
+    expect(storage(3)).toMatch(/^Shared/)
+    expect(storage(4)).toMatch(/^Local/)
+  })
+
+  it('writes the initial value of a shared row and the current value of a local row', async () => {
+    const { user, environments } = await mount([MIXED])
+    await openEditor(user, 'Mixed')
+    await user.type(rowInput('Value', 1), '!')
+    await user.type(rowInput('Value', 2), '!')
+    await user.type(rowInput('Value', 3), '!')
+    const vars = await saved(user, environments)
+    expect(vars[0]).toEqual({ key: 'shared', value: 's-init!', secret: false, enabled: true })
+    expect(vars[1]).toEqual({ key: 'local', value: 'l-init', currentValue: 'l-cur!', secret: false, enabled: true })
+    // Shared with an equal current value: the initial value is written and the current one dropped.
+    expect(vars[2]).toEqual({ key: 'same', value: 'eq!', secret: false, enabled: true })
+  })
+
+  it('keeps writing the local side while the typed value passes through the initial one', async () => {
+    const env: Environment = {
+      id: 'e',
+      name: 'E',
+      variables: [{ key: 'k', value: 'ab', currentValue: 'a', secret: false, enabled: true }],
+    }
+    const { user, environments } = await mount([env])
+    await openEditor(user, 'E')
+    await user.type(rowInput('Value'), 'bc')
+    expect(rowInput('Value')).toHaveValue('abc')
+    expect((await saved(user, environments))[0]).toEqual({
+      key: 'k',
+      value: 'ab',
+      currentValue: 'abc',
+      secret: false,
+      enabled: true,
+    })
+  })
+
+  it('switches a local row to shared: the shown value becomes the initial value', async () => {
+    const { user, environments } = await mount([MIXED])
+    await openEditor(user, 'Mixed')
+    await setStorage(user, 2, 'Shared')
+    expect(rowInput('Value', 2)).toHaveValue('l-cur')
+    expect(storage(2)).toMatch(/^Shared/)
+    expect((await saved(user, environments))[1]).toEqual({
+      key: 'local',
+      value: 'l-cur',
+      secret: false,
+      enabled: true,
+    })
+  })
+
+  it('switches a shared row to local and keeps the initial value, shown in the menu', async () => {
+    const { user, environments } = await mount([MIXED])
+    await openEditor(user, 'Mixed')
+    await setStorage(user, 1, 'Local')
+    expect(storage(1)).toMatch(/^Local/)
+    await user.clear(rowInput('Value', 1))
+    await user.type(rowInput('Value', 1), 'mine')
+    await user.click(screen.getByRole('button', { name: 'Storage of value 1' }))
+    const menu = screen.getByRole('menu', { name: 'Where the value is kept' })
+    expect(within(menu).getByRole('menuitemradio', { name: /^Local: only on this machine/ })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+    expect(within(menu).getByText('Shared value: s-init')).toBeInTheDocument()
+    await user.keyboard('{Escape}')
+    expect((await saved(user, environments))[0]).toEqual({
+      key: 'shared',
+      value: 's-init',
+      currentValue: 'mine',
+      secret: false,
+      enabled: true,
+    })
+  })
+
+  it('does not show a shared value in the menu when the initial value is empty', async () => {
+    const { user } = await mount([MIXED])
+    await openEditor(user, 'Mixed')
+    await user.click(screen.getByRole('button', { name: 'Storage of value 4' }))
+    expect(screen.queryByText(/^Shared value:/)).toBeNull()
+  })
+
+  it('starts a new variable shared, and leaves its initial value empty when switched to local', async () => {
+    const { user, environments } = await mount([MIXED])
+    await openEditor(user, 'Mixed')
+    await user.type(rowInput('Variable name', 5), 'fresh')
+    expect(rowInput('Variable name', 5)).toHaveFocus()
+    await user.type(rowInput('Value', 5), 'v1')
+    expect(storage(5)).toMatch(/^Shared/)
+    await setStorage(user, 5, 'Local')
+    expect(rowInput('Value', 5)).toHaveValue('v1')
+    expect((await saved(user, environments))[4]).toEqual({
+      key: 'fresh',
+      value: '',
+      currentValue: 'v1',
+      secret: false,
+      enabled: true,
+    })
+  })
+
+  it('keeps the focus in the value cell when typing into the trailing row creates a variable', async () => {
+    const { user } = await mount([MIXED])
+    await openEditor(user, 'Mixed')
+    await user.type(rowInput('Value', 5), 'xyz')
+    expect(rowInput('Value', 5)).toHaveFocus()
+    expect(rowInput('Value', 5)).toHaveValue('xyz')
+    expect(rowInput('Variable name', 6)).toHaveAttribute('placeholder', 'Add variable')
+  })
+
+  it('filters the rows by name with the search', async () => {
+    const { user } = await mount([MIXED])
+    await openEditor(user, 'Mixed')
+    await user.click(screen.getByRole('button', { name: 'Search variables' }))
+    const filter = screen.getByRole('searchbox', { name: 'Filter variables' })
+    expect(filter).toHaveFocus()
+    await user.type(filter, 'LOCAL')
+    const names = screen.getAllByRole('textbox', { name: /^Variable name/ }) as HTMLInputElement[]
+    expect(names.map((i) => i.value)).toEqual(['local', 'onlyLocal'])
+    // The numbering follows the whole list, and the Add variable row is hidden while filtering.
+    expect(rowInput('Variable name', 2)).toHaveValue('local')
+    expect(screen.queryByLabelText('Variable name 5')).toBeNull()
+    await user.clear(filter)
+    await user.type(filter, 'nothing')
+    expect(screen.getByText(/No variables match/)).toBeInTheDocument()
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('searchbox', { name: 'Filter variables' })).toBeNull()
+    expect(screen.getAllByRole('textbox', { name: /^Variable name/ })).toHaveLength(5)
+  })
+
+  it('disables and enables a variable from its row menu, with muted text', async () => {
+    const { user, environments } = await mount([MIXED])
+    await openEditor(user, 'Mixed')
+    await rowAction(user, 1, 'Disable')
+    expect(rowInput('Variable name', 1).closest('tr')).toHaveClass('grid-disabled')
+    expect((await saved(user, environments))[0]).toMatchObject({ key: 'shared', enabled: false })
+    await rowAction(user, 1, 'Enable')
+    expect(rowInput('Variable name', 1).closest('tr')).not.toHaveClass('grid-disabled')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled())
+    expect((await saved(user, environments))[0]).toMatchObject({ key: 'shared', enabled: true })
+  })
+
+  it('round-trips a disabled variable untouched', async () => {
+    const env: Environment = {
+      id: 'e',
+      name: 'E',
+      variables: [
+        { key: 'off', value: 'x', secret: false, enabled: false },
+        { key: 'on', value: 'y', secret: false, enabled: true },
+      ],
+    }
+    const { user, environments } = await mount([env])
+    await openEditor(user, 'E')
+    expect(rowInput('Variable name', 1).closest('tr')).toHaveClass('grid-disabled')
+    await user.type(rowInput('Value', 2), '2')
+    expect((await saved(user, environments))[0]).toEqual(env.variables[0])
+  })
+
+  it('duplicates a row under it with a free name', async () => {
+    const { user, environments } = await mount([MIXED])
+    await openEditor(user, 'Mixed')
+    await rowAction(user, 2, 'Duplicate row')
+    expect(rowInput('Variable name', 3)).toHaveValue('local_copy')
+    expect(rowInput('Value', 3)).toHaveValue('l-cur')
+    await rowAction(user, 2, 'Duplicate row')
+    expect(rowInput('Variable name', 3)).toHaveValue('local_copy2')
+    const vars = await saved(user, environments)
+    expect(vars.map((v) => v.key)).toEqual(['shared', 'local', 'local_copy2', 'local_copy', 'same', 'onlyLocal'])
+    expect(vars[3]).toEqual({ key: 'local_copy', value: 'l-init', currentValue: 'l-cur', secret: false, enabled: true })
+  })
+
+  it('switches the type through the type control', async () => {
+    const { user } = await mount([MIXED])
+    await openEditor(user, 'Mixed')
+    await user.click(screen.getByRole('button', { name: 'Type 1' }))
+    expect(screen.getByRole('menuitemradio', { name: 'Default' })).toHaveAttribute('aria-checked', 'true')
+    await user.click(screen.getByRole('menuitemradio', { name: 'Secret' }))
+    expect(rowInput('Value', 1)).toHaveAttribute('type', 'password')
+    expect(rowInput('Value', 1)).toHaveValue('s-init')
+  })
+
+  describe('a renamed secret that cannot be decrypted', () => {
+    const LOCKED: Environment = {
+      id: 'e',
+      name: 'E',
+      variables: [{ key: 'token', value: '', secret: true, enabled: true, locked: true }],
+    }
+
+    it('tells the store where its value is kept, and is not dirty after the save', async () => {
+      const { user, environments } = await mount([LOCKED])
+      await openEditor(user, 'E')
+      await user.clear(rowInput('Variable name'))
+      await user.type(rowInput('Variable name'), 'apiToken')
+      expect((await saved(user, environments))[0]).toEqual({
+        key: 'apiToken',
+        value: '',
+        secret: true,
+        enabled: true,
+        locked: true,
+        lockedKey: 'token',
+      })
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled())
+      expect(screen.queryByText('Changed on disk')).toBeNull()
+    })
+
+    it('points the next save at the new key', async () => {
+      const { user, environments, disk } = await mount([LOCKED])
+      // Like the real store: a listed locked secret comes back without the bookkeeping field.
+      environments.save.mockImplementation(async (env: Environment) => {
+        disk.envs[0] = { ...env, variables: env.variables.map(({ lockedKey: _k, ...v }) => v) }
+      })
+      await openEditor(user, 'E')
+      await user.clear(rowInput('Variable name'))
+      await user.type(rowInput('Variable name'), 'apiToken')
+      await saved(user, environments)
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled())
+      await user.type(rowInput('Variable name', 2), 'other')
+      expect((await saved(user, environments))[0]).toEqual({
+        key: 'apiToken',
+        value: '',
+        secret: true,
+        enabled: true,
+        locked: true,
+      })
+    })
   })
 })
 

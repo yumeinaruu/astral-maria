@@ -1,27 +1,53 @@
-import { Copy, Eye, EyeOff, Layers, Save, Trash2 } from 'lucide-react'
+import {
+  ChevronDown,
+  Cloud,
+  Copy,
+  Eye,
+  EyeOff,
+  Laptop,
+  Layers,
+  Lock,
+  MoreHorizontal,
+  Save,
+  Search,
+  Trash2,
+} from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { Environment } from '../../../shared/types'
 import {
   GLOBALS_ID,
   GLOBALS_NAME,
+  afterSave,
   blankRow,
   duplicateOf,
+  duplicateRow,
   fingerprint,
   isDraftDirty,
+  isLocal,
   nameProblem,
   newId,
   otherNames,
   rowProblems,
+  shownValue,
+  switchSync,
   toDraft,
   toEnvironment,
   uniqueName,
+  writeValue,
   type Draft,
   type Row,
 } from '../lib/environments'
-import { hasMod } from '../lib/platform'
+import { hasMod, shortcut } from '../lib/platform'
 import { environmentTabId, useApp } from '../state/store'
 import { LoadErrorsBanner } from './Banners'
 import { ConfirmDialog } from './ConfirmDialog'
+import type { MenuEntry } from './ContextMenu'
+import { MenuButton } from './MenuButton'
+
+const HELP =
+  'Initial values are saved in the workspace folder and synced with git. Current values and secrets stay on this machine.'
+const SHARED_LABEL = 'Shared: saved in the workspace and synced with git'
+const LOCAL_LABEL = 'Local: only on this machine'
 
 function messageOf(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
@@ -34,12 +60,20 @@ function lookup(id: string): Environment | undefined {
   return { id: GLOBALS_ID, name: GLOBALS_NAME, variables: [] }
 }
 
+/** Until a new value is typed: the stored one cannot be decrypted here, so there is nothing to show. */
+function isLocked(row: Row): boolean {
+  return row.secret && row.locked === true && !row.currentValue
+}
+
 interface Props {
   /** The environment this tab edits; its draft lives in the store (`environmentDrafts`). */
   envId: string
 }
 
-/** The editor tab of one environment: its name and a grid of variables, saved with Save or Cmd/Ctrl+S. */
+/**
+ * The editor tab of one environment: its name and a `Variable | Value` grid, saved with Save or Cmd/Ctrl+S. The Value
+ * cell shows the effective value (the local one if set, otherwise the shared one) and writes to the side it shows.
+ */
 export function EnvironmentEditor({ envId }: Props): React.JSX.Element | null {
   const entry = useApp((s) => s.environmentDrafts[envId])
   const environments = useApp((s) => s.environments)
@@ -50,6 +84,7 @@ export function EnvironmentEditor({ envId }: Props): React.JSX.Element | null {
   /** The uid the trailing empty row gets once something is typed into it, so focus stays in that row. */
   const [nextRow, setNextRow] = useState(() => blankRow())
   const [revealed, setRevealed] = useState<ReadonlySet<number>>(new Set())
+  const [query, setQuery] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -106,7 +141,7 @@ export function EnvironmentEditor({ envId }: Props): React.JSX.Element | null {
       // Applied even if the tab was switched meanwhile: the draft is in the store, not in this component.
       if (!applied || mine !== selection.current) return applied
       useApp.getState().editEnvironmentDraft(envId, (e) => ({
-        draft: { ...e.draft, name: env.name, isNew: false },
+        draft: afterSave({ ...e.draft, name: env.name, isNew: false }),
         baseline: fingerprint(env),
       }))
       return true
@@ -146,11 +181,22 @@ export function EnvironmentEditor({ envId }: Props): React.JSX.Element | null {
     setDraft((d) => ({ ...d, rows: d.rows.map((r) => (r.uid === uid ? { ...r, ...patch } : r)) }))
   }
 
-  /** Typing into the trailing empty row turns it into a real row. */
+  /** Typing into the trailing empty row turns it into a real, shared row. */
   function addRow(patch: Partial<Row>): void {
-    const row = { ...nextRow, ...patch }
+    const row: Row = { ...nextRow, ...patch, fresh: true }
     setDraft((d) => ({ ...d, rows: [...d.rows, row] }))
     setNextRow(blankRow())
+  }
+
+  function duplicateVariable(row: Row): void {
+    setDraft((d) => {
+      const copy = duplicateRow(
+        row,
+        d.rows.map((r) => r.key),
+      )
+      const at = d.rows.findIndex((r) => r.uid === row.uid)
+      return { ...d, rows: [...d.rows.slice(0, at + 1), copy, ...d.rows.slice(at + 1)] }
+    })
   }
 
   function setSecret(row: Row, secret: boolean): void {
@@ -159,10 +205,12 @@ export function EnvironmentEditor({ envId }: Props): React.JSX.Element | null {
       updateRow(row.uid, {
         secret: false,
         locked: undefined,
+        lockedKey: undefined,
+        local: false,
         note: 'The value that could not be decrypted is removed when you save.',
       })
     } else if (!secret) {
-      updateRow(row.uid, { secret: false, note: undefined })
+      updateRow(row.uid, { secret: false, local: !!row.currentValue, note: undefined })
     } else if (row.value === '') {
       updateRow(row.uid, { secret: true, note: undefined })
     } else if (!row.currentValue) {
@@ -170,13 +218,13 @@ export function EnvironmentEditor({ envId }: Props): React.JSX.Element | null {
         secret: true,
         value: '',
         currentValue: row.value,
-        note: 'Initial value moved to the current value.',
+        note: 'The shared value now stays on this machine only.',
       })
     } else {
       updateRow(row.uid, {
         secret: true,
         value: '',
-        note: 'Initial value removed; the existing current value was kept.',
+        note: 'Shared value removed; the local value was kept.',
       })
     }
   }
@@ -196,7 +244,22 @@ export function EnvironmentEditor({ envId }: Props): React.JSX.Element | null {
     }
   }
 
+  const revealable = draft.rows.filter((r) => r.secret && !isLocked(r))
+  const allShown = revealable.length > 0 && revealable.every((r) => revealed.has(r.uid))
+  const needle = query?.trim().toLowerCase() ?? ''
+  const visible = draft.rows
+    .map((row, i) => ({ row, n: i + 1 }))
+    .filter(({ row }) => needle === '' || row.key.toLowerCase().includes(needle))
   const trailing = draft.rows.length + 1
+
+  const optionsMenu = (): MenuEntry[] => [
+    {
+      label: allShown ? 'Hide secrets' : 'Show secrets',
+      onSelect: () => setRevealed(allShown ? new Set() : new Set(revealable.map((r) => r.uid))),
+    },
+    { separator: true },
+    { note: HELP, wrap: true },
+  ]
 
   return (
     <div className="env-editor" onKeyDown={onKeyDown}>
@@ -228,7 +291,7 @@ export function EnvironmentEditor({ envId }: Props): React.JSX.Element | null {
           {changedOnDisk && <span className="env-state">Changed on disk</span>}
           <button
             type="button"
-            className="btn btn-ghost"
+            className="btn-text"
             title="Copies the variables. Secret values are not copied, only their keys with empty values."
             disabled={busy}
             onClick={duplicate}
@@ -237,12 +300,25 @@ export function EnvironmentEditor({ envId }: Props): React.JSX.Element | null {
             Duplicate
           </button>
           {!isGlobals && !draft.isNew && (
-            <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => setConfirmDelete(true)}>
+            <button
+              type="button"
+              className="btn-text"
+              aria-label="Delete environment"
+              title="Delete environment"
+              disabled={busy}
+              onClick={() => setConfirmDelete(true)}
+            >
               <Trash2 size={14} aria-hidden="true" />
-              Delete environment
+              Delete
             </button>
           )}
-          <button type="button" className="btn" onClick={() => void save()} disabled={busy || !dirty || invalid}>
+          <button
+            type="button"
+            className="btn-text save-btn"
+            title={`Save (${shortcut('S')})`}
+            onClick={() => void save()}
+            disabled={busy || !dirty || invalid}
+          >
             <Save size={14} aria-hidden="true" />
             Save
           </button>
@@ -260,179 +336,115 @@ export function EnvironmentEditor({ envId }: Props): React.JSX.Element | null {
       )}
       <LoadErrorsBanner errors={loadErrors} />
       <div className="env-editor-body">
-        <p className="env-help">
-          Initial values are saved in the workspace folder and synced with git. Current values and secrets stay on this
-          machine.
-        </p>
         <fieldset className="env-fieldset" disabled={busy}>
           <legend className="sr-only">Variables</legend>
           <table className="grid-table env-table">
+            <colgroup>
+              <col className="env-col-name" />
+              <col />
+            </colgroup>
             <thead>
               <tr>
-                <th scope="col" className="grid-check">
-                  <span className="sr-only">Enabled</span>
-                </th>
                 <th scope="col">Variable</th>
-                <th scope="col" className="grid-type">
-                  Type
-                </th>
-                <th scope="col">Initial value</th>
-                <th scope="col">Current value</th>
-                <th scope="col" className="grid-actions">
-                  <span className="sr-only">Remove</span>
+                <th scope="col">
+                  <div className="env-value-head">
+                    <span className="env-value-label">Value</span>
+                    {query !== null && (
+                      <input
+                        className="env-search"
+                        type="search"
+                        aria-label="Filter variables"
+                        placeholder="Filter variables"
+                        value={query}
+                        spellCheck={false}
+                        autoFocus
+                        onChange={(e) => setQuery(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Escape') {
+                            e.stopPropagation()
+                            setQuery(null)
+                          }
+                        }}
+                      />
+                    )}
+                    <button
+                      type="button"
+                      className="icon-btn icon-btn-sm toggle-btn"
+                      aria-label="Search variables"
+                      title="Search variables"
+                      aria-pressed={query !== null}
+                      onClick={() => setQuery(query === null ? '' : null)}
+                    >
+                      <Search size={14} aria-hidden="true" />
+                    </button>
+                    <MenuButton
+                      label="Variable options"
+                      className="icon-btn icon-btn-sm"
+                      align="end"
+                      items={optionsMenu}
+                    >
+                      <MoreHorizontal size={14} aria-hidden="true" />
+                    </MenuButton>
+                  </div>
                 </th>
               </tr>
             </thead>
             <tbody>
               {[
-                ...draft.rows.map((row, i) => {
-                  const n = i + 1
-                  const problem = rowErrors.get(row.uid)
-                  // Until a new value is typed: the stored one cannot be decrypted here, so there is nothing to reveal.
-                  const locked = row.secret && row.locked === true && !row.currentValue
-                  const shown = revealed.has(row.uid) && !locked
-                  const type = row.secret && !shown ? 'password' : 'text'
-                  return (
-                    <tr key={row.uid} className={row.enabled ? undefined : 'grid-disabled'}>
-                      <td className="grid-check">
-                        <input
-                          type="checkbox"
-                          aria-label={`Enabled ${n}`}
-                          checked={row.enabled}
-                          onChange={(e) => updateRow(row.uid, { enabled: e.target.checked })}
-                        />
-                      </td>
-                      <td>
-                        <input
-                          className="grid-input mono"
-                          aria-label={`Variable name ${n}`}
-                          aria-invalid={problem ? true : undefined}
-                          aria-describedby={problem ? `env-row-${row.uid}-problem` : undefined}
-                          placeholder="Variable"
-                          value={row.key}
-                          spellCheck={false}
-                          onChange={(e) => updateRow(row.uid, { key: e.target.value })}
-                        />
-                        {problem && (
-                          <span id={`env-row-${row.uid}-problem`} className="grid-note grid-problem">
-                            {problem}
-                          </span>
-                        )}
-                      </td>
-                      <td className="grid-type">
-                        <select
-                          className="grid-input"
-                          aria-label={`Type ${n}`}
-                          value={row.secret ? 'secret' : 'default'}
-                          onChange={(e) => setSecret(row, e.target.value === 'secret')}
-                        >
-                          <option value="default">default</option>
-                          <option value="secret">secret</option>
-                        </select>
-                      </td>
-                      <td>
-                        <ValueInput
-                          className="grid-input mono"
-                          type={type}
-                          aria-label={`Initial value ${n}`}
-                          placeholder={row.secret ? 'Secrets are never shared' : 'Initial value'}
-                          value={row.secret ? '' : row.value}
-                          disabled={row.secret}
-                          autoComplete="off"
-                          spellCheck={false}
-                          onValue={(value) => updateRow(row.uid, { value })}
-                        />
-                      </td>
-                      <td>
-                        <span className="grid-cell-flex">
-                          <ValueInput
-                            className="grid-input mono"
-                            type={type}
-                            aria-label={`Current value ${n}`}
-                            aria-describedby={locked ? `env-row-${row.uid}-locked` : undefined}
-                            placeholder={locked ? 'Cannot decrypt on this machine' : 'Current value'}
-                            value={row.currentValue ?? ''}
-                            autoComplete="off"
-                            spellCheck={false}
-                            onValue={(currentValue) => updateRow(row.uid, { currentValue })}
-                          />
-                          {row.secret && !locked && (
-                            <button
-                              type="button"
-                              className="icon-btn icon-btn-sm"
-                              aria-label={shown ? 'Hide value' : 'Show value'}
-                              title={shown ? 'Hide value' : 'Show value'}
-                              onClick={() => toggleReveal(row.uid)}
-                            >
-                              {shown ? <EyeOff size={14} aria-hidden="true" /> : <Eye size={14} aria-hidden="true" />}
-                            </button>
-                          )}
-                        </span>
-                        {locked && (
-                          <span id={`env-row-${row.uid}-locked`} className="grid-note">
-                            Cannot decrypt on this machine. Kept unless you type a new value.
-                          </span>
-                        )}
-                        {row.note && <span className="grid-note">{row.note}</span>}
-                      </td>
-                      <td className="grid-actions">
-                        <button
-                          type="button"
-                          className="icon-btn icon-btn-sm grid-row-btn"
-                          aria-label={`Delete variable ${n}`}
-                          title="Delete variable"
-                          onClick={() => setDraft((d) => ({ ...d, rows: d.rows.filter((r) => r.uid !== row.uid) }))}
-                        >
-                          <Trash2 size={14} aria-hidden="true" />
-                        </button>
-                      </td>
-                    </tr>
-                  )
-                }),
-                // In the same list as the rows: the row it turns into keeps its key, so the focus stays.
-                <tr key={nextRow.uid}>
-                  <td className="grid-check" />
-                  <td>
-                    <input
-                      className="grid-input mono"
-                      aria-label={`Variable name ${trailing}`}
-                      placeholder="Add a variable"
-                      value=""
-                      spellCheck={false}
-                      onChange={(e) => addRow({ key: e.target.value })}
-                    />
-                  </td>
-                  <td className="grid-type" />
-                  <td>
-                    <ValueInput
-                      className="grid-input mono"
-                      aria-label={`Initial value ${trailing}`}
-                      placeholder="Initial value"
-                      value=""
-                      autoComplete="off"
-                      spellCheck={false}
-                      onValue={(value) => addRow({ value })}
-                    />
-                  </td>
-                  <td>
-                    {/* Same structure as a real row, so the focused input survives turning into one. */}
-                    <span className="grid-cell-flex">
-                      <ValueInput
-                        className="grid-input mono"
-                        aria-label={`Current value ${trailing}`}
-                        placeholder="Current value"
-                        value=""
-                        autoComplete="off"
-                        spellCheck={false}
-                        onValue={(currentValue) => addRow({ currentValue })}
-                      />
-                    </span>
-                  </td>
-                  <td className="grid-actions" />
-                </tr>,
+                // Called, not rendered as a component: a `<tr>` like the trailing row, so that row keeps its
+                // inputs (and the focus) when it turns into a variable.
+                ...visible.map(({ row, n }) =>
+                  variableRow({
+                    row,
+                    n,
+                    problem: rowErrors.get(row.uid),
+                    revealed: revealed.has(row.uid),
+                    onChange: (patch) => updateRow(row.uid, patch),
+                    onSecret: (secret) => setSecret(row, secret),
+                    onReveal: () => toggleReveal(row.uid),
+                    onDuplicate: () => duplicateVariable(row),
+                    onDelete: () => setDraft((d) => ({ ...d, rows: d.rows.filter((r) => r.uid !== row.uid) })),
+                  }),
+                ),
+                // In the same list as the rows: the row it turns into keeps its key, so the focus stays. Hidden while
+                // filtering, as a new variable would vanish from the filtered list while it is typed.
+                ...(needle !== ''
+                  ? []
+                  : [
+                      <tr key={nextRow.uid} className="env-trailing">
+                        <td>
+                          <div className="env-cell">
+                            <input
+                              className="grid-input"
+                              aria-label={`Variable name ${trailing}`}
+                              placeholder="Add variable"
+                              value=""
+                              spellCheck={false}
+                              onChange={(e) => addRow({ key: e.target.value })}
+                            />
+                          </div>
+                        </td>
+                        <td>
+                          {/* Same structure as a real row, so the focused input survives turning into one. */}
+                          <div className="env-cell">
+                            <ValueInput
+                              className="grid-input"
+                              aria-label={`Value ${trailing}`}
+                              value=""
+                              autoComplete="off"
+                              spellCheck={false}
+                              onValue={(value) => addRow({ value })}
+                            />
+                          </div>
+                        </td>
+                      </tr>,
+                    ]),
               ]}
             </tbody>
           </table>
+          {needle !== '' && visible.length === 0 && (
+            <p className="env-empty">No variables match “{query?.trim()}”</p>
+          )}
         </fieldset>
       </div>
       {confirmDelete && (
@@ -445,6 +457,141 @@ export function EnvironmentEditor({ envId }: Props): React.JSX.Element | null {
         />
       )}
     </div>
+  )
+}
+
+interface RowProps {
+  row: Row
+  /** Position in the whole list (not the filtered one), used in the accessible names. */
+  n: number
+  problem: string | undefined
+  revealed: boolean
+  onChange(patch: Partial<Row>): void
+  onSecret(secret: boolean): void
+  onReveal(): void
+  onDuplicate(): void
+  onDelete(): void
+}
+
+/** One variable's `<tr>` (keyed by the row uid). */
+function variableRow({
+  row,
+  n,
+  problem,
+  revealed,
+  onChange,
+  onSecret,
+  onReveal,
+  onDuplicate,
+  onDelete,
+}: RowProps): React.JSX.Element {
+  const locked = isLocked(row)
+  const shown = revealed && !locked
+  const local = isLocal(row)
+
+  const typeMenu: MenuEntry[] = [
+    { label: 'Default', checked: !row.secret, onSelect: () => onSecret(false) },
+    { label: 'Secret', checked: row.secret, onSelect: () => onSecret(true) },
+  ]
+  const syncMenu = (): MenuEntry[] => [
+    { label: SHARED_LABEL, checked: !local, onSelect: () => !local || onChange(switchSync(row, 'shared')) },
+    { label: LOCAL_LABEL, checked: local, onSelect: () => local || onChange(switchSync(row, 'local')) },
+    ...(local && row.value !== ''
+      ? ([{ separator: true }, { note: `Shared value: ${row.value}`, title: row.value }] as MenuEntry[])
+      : []),
+  ]
+  const rowMenu: MenuEntry[] = [
+    { label: row.enabled ? 'Disable' : 'Enable', onSelect: () => onChange({ enabled: !row.enabled }) },
+    { label: 'Duplicate row', onSelect: onDuplicate },
+    { separator: true },
+    { label: 'Delete', danger: true, onSelect: onDelete },
+  ]
+
+  return (
+    <tr key={row.uid} className={`env-var${row.enabled ? '' : ' grid-disabled'}`}>
+      <td>
+        <div className="env-cell">
+          <input
+            className="grid-input"
+            aria-label={`Variable name ${n}`}
+            aria-invalid={problem ? true : undefined}
+            aria-describedby={problem ? `env-row-${row.uid}-problem` : undefined}
+            placeholder="Variable"
+            value={row.key}
+            spellCheck={false}
+            onChange={(e) => onChange({ key: e.target.value })}
+          />
+          <MenuButton
+            label={`Type ${n}`}
+            title={row.secret ? 'Type: secret' : 'Type: default'}
+            className={`icon-btn env-cell-btn env-type-btn${row.secret ? ' env-type-secret' : ''}`}
+            align="end"
+            items={typeMenu}
+          >
+            <Lock size={12} aria-hidden="true" />
+            <ChevronDown size={10} aria-hidden="true" />
+          </MenuButton>
+        </div>
+        {problem && (
+          <span id={`env-row-${row.uid}-problem`} className="grid-note grid-problem">
+            {problem}
+          </span>
+        )}
+      </td>
+      <td>
+        <div className="env-cell">
+          <ValueInput
+            className="grid-input"
+            type={row.secret && !shown ? 'password' : 'text'}
+            aria-label={`Value ${n}`}
+            aria-describedby={locked ? `env-row-${row.uid}-locked` : undefined}
+            placeholder={locked ? 'Cannot decrypt on this machine' : undefined}
+            value={shownValue(row)}
+            autoComplete="off"
+            spellCheck={false}
+            onValue={(text) => onChange(writeValue(row, text))}
+          />
+          {row.secret && !locked && (
+            <button
+              type="button"
+              className="icon-btn icon-btn-sm env-hover-btn"
+              aria-label={shown ? `Hide value ${n}` : `Show value ${n}`}
+              title={shown ? 'Hide value' : 'Show value'}
+              onClick={onReveal}
+            >
+              {shown ? <EyeOff size={14} aria-hidden="true" /> : <Eye size={14} aria-hidden="true" />}
+            </button>
+          )}
+          {!row.secret && (
+            <MenuButton
+              label={`Storage of value ${n}`}
+              title={local ? 'Local: only on this machine' : 'Shared: synced with git'}
+              className="icon-btn env-cell-btn env-sync-btn"
+              menuLabel="Where the value is kept"
+              align="end"
+              items={syncMenu}
+            >
+              {local ? <Laptop size={13} aria-hidden="true" /> : <Cloud size={13} aria-hidden="true" />}
+              <ChevronDown size={10} aria-hidden="true" />
+            </MenuButton>
+          )}
+          <MenuButton
+            label={`Actions for variable ${n}`}
+            className="icon-btn icon-btn-sm env-hover-btn"
+            align="end"
+            items={rowMenu}
+          >
+            <MoreHorizontal size={14} aria-hidden="true" />
+          </MenuButton>
+        </div>
+        {locked && (
+          <span id={`env-row-${row.uid}-locked`} className="grid-note">
+            Cannot decrypt on this machine. Kept unless you type a new value.
+          </span>
+        )}
+        {row.note && <span className="grid-note">{row.note}</span>}
+      </td>
+    </tr>
   )
 }
 
