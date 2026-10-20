@@ -121,3 +121,22 @@ export function nameProblem(name: string, others: string[]): string | null {
   }
   return null
 }
+
+/** True when the draft differs from what it started from (or was last saved as), or was never saved. */
+export function isDraftDirty(entry: { draft: Draft; baseline: string }): boolean {
+  return entry.draft.isNew || fingerprint(toEnvironment(entry.draft)) !== entry.baseline
+}
+
+/** The names `draft` must not take: every other environment's, and Globals' until globals.json exists. */
+export function otherNames(draft: Draft, environments: Environment[]): string[] {
+  return [
+    ...environments.filter((e) => e.id !== draft.id).map((e) => e.name),
+    ...(draft.id === GLOBALS_ID || environments.some((e) => e.id === GLOBALS_ID) ? [] : [GLOBALS_NAME]),
+  ]
+}
+
+/** Why `draft` cannot be saved as it is (its name or a variable has a problem), or null. */
+export function draftProblem(draft: Draft, environments: Environment[]): string | null {
+  const name = draft.id === GLOBALS_ID ? null : nameProblem(draft.name, otherNames(draft, environments))
+  return name ?? rowProblems(draft.rows).values().next().value ?? null
+}

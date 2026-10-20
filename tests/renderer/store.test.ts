@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { useApp, initialState } from '../../src/renderer/src/state/store'
+import { environmentIdOf, environmentTabId, initialState, useApp } from '../../src/renderer/src/state/store'
 import {
   collectionTree,
   FOLDER_PATH,
@@ -368,5 +368,141 @@ describe('requests that vanish or move on disk', () => {
     await renaming
     expect(useApp.getState().openTabs.map((t) => t.path)).toEqual([NEW])
     expect(useApp.getState().error).toBeNull()
+  })
+})
+
+describe('environment tabs', () => {
+  const DEV = {
+    id: 'dev',
+    name: 'Dev',
+    variables: [{ key: 'host', value: 'dev.test', secret: false, enabled: true }],
+  }
+
+  async function openWithEnvs() {
+    const api = installApi({
+      environments: { list: vi.fn().mockResolvedValue({ environments: [structuredClone(DEV)], errors: [] }) },
+    })
+    await openDemo()
+    return api
+  }
+
+  function editHost(value: string): void {
+    useApp.getState().editEnvironmentDraft('dev', (e) => ({
+      ...e,
+      draft: { ...e.draft, rows: e.draft.rows.map((r) => ({ ...r, value })) },
+    }))
+  }
+
+  it('opens an environment tab next to request tabs and activates it', async () => {
+    await openWithEnvs()
+    useApp.getState().openRequest(REQUEST_PATH)
+    useApp.getState().openEnvironment('dev')
+    const s = useApp.getState()
+    expect(s.openTabs.map((t) => t.path)).toEqual([REQUEST_PATH, environmentTabId('dev')])
+    expect(s.activePath).toBe('env:dev')
+    expect(environmentIdOf(s.activePath!)).toBe('dev')
+    expect(environmentIdOf(REQUEST_PATH)).toBeNull()
+    expect(s.environmentDrafts.dev.draft.name).toBe('Dev')
+    // Opening it again only activates the existing tab.
+    useApp.getState().openRequest(REQUEST_PATH)
+    useApp.getState().openEnvironment('dev')
+    expect(useApp.getState().openTabs).toHaveLength(2)
+    expect(useApp.getState().activePath).toBe('env:dev')
+  })
+
+  it('opens Globals before globals.json exists, and ignores an unknown environment', async () => {
+    await openWithEnvs()
+    useApp.getState().openEnvironment('globals')
+    expect(useApp.getState().environmentDrafts.globals.draft).toMatchObject({ name: 'Globals', rows: [] })
+    useApp.getState().openEnvironment('nope')
+    expect(useApp.getState().openTabs.map((t) => t.path)).toEqual(['env:globals'])
+  })
+
+  it('keeps environment tabs across a refresh of the tree', async () => {
+    await openWithEnvs()
+    useApp.getState().openEnvironment('dev')
+    await useApp.getState().refresh()
+    expect(useApp.getState().openTabs.map((t) => t.path)).toEqual(['env:dev'])
+    expect(useApp.getState().error).toBeNull()
+  })
+
+  it('keeps the draft while another tab is active', async () => {
+    await openWithEnvs()
+    useApp.getState().openEnvironment('dev')
+    editHost('changed')
+    useApp.getState().openRequest(REQUEST_PATH)
+    useApp.getState().openEnvironment('dev')
+    expect(useApp.getState().environmentDrafts.dev.draft.rows[0].value).toBe('changed')
+  })
+
+  it('closes a clean environment tab without saving and activates the neighbour', async () => {
+    const api = await openWithEnvs()
+    useApp.getState().openRequest(REQUEST_PATH)
+    useApp.getState().openEnvironment('dev')
+    useApp.getState().closeTab('env:dev')
+    expect(useApp.getState().openTabs.map((t) => t.path)).toEqual([REQUEST_PATH])
+    expect(useApp.getState().activePath).toBe(REQUEST_PATH)
+    expect(useApp.getState().environmentDrafts).toEqual({})
+    expect(api.environments.save).not.toHaveBeenCalled()
+  })
+
+  it('saves an unsaved draft when its tab is closed', async () => {
+    const api = await openWithEnvs()
+    useApp.getState().openEnvironment('dev')
+    editHost('changed')
+    useApp.getState().closeTab('env:dev')
+    expect(useApp.getState().openTabs).toEqual([])
+    await vi.waitFor(() => expect(api.environments.save).toHaveBeenCalledTimes(1))
+    expect(api.environments.save.mock.calls[0][0]).toEqual({
+      ...DEV,
+      variables: [{ ...DEV.variables[0], value: 'changed' }],
+    })
+    await vi.waitFor(() => expect(useApp.getState().environmentDrafts).toEqual({}))
+  })
+
+  it('keeps the draft of a closed tab whose save failed, and reopening recovers it', async () => {
+    const api = await openWithEnvs()
+    api.environments.save.mockRejectedValueOnce(new Error('encryption_unavailable'))
+    useApp.getState().openEnvironment('dev')
+    editHost('changed')
+    useApp.getState().closeTab('env:dev')
+    await vi.waitFor(() => expect(useApp.getState().error).toMatch(/Dev.*encryption_unavailable/))
+    useApp.getState().openEnvironment('dev')
+    expect(useApp.getState().environmentDrafts.dev.draft.rows[0].value).toBe('changed')
+  })
+
+  it('drops an invalid draft on close, and any draft when discarding', async () => {
+    const api = await openWithEnvs()
+    useApp.getState().openEnvironment('dev')
+    useApp.getState().editEnvironmentDraft('dev', (e) => ({ ...e, draft: { ...e.draft, name: '' } }))
+    useApp.getState().closeTab('env:dev')
+    useApp.getState().openEnvironment('dev')
+    editHost('changed')
+    useApp.getState().closeTab('env:dev', { discard: true })
+    await Promise.resolve()
+    expect(api.environments.save).not.toHaveBeenCalled()
+    expect(useApp.getState().environmentDrafts).toEqual({})
+  })
+
+  it('writes changed environment drafts in flushAll, and lists unsaveable ones as unsaved', async () => {
+    const api = await openWithEnvs()
+    useApp.getState().openEnvironment('dev')
+    editHost('changed')
+    await useApp.getState().flushAll()
+    expect(api.environments.save).toHaveBeenCalledTimes(1)
+    expect(useApp.getState().unsavedPaths()).toEqual([])
+    useApp.getState().editEnvironmentDraft('dev', (e) => ({ ...e, draft: { ...e.draft, name: '' } }))
+    await useApp.getState().flushAll()
+    expect(api.environments.save).toHaveBeenCalledTimes(1)
+    expect(useApp.getState().unsavedPaths()).toEqual(['environment ""'])
+  })
+
+  it('closes the tab of a deleted environment', async () => {
+    await openWithEnvs()
+    useApp.getState().openEnvironment('dev')
+    editHost('changed')
+    await useApp.getState().removeEnvironment('dev')
+    expect(useApp.getState().openTabs).toEqual([])
+    expect(useApp.getState().environmentDrafts).toEqual({})
   })
 })

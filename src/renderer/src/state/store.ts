@@ -8,9 +8,41 @@ import type {
   TreeNode,
   WorkspaceInfo,
 } from '../../../shared/types'
+import {
+  GLOBALS_ID,
+  GLOBALS_NAME,
+  draftProblem,
+  fingerprint,
+  isDraftDirty,
+  toDraft,
+  toEnvironment,
+  type Draft,
+} from '../lib/environments'
 
+/** A tab: the path of a request, or `env:<id>` (see `environmentTabId`) for an environment editor. */
 export interface OpenTab {
   path: string
+}
+
+const ENV_TAB = 'env:'
+
+/** The tab id of the editor of environment `id`; request paths never start with `env:`. */
+export function environmentTabId(id: string): string {
+  return ENV_TAB + id
+}
+
+/** The environment id of an environment tab, or null for a request tab. */
+export function environmentIdOf(tab: string): string | null {
+  return tab.startsWith(ENV_TAB) ? tab.slice(ENV_TAB.length) : null
+}
+
+/**
+ * The edited copy of an environment, kept while its tab is open (and after closing it if that save failed, so
+ * reopening recovers it). `baseline` is the fingerprint of what the draft started from or was last saved as.
+ */
+export interface EnvironmentDraft {
+  draft: Draft
+  baseline: string
 }
 
 /**
@@ -64,6 +96,8 @@ export interface AppState {
   responses: Record<string, ResponseEntry>
   /** The selected response tab and body mode per request; missing entries mean the defaults. */
   responseViews: Record<string, ResponseView>
+  /** Environment drafts by environment id; see `EnvironmentDraft`. */
+  environmentDrafts: Record<string, EnvironmentDraft>
 }
 
 export interface AppActions {
@@ -77,7 +111,18 @@ export interface AppActions {
   remove(path: string): Promise<void>
   move(path: string, parentPath: string, index: number): Promise<void>
   openRequest(path: string): void
-  closeTab(path: string): void
+  /**
+   * Opens (or activates) the editor tab of environment `id`. `fresh` is the draft of an environment that is not saved
+   * yet (new or duplicated); without it the stored environment (or the empty globals set) is the starting point.
+   */
+  openEnvironment(id: string, fresh?: Draft): void
+  /** Replaces the draft of an open environment tab; nothing is saved until Save, closing the tab, or `flushAll`. */
+  editEnvironmentDraft(id: string, update: (entry: EnvironmentDraft) => EnvironmentDraft): void
+  /**
+   * Closes a request or environment tab. A changed environment draft is saved, like a request's; one that cannot be
+   * saved (invalid), or any with `discard`, is dropped.
+   */
+  closeTab(path: string, options?: { discard?: boolean }): void
   /** Replaces the draft of an open request and schedules an autosave. */
   editDraft(path: string, update: (draft: RequestItem) => RequestItem): void
   /** Writes the draft now, also retrying a failed save. */
@@ -136,6 +181,7 @@ export function initialState(): AppState {
     saves: {},
     responses: {},
     responseViews: {},
+    environmentDrafts: {},
   }
 }
 
@@ -563,6 +609,48 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
     return epoch === started
   }
 
+  /** The stored environment, or the empty globals set that exists before its first save. */
+  function storedEnvironment(id: string): Environment | undefined {
+    const found = get().environments.find((e) => e.id === id)
+    if (found || id !== GLOBALS_ID) return found
+    return { id: GLOBALS_ID, name: GLOBALS_NAME, variables: [] }
+  }
+
+  /**
+   * Writes an environment draft (of an open or a closed tab). On success the draft of an open tab becomes clean and
+   * that of a closed tab is forgotten; on failure it is kept, so reopening the tab recovers it.
+   */
+  async function writeEnvironmentDraft(id: string, entry: EnvironmentDraft): Promise<void> {
+    const env = toEnvironment(entry.draft)
+    try {
+      if (!(await get().saveEnvironment(env))) return
+    } catch (e) {
+      set({ error: `Could not save the environment "${env.name}": ${messageOf(e)}` })
+      return
+    }
+    set((s) => {
+      const current = s.environmentDrafts[id]
+      if (!current) return s
+      const open = s.openTabs.some((t) => t.path === environmentTabId(id))
+      if (!open && current === entry) return { environmentDrafts: without(s.environmentDrafts, [id]) }
+      if (!open) return s
+      return {
+        environmentDrafts: {
+          ...s.environmentDrafts,
+          [id]: { draft: { ...current.draft, name: env.name, isNew: false }, baseline: fingerprint(env) },
+        },
+      }
+    })
+  }
+
+  /** Drafts that have changes and can be written as they are. */
+  function savableEnvironmentDrafts(): [string, EnvironmentDraft][] {
+    const { environmentDrafts, environments } = get()
+    return Object.entries(environmentDrafts).filter(
+      ([, entry]) => isDraftDirty(entry) && draftProblem(entry.draft, environments) === null,
+    )
+  }
+
   function remapTabs(from: string, to: string): void {
     remapEditing(from, to)
     set((s) => ({
@@ -622,7 +710,8 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
         for (const p of adoptRevision) if (onDisk.has(p)) revisions.set(p, onDisk.get(p))
         adoptRevision.clear()
         // A path a rename, move or delete is changing right now may be read mid-change; that action reconciles it.
-        const present = (p: string): boolean => saved.has(p) || isLocked(p)
+        // Environment tabs are not files of the tree; their editor deals with an environment that vanished.
+        const present = (p: string): boolean => saved.has(p) || isLocked(p) || environmentIdOf(p) !== null
         const current = get()
         const vanished = current.openTabs.map((t) => t.path).filter((p) => !present(p))
         const vanishedPending = [...pending.keys()].filter((p) => !present(p))
@@ -776,8 +865,50 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
         saves: revivedStatus ? { ...s.saves, [path]: revivedStatus } : s.saves,
       }))
     },
-    closeTab(path) {
+    openEnvironment(id, fresh) {
+      const tab = environmentTabId(id)
+      const previous = get().activePath
+      if (previous !== tab) flush(previous)
+      let entry = get().environmentDrafts[id]
+      if (!entry && fresh) entry = { draft: fresh, baseline: fingerprint(toEnvironment(fresh)) }
+      if (!entry) {
+        const env = storedEnvironment(id)
+        if (!env) return
+        entry = { draft: toDraft(env), baseline: fingerprint(env) }
+      }
+      const opened = entry
+      set((s) => ({
+        openTabs: s.openTabs.some((t) => t.path === tab) ? s.openTabs : [...s.openTabs, { path: tab }],
+        activePath: tab,
+        environmentDrafts:
+          s.environmentDrafts[id] === opened ? s.environmentDrafts : { ...s.environmentDrafts, [id]: opened },
+      }))
+    },
+    editEnvironmentDraft(id, update) {
+      set((s) => {
+        const entry = s.environmentDrafts[id]
+        return entry ? { environmentDrafts: { ...s.environmentDrafts, [id]: update(entry) } } : s
+      })
+    },
+    closeTab(path, options) {
       if (!get().openTabs.some((t) => t.path === path)) return
+      const envId = environmentIdOf(path)
+      if (envId !== null) {
+        const entry = get().environmentDrafts[envId]
+        set((s) => {
+          const index = s.openTabs.findIndex((t) => t.path === path)
+          const openTabs = s.openTabs.filter((t) => t.path !== path)
+          return { openTabs, activePath: s.activePath === path ? neighbour(openTabs, index) : s.activePath }
+        })
+        const savable =
+          entry !== undefined &&
+          !options?.discard &&
+          isDraftDirty(entry) &&
+          draftProblem(entry.draft, get().environments) === null
+        if (savable) void writeEnvironmentDraft(envId, entry)
+        else set((s) => ({ environmentDrafts: without(s.environmentDrafts, [envId]) }))
+        return
+      }
       flush(path)
       dropEditing([path], 'closed')
       set((s) => {
@@ -809,7 +940,12 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
       for (const e of entries.values()) if (e.timer) void runSave(e)
     },
     unsavedPaths() {
-      return [...entries.values(), ...pending.values()].filter((e) => e.version !== e.savedVersion).map((e) => e.path)
+      return [
+        ...[...entries.values(), ...pending.values()].filter((e) => e.version !== e.savedVersion).map((e) => e.path),
+        ...Object.values(get().environmentDrafts)
+          .filter(isDraftDirty)
+          .map((e) => `environment "${e.draft.name}"`),
+      ]
     },
     async leaveWorkspace(options) {
       const started = epoch
@@ -834,12 +970,14 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
       while (lockedOps.size > 0) await Promise.allSettled([...lockedOps])
       if (epoch !== started) return
       const all = [...entries.values(), ...pending.values()]
-      await Promise.all(
-        all.map((e) =>
+      await Promise.all([
+        ...all.map((e) =>
           // A conflict waits for the user's decision; everything else unsaved is written now (failed ones retried).
           !e.conflict && (e.timer || e.deferred || e.version !== e.savedVersion) ? runSave(e) : e.running,
         ),
-      )
+        // Environment drafts with changes, of open tabs and of closed ones whose save failed.
+        ...savableEnvironmentDrafts().map(([id, entry]) => writeEnvironmentDraft(id, entry)),
+      ])
     },
     overwriteOnDisk(path) {
       const e = entries.get(path)
@@ -919,6 +1057,9 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
         () => window.astral.environments.remove(id),
         () => {
           if (get().activeEnvironmentId === id) set({ activeEnvironmentId: null })
+          // Its editor tab goes too, without saving the draft back.
+          get().closeTab(environmentTabId(id), { discard: true })
+          set((s) => ({ environmentDrafts: without(s.environmentDrafts, [id]) }))
         },
       ),
     dismissEnvironmentNotice: () => set({ environmentNotice: null }),
