@@ -9,6 +9,7 @@ import type {
   LoadError,
   RequestItem,
   RequestNode,
+  Scripts,
   TreeNode
 } from '../../shared/types'
 import { CorruptFileError, readJson, readJsonWithRevision, resolveInside, writeJsonAtomic } from './fsJson'
@@ -25,6 +26,7 @@ interface FolderMeta {
   id: string
   name: string
   order: string[]
+  scripts?: Scripts
 }
 
 interface CollectionMeta extends FolderMeta {
@@ -76,6 +78,10 @@ function invalid(file: string, what: string): never {
   throw new CorruptFileError(file, `Invalid ${what} in ${file}`)
 }
 
+function isScripts(v: unknown): v is Scripts {
+  return isObject(v) && typeof v.preRequest === 'string' && typeof v.postResponse === 'string'
+}
+
 function checkMeta(v: unknown, file: string, collection: boolean): FolderMeta {
   const kind = collection ? 'collection metadata' : 'folder metadata'
   if (!isObject(v) || typeof v.id !== 'string' || typeof v.name !== 'string') invalid(file, kind)
@@ -83,6 +89,7 @@ function checkMeta(v: unknown, file: string, collection: boolean): FolderMeta {
     invalid(file, kind)
   if (collection && v.variables !== undefined && !Array.isArray(v.variables)) invalid(file, kind)
   if (collection && v.auth !== undefined && !isObject(v.auth)) invalid(file, kind)
+  if (v.scripts !== undefined && !isScripts(v.scripts)) invalid(file, kind)
   return v as unknown as FolderMeta
 }
 
@@ -96,7 +103,8 @@ function checkRequest(v: unknown, file: string): RequestItem {
     !Array.isArray(v.params) ||
     !Array.isArray(v.headers) ||
     !isObject(v.body) ||
-    !isObject(v.auth)
+    !isObject(v.auth) ||
+    (v.scripts !== undefined && !isScripts(v.scripts))
   ) {
     invalid(file, 'request')
   }
@@ -162,7 +170,8 @@ export class CollectionStore {
         path: rel,
         variables: meta.variables ?? [],
         auth: meta.auth ?? { type: 'none' },
-        children: await this.loadChildren(rel, meta.order ?? [], errors)
+        children: await this.loadChildren(rel, meta.order ?? [], errors),
+        ...(meta.scripts && { scripts: meta.scripts })
       })
     }
     return { collections, errors }
@@ -450,7 +459,8 @@ export class CollectionStore {
         id: meta.id,
         name: meta.name,
         path: rel,
-        children: await this.loadChildren(rel, meta.order ?? [], errors)
+        children: await this.loadChildren(rel, meta.order ?? [], errors),
+        ...(meta.scripts && { scripts: meta.scripts })
       })
     }
     return nodes

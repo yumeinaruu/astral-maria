@@ -5,6 +5,7 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { App } from '../../src/renderer/src/App'
 import { IS_MAC } from '../../src/renderer/src/lib/platform'
+import { fingerprint, toDraft, toEnvironment } from '../../src/renderer/src/lib/environments'
 import { initialState, useApp } from '../../src/renderer/src/state/store'
 import type { Environment, LoadError, SendResult } from '../../src/shared/types'
 import { installApi, REQUEST_PATH } from './helpers'
@@ -300,7 +301,10 @@ describe('environment editor', () => {
     await waitFor(() => expect(environments.save).toHaveBeenCalledTimes(1))
     const saved = environments.save.mock.calls[0][0] as Environment
     expect(saved.id).toBe('dev')
-    expect(saved.variables).toEqual([DEV.variables[0], { key: 'token', value: 'abc', secret: false, enabled: true }])
+    expect(saved.variables).toEqual([
+      { ...DEV.variables[0], local: true },
+      { key: 'token', value: 'abc', secret: false, enabled: true },
+    ])
     // Saved: the store refreshed and the form is clean again.
     await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled())
     expect(useApp.getState().environments.find((e) => e.id === 'dev')?.variables).toHaveLength(2)
@@ -883,7 +887,14 @@ describe('two-column variables', () => {
     await user.type(rowInput('Value', 3), '!')
     const vars = await saved(user, environments)
     expect(vars[0]).toEqual({ key: 'shared', value: 's-init!', secret: false, enabled: true })
-    expect(vars[1]).toEqual({ key: 'local', value: 'l-init', currentValue: 'l-cur!', secret: false, enabled: true })
+    expect(vars[1]).toEqual({
+      key: 'local',
+      value: 'l-init',
+      currentValue: 'l-cur!',
+      secret: false,
+      enabled: true,
+      local: true,
+    })
     // Shared with an equal current value: the initial value is written and the current one dropped.
     expect(vars[2]).toEqual({ key: 'same', value: 'eq!', secret: false, enabled: true })
   })
@@ -904,6 +915,7 @@ describe('two-column variables', () => {
       currentValue: 'abc',
       secret: false,
       enabled: true,
+      local: true,
     })
   })
 
@@ -942,7 +954,30 @@ describe('two-column variables', () => {
       currentValue: 'mine',
       secret: false,
       enabled: true,
+      local: true,
     })
+  })
+
+  it('remembers a row switched to local without changing its value, after a reload', async () => {
+    const { user, environments, disk } = await mount([MIXED])
+    await openEditor(user, 'Mixed')
+    await setStorage(user, 1, 'Local')
+    expect((await saved(user, environments))[0]).toEqual({
+      key: 'shared',
+      value: 's-init',
+      currentValue: 's-init',
+      secret: false,
+      enabled: true,
+      local: true,
+    })
+
+    cleanup()
+    useApp.setState(initialState())
+    const again = await mount(disk.envs)
+    await openEditor(again.user, 'Mixed')
+    expect(rowInput('Value', 1)).toHaveValue('s-init')
+    expect(storage(1)).toMatch(/^Local/)
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
   })
 
   it('does not show a shared value in the menu when the initial value is empty', async () => {
@@ -967,6 +1002,7 @@ describe('two-column variables', () => {
       currentValue: 'v1',
       secret: false,
       enabled: true,
+      local: true,
     })
   })
 
@@ -1037,7 +1073,14 @@ describe('two-column variables', () => {
     expect(rowInput('Variable name', 3)).toHaveValue('local_copy2')
     const vars = await saved(user, environments)
     expect(vars.map((v) => v.key)).toEqual(['shared', 'local', 'local_copy2', 'local_copy', 'same', 'onlyLocal'])
-    expect(vars[3]).toEqual({ key: 'local_copy', value: 'l-init', currentValue: 'l-cur', secret: false, enabled: true })
+    expect(vars[3]).toEqual({
+      key: 'local_copy',
+      value: 'l-init',
+      currentValue: 'l-cur',
+      secret: false,
+      enabled: true,
+      local: true,
+    })
   })
 
   it('switches the type through the type control', async () => {
@@ -1108,5 +1151,35 @@ describe('environment store actions', () => {
     finish()
     await expect(pending).resolves.toBe(false)
     expect(environments.list.mock.calls.length).toBe(listCalls)
+  })
+})
+
+describe('the local flag in the editor model', () => {
+  const env: Environment = {
+    id: 'e',
+    name: 'E',
+    variables: [
+      { key: 'plain', value: 'a', secret: false, enabled: true },
+      { key: 'differs', value: 'a', currentValue: 'b', secret: false, enabled: true },
+      { key: 'kept', value: 'a', currentValue: 'a', secret: false, enabled: true, local: true },
+      { key: 'token', value: '', currentValue: 's', secret: true, enabled: true },
+    ],
+  }
+
+  it('saves local: true only for local rows that are not secret', () => {
+    const vars = toEnvironment(toDraft(env)).variables
+    expect(vars.map((v) => v.local)).toEqual([undefined, true, true, undefined])
+  })
+
+  it('lets an explicit local: false win over a differing current value', () => {
+    const draft = toDraft({ ...env, variables: [{ ...env.variables[1], local: false }] })
+    expect(draft.rows[0].local).toBe(false)
+  })
+
+  it('changes the fingerprint when local flips, and matches the draft it was loaded into', () => {
+    const flipped = { ...env, variables: env.variables.map((v) => (v.key === 'kept' ? { ...v, local: false } : v)) }
+    expect(fingerprint(flipped)).not.toBe(fingerprint(env))
+    expect(fingerprint(toEnvironment(toDraft(env)))).toBe(fingerprint(env))
+    expect(fingerprint(toEnvironment(toDraft(flipped)))).toBe(fingerprint(flipped))
   })
 })

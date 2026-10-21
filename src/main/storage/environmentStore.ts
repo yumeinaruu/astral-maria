@@ -79,11 +79,22 @@ function checkEnvironment(v: unknown, file: string): Committed {
   return { id: v.id, name: v.name, variables }
 }
 
-function checkLocal(v: unknown, file: string): Record<string, string> {
-  if (!isObject(v) || !isObject(v.values) || !Object.values(v.values).every((x) => typeof x === 'string')) {
+/** A `.local` file: current values (secrets encrypted) and the keys of non-secret variables marked local. */
+interface Local {
+  values: Record<string, string>
+  local: string[]
+}
+
+function checkLocal(v: unknown, file: string): Local {
+  if (
+    !isObject(v) ||
+    !isObject(v.values) ||
+    !Object.values(v.values).every((x) => typeof x === 'string') ||
+    (v.local !== undefined && !(Array.isArray(v.local) && v.local.every((x) => typeof x === 'string')))
+  ) {
     invalid(file, 'local values')
   }
-  return v.values as Record<string, string>
+  return { values: v.values as Record<string, string>, local: (v.local as string[] | undefined) ?? [] }
 }
 
 /** Environments live in `environments/`; secrets and current values only in the git-ignored `.local/`. */
@@ -142,7 +153,7 @@ export class EnvironmentStore {
       let localExists = true
       let stored: Record<string, string> = {}
       try {
-        stored = checkLocal(await readJson<unknown>(localAbs, localRel), localRel)
+        stored = checkLocal(await readJson<unknown>(localAbs, localRel), localRel).values
       } catch (e) {
         if (!isMissing(e)) throw e
         localExists = false
@@ -160,9 +171,11 @@ export class EnvironmentStore {
         }
       }
 
-      if (Object.keys(values).length > 0) {
+      const local = env.variables.filter((v) => v.local === true && !v.secret).map((v) => v.key)
+
+      if (Object.keys(values).length > 0 || local.length > 0) {
         await fs.mkdir(path.dirname(localAbs), { recursive: true })
-        await writeJsonAtomic(localAbs, { values })
+        await writeJsonAtomic(localAbs, local.length > 0 ? { values, local } : { values })
       } else if (localExists) {
         await fs.rm(localAbs, { force: true })
       }
@@ -265,15 +278,19 @@ export class EnvironmentStore {
   private async withLocalValues(slug: string, committed: Committed, errors: LoadError[]): Promise<Environment> {
     const rel = this.localRel(slug)
     let values: Record<string, string> = {}
+    let localKeys = new Set<string>()
     try {
-      values = checkLocal(await readJson<unknown>(this.abs(rel), rel), rel)
+      const stored = checkLocal(await readJson<unknown>(this.abs(rel), rel), rel)
+      values = stored.values
+      localKeys = new Set(stored.local)
     } catch (e) {
       if (!isMissing(e)) errors.push({ path: rel, message: errorMessage(e) })
     }
     const variables = committed.variables.map((v): EnvVar => {
       const stored = Object.hasOwn(values, v.key) ? values[v.key] : undefined
-      if (stored === undefined) return v
-      if (!v.secret) return { ...v, currentValue: stored }
+      const local = !v.secret && localKeys.has(v.key) ? { local: true } : {}
+      if (stored === undefined) return { ...v, ...local }
+      if (!v.secret) return { ...v, currentValue: stored, ...local }
       try {
         return { ...v, currentValue: this.cipher.decrypt(stored) }
       } catch (e) {

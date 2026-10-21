@@ -507,3 +507,74 @@ describe('remove a collection', () => {
     expect(await fsp.readdir(path.join(dir, 'collections'))).toEqual([])
   })
 })
+
+describe('scripts', () => {
+  const scripts = { preRequest: 'a', postResponse: 'b' }
+  const writeJ = (rel: string, v: unknown) => fsp.writeFile(path.join(dir, rel), JSON.stringify(v))
+  const readJ = async (rel: string) => JSON.parse(await read(rel))
+
+  it('lists request, folder and collection scripts as stored', async () => {
+    const col = await store.createCollection('C')
+    const f = await store.createFolder(col.path, 'F')
+    const r = await store.createRequest(f.path, 'R')
+    await writeJ(r.path, { ...r.request, scripts })
+    await writeJ(`${f.path}/folder.json`, { ...(await readJ(`${f.path}/folder.json`)), scripts })
+    await writeJ(`${col.path}/collection.json`, { ...(await readJ(`${col.path}/collection.json`)), scripts })
+
+    const { collections, errors } = await store.list()
+    expect(errors).toEqual([])
+    expect(collections[0].scripts).toEqual(scripts)
+    const folder = collections[0].children[0] as FolderNode
+    expect(folder.scripts).toEqual(scripts)
+    expect((folder.children[0] as RequestNode).request.scripts).toEqual(scripts)
+  })
+
+  it('leaves scripts out where none are stored', async () => {
+    const col = await store.createCollection('C')
+    await store.createFolder(col.path, 'F')
+    const { collections } = await store.list()
+    expect(collections[0]).not.toHaveProperty('scripts')
+    expect(collections[0].children[0]).not.toHaveProperty('scripts')
+  })
+
+  describe.each([
+    ['a string', 'x'],
+    ['an array', ['a', 'b']],
+    ['a missing field', { preRequest: 'a' }],
+    ['a non-string field', { preRequest: 'a', postResponse: 1 }]
+  ])('scripts as %s', (_label, bad) => {
+    it('is a load error for that file only', async () => {
+      const col = await store.createCollection('C')
+      const f = await store.createFolder(col.path, 'F')
+      const r = await store.createRequest(col.path, 'R')
+      await store.createRequest(col.path, 'Good')
+      await writeJ(r.path, { ...r.request, scripts: bad })
+      await writeJ(`${f.path}/folder.json`, { ...(await readJ(`${f.path}/folder.json`)), scripts: bad })
+      await writeJ(`${col.path}/collection.json`, { ...(await readJ(`${col.path}/collection.json`)), scripts: bad })
+      const { collections, errors } = await store.list()
+      expect(errors.map((e) => e.path).sort()).toEqual(
+        [`${col.path}/collection.json`, `${f.path}/folder.json`, r.path].sort()
+      )
+      // Broken metadata falls back to the directory name; the broken request is left out.
+      expect(names(collections[0].children)).toEqual(['f', 'Good'])
+    })
+  })
+
+  it('keeps folder and collection scripts through rename and reorder', async () => {
+    const col = await store.createCollection('C')
+    const f = await store.createFolder(col.path, 'F')
+    await store.createRequest(f.path, 'One')
+    const two = await store.createRequest(f.path, 'Two')
+    await writeJ(`${f.path}/folder.json`, { ...(await readJ(`${f.path}/folder.json`)), scripts })
+    await writeJ(`${col.path}/collection.json`, { ...(await readJ(`${col.path}/collection.json`)), scripts })
+
+    await store.move(two.path, f.path, 0)
+    expect((await readJ(`${f.path}/folder.json`)).scripts).toEqual(scripts)
+    const fPath = await store.rename(f.path, 'G')
+    expect((await readJ(`${fPath}/folder.json`)).scripts).toEqual(scripts)
+    await store.move(fPath, col.path, 0)
+    expect((await readJ(`${col.path}/collection.json`)).scripts).toEqual(scripts)
+    const cPath = await store.rename(col.path, 'D')
+    expect((await readJ(`${cPath}/collection.json`)).scripts).toEqual(scripts)
+  })
+})

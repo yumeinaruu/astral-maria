@@ -34,8 +34,13 @@ export function toDraft(env: Environment): Draft {
   }
 }
 
+/** The side a loaded variable shows: as remembered by the store, else local when its current value differs. */
+function loadedLocal(v: EnvVar): boolean {
+  return v.local ?? (v.currentValue !== undefined && v.currentValue !== v.value)
+}
+
 function toRow(v: EnvVar): Row {
-  const row: Row = { ...v, uid: nextUid++, local: v.currentValue !== undefined && v.currentValue !== v.value }
+  const row: Row = { ...v, uid: nextUid++, local: loadedLocal(v) }
   // Remembered so a rename can tell the store where the undecryptable value is kept.
   if (v.secret && v.locked) row.lockedKey = v.lockedKey ?? v.key
   return row
@@ -94,7 +99,7 @@ function meaningful<T extends EnvVar>(rows: T[]): T[] {
 
 /**
  * What gets saved: no blank trailing rows, no shared value for secrets, no empty current values; `locked` only on a
- * secret without a new current value.
+ * secret without a new current value; `local` only on a local row that is not secret.
  */
 export function toEnvironment(draft: Draft): Environment {
   return {
@@ -102,6 +107,7 @@ export function toEnvironment(draft: Draft): Environment {
     name: draft.name.trim(),
     variables: meaningful(draft.rows).map((r) => {
       const v: EnvVar = { key: r.key, value: r.secret ? '' : r.value, secret: r.secret, enabled: r.enabled }
+      if (r.local && !r.secret) v.local = true
       if (r.currentValue) v.currentValue = r.currentValue
       // An undecryptable secret round-trips its flag so the store keeps its stored value, until a new one is typed.
       else if (r.secret && r.locked) {
@@ -118,7 +124,7 @@ export function fingerprint(env: Environment): string {
   const { variables } = toEnvironment({
     id: env.id,
     name: env.name,
-    rows: env.variables.map((v) => ({ ...v, uid: 0, local: false })),
+    rows: env.variables.map((v) => ({ ...v, uid: 0, local: loadedLocal(v) })),
   })
   // Where a renamed locked value comes from is bookkeeping, not content: the store never returns it.
   return JSON.stringify({
