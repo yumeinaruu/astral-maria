@@ -542,8 +542,10 @@ test('create, send, persist, and keep secrets local', async () => {
 
     await p.getByRole('button', { name: 'Console', exact: true }).click()
     const consolePanel = p.getByRole('region', { name: 'Console' })
-    await expect(consolePanel.getByRole('listitem').first()).toContainText('GET')
-    await expect(consolePanel.getByRole('listitem').first()).toContainText('200')
+    // Earlier sends of this session are listed too; the newest request line is the last one.
+    const latest = consolePanel.locator('.console-request').last()
+    await expect(latest).toContainText('GET')
+    await expect(latest).toContainText('200')
     await shotBoth(p, 'f3-console')
   })
 
