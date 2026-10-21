@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type {
   CollectionTree,
   Environment,
+  ImportReport,
   LoadError,
   RequestItem,
   SendResult,
@@ -157,6 +158,17 @@ export interface AppActions {
   /** Deletes an environment; the selection is reset if it was the active one. Same result contract as `saveEnvironment`. */
   removeEnvironment(id: string): Promise<boolean>
   dismissEnvironmentNotice(): void
+  /**
+   * Opens the file dialog and imports the chosen files; null when it was cancelled. Collections and environments are
+   * reloaded when anything was imported, and new collections are expanded. A rejected call becomes a failed line.
+   */
+  importFiles(): Promise<ImportReport | null>
+  /** Imports one file's text (dropped or pasted, named by `source`); reloads like `importFiles`. */
+  importText(text: string, source: string): Promise<ImportReport>
+  /** Writes every unsaved draft (as `flushAll`), then exports the collection; a failure goes to the error banner. */
+  exportCollection(path: string): Promise<void>
+  /** Exports the environment as it is saved on disk (an open draft is not written first); failures as above. */
+  exportEnvironment(id: string): Promise<void>
   setExpanded(path: string, expanded: boolean): void
   dismissError(): void
 }
@@ -657,6 +669,36 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
     }))
   }
 
+  /** Runs an import call; reloads (and expands new collections) when it imported something. */
+  async function runImport<T extends ImportReport | null>(call: () => Promise<T>, source: string): Promise<T> {
+    const started = epoch
+    let report: T
+    try {
+      report = await call()
+    } catch (e) {
+      if (epoch === started && isGateError(e)) fail(e)
+      return { imported: [], failed: [{ source, message: messageOf(e) }] } as ImportReport as T
+    }
+    if (epoch !== started || !report || report.imported.length === 0) return report
+    const before = new Set(get().collections.map((c) => c.path))
+    await get().refresh()
+    if (epoch !== started) return report
+    for (const c of get().collections) if (!before.has(c.path)) get().setExpanded(c.path, true)
+    return report
+  }
+
+  /** Runs an export; a rejection (other than a lost workspace) is shown as `Could not export "<name>"`. */
+  async function runExport(name: string, call: () => Promise<unknown>): Promise<void> {
+    const started = epoch
+    try {
+      await call()
+    } catch (e) {
+      if (epoch !== started) return
+      if (isGateError(e)) fail(e)
+      else set({ error: `Could not export "${name}": ${messageOf(e)}` })
+    }
+  }
+
   async function enter(open: () => Promise<WorkspaceInfo>): Promise<void> {
     const mine = ++openSeq
     try {
@@ -1059,6 +1101,19 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
         },
       ),
     dismissEnvironmentNotice: () => set({ environmentNotice: null }),
+    importFiles: () => runImport(() => window.astral.transfer.importFiles(), 'Selected files'),
+    importText: (text, source) => runImport(() => window.astral.transfer.importText(text, source), source),
+    async exportCollection(path) {
+      const started = epoch
+      await get().flushAll()
+      if (epoch !== started) return
+      const name = get().collections.find((c) => c.path === path)?.name ?? path
+      await runExport(name, () => window.astral.transfer.exportCollection(path))
+    },
+    exportEnvironment(id) {
+      const name = storedEnvironment(id)?.name ?? id
+      return runExport(name, () => window.astral.transfer.exportEnvironment(id))
+    },
     setExpanded(path, expanded) {
       set((s) => {
         if (expanded === Boolean(s.expanded[path])) return s

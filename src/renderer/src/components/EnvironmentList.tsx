@@ -13,14 +13,14 @@ import {
 import { environmentTabId, useApp } from '../state/store'
 import { useUi } from '../state/ui'
 import { ConfirmDialog } from './ConfirmDialog'
-import { ContextMenu } from './ContextMenu'
+import { ContextMenu, type MenuItem } from './ContextMenu'
 import { NameInput } from './NameInput'
 
 function messageOf(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
 }
 
-/** The ENVIRONMENTS section: Globals, then every environment, with the active check and Rename / Delete. */
+/** The ENVIRONMENTS section: Globals, then every environment, with the active check and Rename / Export / Delete. */
 export function EnvironmentList(): React.JSX.Element {
   const environments = useApp((s) => s.environments)
   const activeId = useApp((s) => s.activeEnvironmentId)
@@ -69,15 +69,18 @@ export function EnvironmentList(): React.JSX.Element {
     }
   }
 
+  function exportItem(env: Environment): MenuItem {
+    return { label: 'Export', onSelect: () => void useApp.getState().exportEnvironment(env.id) }
+  }
+
   function row(env: Environment, isGlobals: boolean): React.JSX.Element {
     const active = !isGlobals && env.id === activeId
     const open = activeTab === environmentTabId(env.id)
     return (
       <li
         key={env.id}
-        className={`env-row${open ? ' active' : ''}`}
+        className={`env-row${open ? ' active' : ''}${isGlobals ? ' env-row-globals' : ''}`}
         onContextMenu={(e) => {
-          if (isGlobals) return
           e.preventDefault()
           setMenu({ env, x: e.clientX, y: e.clientY, button: e.currentTarget })
         }}
@@ -100,21 +103,21 @@ export function EnvironmentList(): React.JSX.Element {
             {env.name}
           </button>
         )}
+        <button
+          type="button"
+          className="row-menu"
+          aria-label={`Actions for ${env.name}`}
+          aria-haspopup="menu"
+          aria-expanded={menu?.env.id === env.id}
+          onClick={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect()
+            setMenu({ env, x: rect.left, y: rect.bottom + 2, button: e.currentTarget })
+          }}
+        >
+          <MoreHorizontal size={15} aria-hidden="true" />
+        </button>
         {!isGlobals && (
           <>
-            <button
-              type="button"
-              className="row-menu"
-              aria-label={`Actions for ${env.name}`}
-              aria-haspopup="menu"
-              aria-expanded={menu?.env.id === env.id}
-              onClick={(e) => {
-                const rect = e.currentTarget.getBoundingClientRect()
-                setMenu({ env, x: rect.left, y: rect.bottom + 2, button: e.currentTarget })
-              }}
-            >
-              <MoreHorizontal size={15} aria-hidden="true" />
-            </button>
             <button
               type="button"
               className="env-check"
@@ -147,10 +150,16 @@ export function EnvironmentList(): React.JSX.Element {
           y={menu.y}
           label={menu.env.name}
           anchor={menu.button}
-          items={[
-            { label: 'Rename', onSelect: () => setRenaming(menu.env.id) },
-            { label: 'Delete', danger: true, onSelect: () => setDeleting(menu.env) },
-          ]}
+          items={
+            // Globals are always there: they can be exported, but neither renamed nor deleted.
+            menu.env.id === GLOBALS_ID
+              ? [exportItem(menu.env)]
+              : [
+                  { label: 'Rename', onSelect: () => setRenaming(menu.env.id) },
+                  exportItem(menu.env),
+                  { label: 'Delete', danger: true, onSelect: () => setDeleting(menu.env) },
+                ]
+          }
           onClose={() => setMenu(null)}
         />
       )}

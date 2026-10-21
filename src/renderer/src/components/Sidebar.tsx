@@ -1,5 +1,6 @@
 import { ChevronDown, ChevronRight, ListFilter, MoreHorizontal, Plus } from 'lucide-react'
 import { useId, useRef, useState } from 'react'
+import { shortcut } from '../lib/platform'
 import { createEnvironment } from '../lib/tabs'
 import { useApp } from '../state/store'
 import { SIDEBAR_MAX, SIDEBAR_MIN, useUi, type SidebarSection } from '../state/ui'
@@ -72,6 +73,14 @@ export function Sidebar(): React.JSX.Element {
         </label>
         <button
           type="button"
+          className="btn-text"
+          title={`Import Postman files (${shortcut('O')})`}
+          onClick={() => useUi.getState().setImportOpen(true)}
+        >
+          Import
+        </button>
+        <button
+          type="button"
           className="icon-btn"
           aria-label="New collection"
           title="New collection"
@@ -83,6 +92,7 @@ export function Sidebar(): React.JSX.Element {
           label="More sidebar actions"
           items={[
             { label: 'New collection', onSelect: () => startCreate('collection', null) },
+            { label: 'Import…', onSelect: () => useUi.getState().setImportOpen(true) },
             { label: 'Collapse all', onSelect: collapseAll },
           ]}
         >

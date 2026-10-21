@@ -1233,6 +1233,11 @@ input[type='radio'] {
   color: var(--content-primary);
 }
 
+/* Globals have no active check; their menu button lines up with the other rows'. */
+.env-row-globals .row-menu {
+  margin-right: calc(var(--size-s) + 2px);
+}
+
 /* ---- tab strip ---- */
 
 .tabstrip {
@@ -1645,6 +1650,97 @@ input[type='radio'] {
   justify-content: flex-end;
   gap: var(--spacing-m);
   margin-top: var(--spacing-xs);
+}
+
+/* ---- import dialog ---- */
+
+.import-dialog {
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+  overflow: auto;
+}
+
+.import-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spacing-m);
+  padding: var(--spacing-xxl) var(--spacing-xl);
+  color: var(--content-secondary);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-default);
+}
+
+.import-drop.dragging {
+  background: var(--highlight-transparent);
+  border-style: solid;
+  border-color: var(--border-focus);
+}
+
+.import-paste {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.import-label {
+  font-size: var(--text-size-s);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-s);
+  color: var(--content-secondary);
+}
+
+.import-textarea {
+  padding: var(--spacing-s) var(--spacing-m);
+  font-family: var(--font-family-code);
+  font-size: var(--text-size-m);
+  line-height: var(--line-height-code);
+  color: var(--content-primary);
+  resize: vertical;
+  background: var(--background-primary);
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-default);
+}
+
+.import-textarea:focus {
+  border-color: var(--border-focus);
+  outline: none;
+}
+
+.import-textarea:disabled {
+  color: var(--content-tertiary);
+}
+
+.import-results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.import-result {
+  overflow-wrap: anywhere;
+}
+
+.import-failed {
+  color: var(--content-error);
+}
+
+.import-warnings {
+  color: var(--content-secondary);
+}
+
+.import-warnings summary {
+  width: fit-content;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+}
+
+.import-warnings ul {
+  margin: var(--spacing-xs) 0 0;
+  padding-left: var(--spacing-xl);
 }
 
 /* ---- workspace gate ---- */

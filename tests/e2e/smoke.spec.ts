@@ -4,9 +4,10 @@ import type { AddressInfo } from 'node:net'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, relative, resolve } from 'node:path'
+import { delimiter, join, relative, resolve } from 'node:path'
 
 const MAIN = resolve(__dirname, '../../out/main/index.js')
+const POSTMAN_FIXTURES = resolve(__dirname, '../fixtures/postman')
 // A valid 1x1 PNG.
 const PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==',
@@ -64,12 +65,13 @@ test.afterAll(async () => {
 
 async function launch(
   workspaceDir = workspace,
+  extraEnv: Record<string, string> = {},
 ): Promise<{ app: ElectronApplication; page: Page; problems: string[]; requests: string[] }> {
   app = await electron.launch({
     // ASTRAL_E2E_EXECUTABLE runs the same steps against a packaged build instead of out/main.
     ...(PACKAGED ? { executablePath: PACKAGED } : {}),
     args: [...(PACKAGED ? [] : [MAIN]), `--user-data-dir=${userData}`],
-    env: { ...process.env, NODE_ENV: 'test', ASTRAL_E2E_WORKSPACE: workspaceDir },
+    env: { ...process.env, NODE_ENV: 'test', ASTRAL_E2E_WORKSPACE: workspaceDir, ...extraEnv },
   })
   const page = await app.firstWindow()
   const problems: string[] = []
@@ -545,4 +547,48 @@ test('a secret is refused, not stored, when OS encryption is unavailable', async
   await editor.getByRole('button', { name: 'Save', exact: true }).click()
   await expect(editor.getByRole('alert')).toBeVisible()
   for (const f of await allFiles(dir)) expect(await readFile(f, 'utf8'), f).not.toContain(SECRET)
+})
+
+test('import Postman files and export a collection as v2.1', async () => {
+  const dir = join(root, 'workspace-transfer')
+  const exportDir = join(root, 'exports')
+  await Promise.all([mkdir(dir), mkdir(exportDir)])
+  const { page, problems } = await launch(dir, {
+    ASTRAL_E2E_IMPORT_FILES: [
+      join(POSTMAN_FIXTURES, 'full.v21.postman_collection.json'),
+      join(POSTMAN_FIXTURES, 'dev.postman_environment.json'),
+    ].join(delimiter),
+    ASTRAL_E2E_EXPORT_DIR: exportDir,
+  })
+  await page.getByRole('button', { name: 'Create workspace' }).click()
+  await page.getByLabel('Workspace name').fill('Transfer')
+  await page.getByRole('button', { name: 'Create', exact: true }).click()
+  await expect(page.locator('.workspace-name')).toHaveText('Transfer')
+
+  await test.step('import through Choose files', async () => {
+    await page.locator('.sidebar').getByRole('button', { name: 'Import', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: 'Import' })
+    await expect(dialog).toBeVisible()
+    await shotBoth(page, 'e1-import-empty')
+    await dialog.getByRole('button', { name: 'Choose files' }).click()
+    await expect(dialog.getByText('Collection "Acme Orders API" imported')).toBeVisible()
+    await expect(dialog.getByText('Environment "Dev" imported')).toBeVisible()
+    await shotBoth(page, 'e2-import-results')
+    await page.keyboard.press('Escape')
+    await expect(dialog).toBeHidden()
+    await expect(page.getByRole('treeitem', { name: 'Acme Orders API' })).toBeVisible()
+    await expect(envRow(page, 'Dev')).toBeVisible()
+  })
+
+  await test.step('export the collection', async () => {
+    await page.getByRole('treeitem', { name: 'Acme Orders API' }).click({ button: 'right' })
+    await page.getByRole('menuitem', { name: 'Export' }).click()
+    const target = join(exportDir, 'Acme Orders API.postman_collection.json')
+    await expect.poll(() => existsSync(target)).toBe(true)
+    const doc = JSON.parse(await readFile(target, 'utf8'))
+    expect(doc.info.schema).toBe('https://schema.getpostman.com/json/collection/v2.1.0/collection.json')
+    expect(doc.info.name).toBe('Acme Orders API')
+  })
+
+  expect(problems).toEqual([])
 })

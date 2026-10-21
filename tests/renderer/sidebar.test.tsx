@@ -375,3 +375,42 @@ describe('errors and disappearing data', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('workspace_unavailable')
   })
 })
+
+describe('Export from the tree', () => {
+  async function menuOf(user: ReturnType<typeof userEvent.setup>, name: string) {
+    await user.pointer({ keys: '[MouseRight]', target: screen.getByRole('treeitem', { name }) })
+    return screen.getByRole('menu')
+  }
+
+  it('offers Export on collections only', async () => {
+    const { user } = await openedApp()
+    expect(within(await menuOf(user, 'Shop')).getByRole('menuitem', { name: 'Export' })).toBeInTheDocument()
+    await user.keyboard('{Escape}')
+    expect(within(await menuOf(user, 'Users')).queryByRole('menuitem', { name: 'Export' })).toBeNull()
+    await user.keyboard('{Escape}')
+    expect(within(await menuOf(user, 'Get users')).queryByRole('menuitem', { name: 'Export' })).toBeNull()
+  })
+
+  it('saves an unsaved draft before exporting the collection', async () => {
+    const { api, user } = await openedApp()
+    useApp.getState().openRequest(REQUEST_PATH)
+    useApp.getState().editDraft(REQUEST_PATH, (d) => ({ ...d, url: 'https://edited.example.test' }))
+    await user.click(within(await menuOf(user, 'Shop')).getByRole('menuitem', { name: 'Export' }))
+    await waitFor(() => expect(api.transfer.exportCollection).toHaveBeenCalledWith('collections/shop'))
+    expect(api.collections.saveRequest).toHaveBeenCalledWith(
+      REQUEST_PATH,
+      expect.objectContaining({ url: 'https://edited.example.test' }),
+      'rev:' + REQUEST_PATH,
+    )
+    expect(api.collections.saveRequest.mock.invocationCallOrder[0]).toBeLessThan(
+      api.transfer.exportCollection.mock.invocationCallOrder[0],
+    )
+  })
+
+  it('shows an export that fails in the error banner', async () => {
+    const api = installApi({ transfer: { exportCollection: vi.fn().mockRejectedValue(new Error('EACCES')) } })
+    const { user } = await openedApp(api)
+    await user.click(within(await menuOf(user, 'Shop')).getByRole('menuitem', { name: 'Export' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not export "Shop": EACCES')
+  })
+})

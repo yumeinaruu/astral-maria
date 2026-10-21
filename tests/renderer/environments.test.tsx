@@ -145,8 +145,37 @@ describe('environments in the sidebar', () => {
         .getAllByRole('listitem')
         .map((li) => li.textContent),
     ).toEqual(['Globals', 'Dev', 'Prod'])
-    // Globals is always applied, so it has no check and no rename or delete.
-    expect(within(list).queryByRole('button', { name: /Activate Globals|Actions for Globals/ })).toBeNull()
+    // Globals is always applied, so it has no check.
+    expect(within(list).queryByRole('button', { name: /Activate Globals/ })).toBeNull()
+  })
+
+  it('offers only Export in the Globals menu, which exports the globals', async () => {
+    const { api, user } = await mount()
+    await user.click(screen.getByRole('button', { name: 'Actions for Globals' }))
+    const menu = screen.getByRole('menu')
+    expect(
+      within(menu)
+        .getAllByRole('menuitem')
+        .map((m) => m.textContent),
+    ).toEqual(['Export'])
+    await user.click(within(menu).getByRole('menuitem', { name: 'Export' }))
+    await waitFor(() => expect(api.transfer.exportEnvironment).toHaveBeenCalledWith('globals'))
+  })
+
+  it('exports an environment from its row menu', async () => {
+    const { api, user } = await mount()
+    await user.click(screen.getByRole('button', { name: 'Actions for Dev' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Export' }))
+    await waitFor(() => expect(api.transfer.exportEnvironment).toHaveBeenCalledWith('dev'))
+  })
+
+  it('shows an environment export that fails in the error banner', async () => {
+    const { user } = await mount([DEV, PROD], {
+      transfer: { exportEnvironment: vi.fn().mockRejectedValue(new Error('EACCES')) },
+    })
+    await user.click(screen.getByRole('button', { name: 'Actions for Dev' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Export' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not export "Dev": EACCES')
   })
 
   it('activates an environment with its check, and deactivates it with a second click', async () => {

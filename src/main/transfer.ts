@@ -130,14 +130,17 @@ export async function exportCollection(
   return writeExport(toPostmanCollection(tree), exportFileName(tree.name, 'collection'), pickExportPath, track)
 }
 
-/** Like `exportCollection`, for an environment or the globals; secrets are written empty. */
+/** Like `exportCollection`, for an environment or the globals (empty when never saved); secrets are written empty. */
 export async function exportEnvironment(
   stores: Stores,
   id: string,
   pickExportPath: PickExportPath,
   track: Track = untracked,
 ): Promise<string | null> {
-  const env: Environment | undefined = (await stores.environments.list()).environments.find((e) => e.id === id)
+  const stored = (await stores.environments.list()).environments.find((e) => e.id === id)
+  // The globals exist before their first save (the sidebar always shows them), as an empty set.
+  const env: Environment | undefined =
+    stored ?? (id === GLOBALS_ID ? { id: GLOBALS_ID, name: GLOBALS_NAME, variables: [] } : undefined)
   if (!env) throw new Error('environment_not_found')
   const kind = id === GLOBALS_ID ? 'globals' : 'environment'
   return writeExport(toPostmanEnvironment(env), exportFileName(env.name, kind), pickExportPath, track)

@@ -3,6 +3,7 @@ import { useEffect } from 'react'
 import { ErrorBanner } from './components/Banners'
 import { EnvironmentEditor } from './components/EnvironmentEditor'
 import { Header } from './components/Header'
+import { ImportDialog } from './components/ImportDialog'
 import { QUICK_OPEN_ID } from './components/QuickOpen'
 import { RequestEditor } from './components/RequestEditor'
 import { RequestTabs, tabDomId } from './components/RequestTabs'
@@ -18,6 +19,12 @@ export function App(): React.JSX.Element {
   const workspace = useApp((s) => s.workspace)
   const activePath = useApp((s) => s.activePath)
   const sidebarVisible = useUi((s) => s.sidebarVisible)
+  const importOpen = useUi((s) => s.importOpen)
+
+  // The Import dialog belongs to a workspace; it does not reappear in the next one.
+  useEffect(() => {
+    if (!workspace) useUi.getState().setImportOpen(false)
+  }, [workspace])
 
   // Best effort: start any debounced save before the window goes away.
   useEffect(() => {
@@ -49,6 +56,9 @@ export function App(): React.JSX.Element {
         const input = document.getElementById(QUICK_OPEN_ID) as HTMLInputElement | null
         input?.focus()
         input?.select()
+      } else if (e.key.toLowerCase() === 'o') {
+        e.preventDefault()
+        useUi.getState().setImportOpen(true)
       } else if (e.key === '\\') {
         e.preventDefault()
         useUi.getState().toggleSidebar()
@@ -91,6 +101,7 @@ export function App(): React.JSX.Element {
         </main>
       </div>
       <StatusBar />
+      {importOpen && <ImportDialog onClose={() => useUi.getState().setImportOpen(false)} />}
     </div>
   )
 }

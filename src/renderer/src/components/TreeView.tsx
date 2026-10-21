@@ -88,10 +88,11 @@ export function TreeView({
         { label: 'New request', onSelect: () => onStartCreate('request', meta.path) },
       )
     }
-    items.push(
-      { label: 'Rename', onSelect: () => onStartRename(meta.path, meta.name) },
-      { label: 'Delete', onSelect: () => onAskDelete(meta.path) },
-    )
+    items.push({ label: 'Rename', onSelect: () => onStartRename(meta.path, meta.name) })
+    if (meta.kind === 'collection') {
+      items.push({ label: 'Export', onSelect: () => void useApp.getState().exportCollection(meta.path) })
+    }
+    items.push({ label: 'Delete', onSelect: () => onAskDelete(meta.path) })
     return items
   }
 

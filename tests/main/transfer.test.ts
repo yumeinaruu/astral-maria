@@ -297,6 +297,13 @@ describe('exportEnvironment', () => {
     expect(asked).toEqual(['Globals.postman_globals.json'])
   })
 
+  it('exports empty globals when no globals file exists yet', async () => {
+    const target = path.join(out, 'g.json')
+    expect(await exportEnvironment(stores, 'globals', async () => target)).toBe(target)
+    const doc = JSON.parse(await fsp.readFile(target, 'utf8'))
+    expect(doc).toMatchObject({ name: 'Globals', values: [], _postman_variable_scope: 'globals' })
+  })
+
   it('writes nothing when the dialog is cancelled', async () => {
     await stores.environments.save({ id: 'e1', name: 'E', variables: [] })
     expect(await exportEnvironment(stores, 'e1', async () => null)).toBeNull()
