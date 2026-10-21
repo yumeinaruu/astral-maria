@@ -214,6 +214,21 @@ describe('dialog behaviour', () => {
     expect(button).toHaveFocus()
   })
 
+  it('keeps focus in the dialog after an import, so Escape still closes it', async () => {
+    const report: ImportReport = {
+      imported: [{ source: 'a.json', kind: 'environment', name: 'Dev', warnings: [] }],
+      failed: [],
+    }
+    const api = installApi({ transfer: { importFiles: vi.fn().mockResolvedValue(report) } })
+    const { user } = await openedApp(api)
+    const dialog = await openDialog(user)
+    await user.click(within(dialog).getByRole('button', { name: 'Choose files' }))
+    await within(dialog).findByText('Environment "Dev" imported')
+    await waitFor(() => expect(dialog).toContainElement(document.activeElement as HTMLElement))
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
   it('closes with the Close button', async () => {
     const { user } = await openedApp()
     const dialog = await openDialog(user)

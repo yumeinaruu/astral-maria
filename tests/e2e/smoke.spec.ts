@@ -581,7 +581,8 @@ test('import Postman files and export a collection as v2.1', async () => {
   })
 
   await test.step('export the collection', async () => {
-    await page.getByRole('treeitem', { name: 'Acme Orders API' }).click({ button: 'right' })
+    // The imported collection is expanded, so click its own row rather than the middle of the item and its children.
+    await page.getByRole('treeitem', { name: 'Acme Orders API' }).locator('.tree-row').first().click({ button: 'right' })
     await page.getByRole('menuitem', { name: 'Export' }).click()
     const target = join(exportDir, 'Acme Orders API.postman_collection.json')
     await expect.poll(() => existsSync(target)).toBe(true)

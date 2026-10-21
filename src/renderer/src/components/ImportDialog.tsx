@@ -47,6 +47,11 @@ export function ImportDialog({ onClose }: { onClose(): void }): React.JSX.Elemen
     return () => previous?.focus()
   }, [])
 
+  useEffect(() => {
+    // Disabling the focused control drops focus to the body; once the controls are enabled again, bring it back.
+    if (!busy && !dialogRef.current?.contains(document.activeElement)) chooseRef.current?.focus()
+  }, [busy])
+
   async function run(work: () => Promise<ImportReport | null>): Promise<ImportReport | null> {
     setBusy(true)
     try {
@@ -58,8 +63,6 @@ export function ImportDialog({ onClose }: { onClose(): void }): React.JSX.Elemen
       return report
     } finally {
       setBusy(false)
-      // Disabling the focused control drops focus to the body; keep it in the dialog.
-      if (!dialogRef.current?.contains(document.activeElement)) chooseRef.current?.focus()
     }
   }
 
