@@ -1,6 +1,7 @@
 import { Plus, Search } from 'lucide-react'
 import { useEffect } from 'react'
 import { ErrorBanner } from './components/Banners'
+import { ConsolePanel } from './components/ConsolePanel'
 import { EnvironmentEditor } from './components/EnvironmentEditor'
 import { Header } from './components/Header'
 import { ImportDialog } from './components/ImportDialog'
@@ -20,6 +21,7 @@ export function App(): React.JSX.Element {
   const activePath = useApp((s) => s.activePath)
   const sidebarVisible = useUi((s) => s.sidebarVisible)
   const importOpen = useUi((s) => s.importOpen)
+  const consoleOpen = useUi((s) => s.consoleOpen)
 
   // The Import dialog belongs to a workspace; it does not reappear in the next one.
   useEffect(() => {
@@ -100,6 +102,7 @@ export function App(): React.JSX.Element {
           )}
         </main>
       </div>
+      {consoleOpen && <ConsolePanel />}
       <StatusBar />
       {importOpen && <ImportDialog onClose={() => useUi.getState().setImportOpen(false)} />}
     </div>

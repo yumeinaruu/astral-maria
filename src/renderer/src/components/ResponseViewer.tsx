@@ -1,6 +1,6 @@
 import { CircleAlert, Download, LoaderCircle, Send } from 'lucide-react'
 import { useId, useRef } from 'react'
-import type { HttpResponse } from '../../../shared/types'
+import type { HttpResponse, ScriptReport } from '../../../shared/types'
 import {
   bodyBytes,
   decodeBody,
@@ -16,11 +16,14 @@ import { DEFAULT_RESPONSE_VIEW, useApp, type ResponseTab } from '../state/store'
 import { HoverTip } from './response/HoverTip'
 import { ResponseBody } from './response/ResponseBody'
 import { CookiesTable, HeadersTable } from './response/ResponseTables'
+import { ScriptFailures } from './response/ScriptFailures'
+import { TestResults, testSummary } from './response/TestResults'
 
 const TABS: { id: ResponseTab; label: string }[] = [
   { id: 'body', label: 'Body' },
   { id: 'cookies', label: 'Cookies' },
   { id: 'headers', label: 'Headers' },
+  { id: 'tests', label: 'Test Results' },
 ]
 
 const ERROR_EXPLANATIONS: Record<string, string> = {
@@ -66,6 +69,14 @@ export function ResponseViewer({ path }: { path: string }): React.JSX.Element {
   const result = entry.result!
   if (!result.ok) {
     const { code, message } = result.error
+    // A pre-request script failed and nothing was sent: its error takes the place of the response.
+    if (code === 'script_error' && result.scripts && result.scripts.failures.length > 0) {
+      return (
+        <div className="response-script-error">
+          <ScriptFailures failures={result.scripts.failures} />
+        </div>
+      )
+    }
     return (
       <div className="response-state response-error" role="alert">
         <CircleAlert size={28} strokeWidth={1.5} aria-hidden="true" />
@@ -76,10 +87,16 @@ export function ResponseViewer({ path }: { path: string }): React.JSX.Element {
       </div>
     )
   }
-  return <ResponseDetails path={path} response={result.response} />
+  return <ResponseDetails path={path} response={result.response} scripts={result.scripts} />
 }
 
-function ResponseDetails({ path, response }: { path: string; response: HttpResponse }): React.JSX.Element {
+interface DetailsProps {
+  path: string
+  response: HttpResponse
+  scripts: ScriptReport | undefined
+}
+
+function ResponseDetails({ path, response, scripts }: DetailsProps): React.JSX.Element {
   const view = useApp((s) => s.responseViews[path]) ?? DEFAULT_RESPONSE_VIEW
   const idBase = useId()
   const decoded = useMemoDecoded(response)
@@ -96,11 +113,12 @@ function ResponseDetails({ path, response }: { path: string; response: HttpRespo
     select(TABS[(index + step + TABS.length) % TABS.length]!.id)
   }
 
-  const counts: Record<ResponseTab, number> = {
+  const counts: Record<Exclude<ResponseTab, 'tests'>, number> = {
     body: 0,
     headers: response.headers.length,
     cookies: response.cookies.length,
   }
+  const tests = testSummary(scripts?.tests)
 
   return (
     <div className="response-viewer">
@@ -120,7 +138,9 @@ function ResponseDetails({ path, response }: { path: string; response: HttpRespo
               onKeyDown={(e) => onKeyDown(e, i)}
             >
               {t.label}
-              {counts[t.id] > 0 && <span className="pill-count"> {counts[t.id]}</span>}
+              {t.id === 'tests'
+                ? tests !== null && <span className="pill-count"> ({tests})</span>
+                : counts[t.id] > 0 && <span className="pill-count"> {counts[t.id]}</span>}
             </button>
           ))}
         </div>
@@ -134,6 +154,7 @@ function ResponseDetails({ path, response }: { path: string; response: HttpRespo
           </span>
         </div>
       )}
+      <ScriptFailures failures={scripts?.failures ?? []} />
       <div role="tabpanel" id={`${idBase}-panel`} aria-labelledby={`${idBase}-${view.tab}`} className="response-panel">
         {view.tab === 'body' && (
           <ResponseBody
@@ -147,6 +168,7 @@ function ResponseDetails({ path, response }: { path: string; response: HttpRespo
         )}
         {view.tab === 'headers' && <HeadersTable headers={response.headers} />}
         {view.tab === 'cookies' && <CookiesTable cookies={response.cookies} />}
+        {view.tab === 'tests' && <TestResults tests={scripts?.tests ?? []} />}
       </div>
     </div>
   )

@@ -515,6 +515,38 @@ test('create, send, persist, and keep secrets local', async () => {
       .toBe('{{baseUrl}}/saved-by-shortcut')
   })
 
+  await test.step('scripts set a variable, tests check it, and the console shows the send', async () => {
+    const p = app!.windows()[0]
+    await p.getByRole('tab', { name: /Hello/ }).click()
+    await openSection(p, 'Scripts')
+    const scripts = p.getByRole('tablist', { name: 'Scripts' })
+    const editor = p.locator('.scripts-editor .cm-content')
+    await scripts.getByRole('tab', { name: /^Pre-request/ }).click()
+    await editor.click()
+    await p.keyboard.type("pm.environment.set('token', 'abc')")
+    await scripts.getByRole('tab', { name: /^Post-response/ }).click()
+    await editor.click()
+    await p.keyboard.type(
+      "pm.test('status is 200', () => pm.response.to.have.status(200)); " +
+        "pm.test('token was set', () => pm.expect(pm.environment.get('token')).to.equal('abc'))",
+    )
+    await expect(scripts.getByRole('tab', { name: /^Pre-request/ }).locator('.config-dot')).toHaveCount(1)
+    await shotBoth(p, 'f1-scripts-editor')
+
+    await p.getByRole('button', { name: 'Send', exact: true }).click()
+    const results = p.getByRole('tab', { name: /^Test Results/ })
+    await expect(results).toHaveText('Test Results (2/2)')
+    await results.click()
+    await expect(p.getByRole('list', { name: 'Test results' }).getByRole('listitem')).toHaveCount(2)
+    await shotBoth(p, 'f2-test-results')
+
+    await p.getByRole('button', { name: 'Console', exact: true }).click()
+    const consolePanel = p.getByRole('region', { name: 'Console' })
+    await expect(consolePanel.getByRole('listitem').first()).toContainText('GET')
+    await expect(consolePanel.getByRole('listitem').first()).toContainText('200')
+    await shotBoth(p, 'f3-console')
+  })
+
   await test.step('an edit typed just before quitting is on disk after the quit', async () => {
     const p = app!.windows()[0]
     await p.getByRole('textbox', { name: 'URL', exact: true }).fill('{{baseUrl}}/typed-before-quit')

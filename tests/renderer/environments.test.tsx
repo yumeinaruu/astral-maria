@@ -1220,3 +1220,55 @@ describe('the local flag in the editor model', () => {
     expect(fingerprint(toEnvironment(toDraft(flipped)))).toBe(fingerprint(flipped))
   })
 })
+
+describe('environments changed by scripts', () => {
+  function changedBy(ids: string[]): SendResult {
+    return {
+      ok: false,
+      error: { code: 'x', message: 'y' },
+      scripts: { tests: [], logs: [], failures: [], changedEnvironmentIds: ids },
+    }
+  }
+
+  it('shows the new values in an open editor without edits', async () => {
+    const send = vi.fn()
+    const { user, disk, environments } = await mount([DEV, PROD], { http: { send } })
+    await openEditor(user, 'Dev')
+    send.mockImplementation(async () => {
+      disk.envs[0] = { ...DEV, variables: [{ ...DEV.variables[0], currentValue: 'from-script' }] }
+      return changedBy(['dev'])
+    })
+    useApp.getState().openRequest(REQUEST_PATH)
+    environments.list.mockClear()
+    await useApp.getState().send(REQUEST_PATH)
+    await waitFor(() => expect(environments.list).toHaveBeenCalled())
+    await user.click(screen.getByRole('tab', { name: /Dev/ }))
+    await waitFor(() => expect(rowInput('Value')).toHaveValue('from-script'))
+    expect(screen.queryByText('Changed on disk')).toBeNull()
+  })
+
+  it('keeps an edited draft and says the environment changed on disk', async () => {
+    const send = vi.fn()
+    const { user, disk } = await mount([DEV, PROD], { http: { send } })
+    await openEditor(user, 'Dev')
+    await user.type(rowInput('Value'), 'X')
+    send.mockImplementation(async () => {
+      disk.envs[0] = { ...DEV, variables: [{ ...DEV.variables[0], currentValue: 'from-script' }] }
+      return changedBy(['dev'])
+    })
+    useApp.getState().openRequest(REQUEST_PATH)
+    await useApp.getState().send(REQUEST_PATH)
+    await user.click(screen.getByRole('tab', { name: /Dev/ }))
+    expect(await screen.findByText('Changed on disk')).toBeInTheDocument()
+    expect(rowInput('Value')).toHaveValue('localhostX')
+  })
+
+  it('does not reload after a send that changed nothing', async () => {
+    const send = vi.fn().mockResolvedValue(changedBy([]))
+    const { environments } = await mount([DEV, PROD], { http: { send } })
+    useApp.getState().openRequest(REQUEST_PATH)
+    environments.list.mockClear()
+    await useApp.getState().send(REQUEST_PATH)
+    expect(environments.list).not.toHaveBeenCalled()
+  })
+})

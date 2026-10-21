@@ -7,7 +7,7 @@ import { ResponseViewer } from '../../src/renderer/src/components/ResponseViewer
 import { decodeBody } from '../../src/renderer/src/lib/body'
 import { initialState, useApp } from '../../src/renderer/src/state/store'
 import { loadUi, useUi } from '../../src/renderer/src/state/ui'
-import type { HttpResponse, SendResult } from '../../src/shared/types'
+import type { HttpResponse, ScriptReport, ScriptTest, SendResult } from '../../src/shared/types'
 import { collectionTree, folderNode, installApi, REQUEST_PATH, requestNode } from './helpers'
 
 // CodeMirror needs real layout; a textarea stands in for it here (tests/renderer/codeEditor.test.tsx covers the real one).
@@ -147,7 +147,12 @@ describe('response summary', () => {
   it('shows the counts as plain numbers on the pill tabs', () => {
     show(ok('', 'text/plain', { cookies: [{ name: 'a', value: '1', attributes: {} }] }))
     render(<ResponseViewer path={REQUEST_PATH} />)
-    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Body', 'Cookies 1', 'Headers 1'])
+    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual([
+      'Body',
+      'Cookies 1',
+      'Headers 1',
+      'Test Results',
+    ])
   })
 
   it.each([
@@ -226,9 +231,9 @@ describe('headers and cookies', () => {
     show(ok())
     render(<ResponseViewer path={REQUEST_PATH} />)
     fireEvent.keyDown(screen.getByRole('tab', { name: 'Body' }), { key: 'ArrowLeft' })
-    expect(screen.getByRole('tab', { name: /Headers/ })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByRole('tab', { name: /Headers/ })).toHaveFocus()
-    fireEvent.keyDown(screen.getByRole('tab', { name: /Headers/ }), { key: 'ArrowRight' })
+    expect(screen.getByRole('tab', { name: /Test Results/ })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: /Test Results/ })).toHaveFocus()
+    fireEvent.keyDown(screen.getByRole('tab', { name: /Test Results/ }), { key: 'ArrowRight' })
     expect(screen.getByRole('tab', { name: 'Body' })).toHaveFocus()
   })
 })
@@ -614,5 +619,116 @@ describe('layout', () => {
     expect(sep).toHaveAttribute('aria-valuenow', '80')
     fireEvent.pointerUp(sep, { pointerId: 1 })
     expect(sep.releasePointerCapture).toHaveBeenCalled()
+  })
+})
+
+function withScripts(result: SendResult, scripts: Partial<ScriptReport>): SendResult {
+  return { ...result, scripts: { tests: [], logs: [], failures: [], changedEnvironmentIds: [], ...scripts } }
+}
+
+const TESTS: ScriptTest[] = [
+  { name: 'status is 200', passed: true, skipped: false, source: 'Request "Get users"' },
+  { name: 'has a token', passed: false, skipped: false, error: 'expected undefined to equal abc', source: 'Request "Get users"' },
+  { name: 'later', passed: false, skipped: true, source: 'Folder "Users"' },
+  { name: 'body is json', passed: true, skipped: false, source: 'Collection "Shop"' },
+]
+
+describe('test results', () => {
+  const openTests = () => fireEvent.click(screen.getByRole('tab', { name: /Test Results/ }))
+  const rows = () => within(screen.getByRole('list', { name: 'Test results' })).getAllByRole('listitem')
+
+  it('counts passed tests out of all on the tab', () => {
+    show(withScripts(ok(), { tests: TESTS }))
+    render(<ResponseViewer path={REQUEST_PATH} />)
+    expect(screen.getByRole('tab', { name: /Test Results/ })).toHaveTextContent('Test Results (2/4)')
+  })
+
+  it('lists each test with its badge, name, error and source', () => {
+    show(withScripts(ok(), { tests: TESTS }))
+    render(<ResponseViewer path={REQUEST_PATH} />)
+    openTests()
+    const [pass, fail, skip] = rows()
+    expect(within(pass!).getByText('PASS')).toHaveClass('test-badge', 'test-pass')
+    expect(pass).toHaveTextContent('status is 200')
+    expect(within(pass!).getByText('Request "Get users"')).toHaveClass('test-source')
+    expect(within(fail!).getByText('FAIL')).toHaveClass('test-fail')
+    expect(within(fail!).getByText('expected undefined to equal abc')).toHaveClass('test-error')
+    expect(within(skip!).getByText('SKIP')).toHaveClass('test-skip')
+  })
+
+  it.each([
+    ['All', ['status is 200', 'has a token', 'later', 'body is json']],
+    ['Passed', ['status is 200', 'body is json']],
+    ['Skipped', ['later']],
+    ['Failed', ['has a token']],
+  ])('filters %s', (filter, names) => {
+    show(withScripts(ok(), { tests: TESTS }))
+    render(<ResponseViewer path={REQUEST_PATH} />)
+    openTests()
+    const group = screen.getByRole('group', { name: 'Filter tests' })
+    fireEvent.click(within(group).getByRole('button', { name: new RegExp(`^${filter}`) }))
+    expect(within(group).getByRole('button', { name: new RegExp(`^${filter}`) })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    expect(rows().map((r) => within(r).getByText(/./, { selector: '.test-name' }).textContent)).toEqual(names)
+  })
+
+  it('says when no test matches the filter', () => {
+    show(withScripts(ok(), { tests: TESTS.slice(0, 1) }))
+    render(<ResponseViewer path={REQUEST_PATH} />)
+    openTests()
+    fireEvent.click(screen.getByRole('button', { name: /^Failed/ }))
+    expect(screen.getByText('No failed tests')).toBeInTheDocument()
+  })
+
+  it('shows an empty state without tests', () => {
+    show(ok())
+    render(<ResponseViewer path={REQUEST_PATH} />)
+    expect(screen.getByRole('tab', { name: 'Test Results' })).toHaveTextContent(/^Test Results$/)
+    openTests()
+    expect(screen.getByText('No tests for this request')).toBeInTheDocument()
+    expect(screen.getByText('Write tests in the Scripts tab with pm.test()')).toHaveClass('response-state-hint')
+    expect(screen.queryByRole('group', { name: 'Filter tests' })).toBeNull()
+  })
+})
+
+describe('script failures', () => {
+  it('shows a strip per failure above the response body', () => {
+    show(
+      withScripts(ok('hello'), {
+        failures: [
+          { phase: 'post-response', source: 'Request "Get user"', message: 'Unexpected token < in JSON' },
+          { phase: 'post-response', source: 'Collection "Shop"', message: 'boom' },
+        ],
+      }),
+    )
+    render(<ResponseViewer path={REQUEST_PATH} />)
+    const strips = screen.getAllByRole('alert')
+    expect(strips.map((s) => s.textContent)).toEqual([
+      'Error in post-response script of Request "Get user": Unexpected token < in JSON',
+      'Error in post-response script of Collection "Shop": boom',
+    ])
+    expect(screen.getByText('200 OK')).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Response body' })).toBeInTheDocument()
+  })
+
+  it('shows the strip in place of the response when a pre-request script failed', () => {
+    show({
+      ok: false,
+      error: { code: 'script_error', message: 'Script timed out after 10 s' },
+      scripts: {
+        tests: [],
+        logs: [],
+        failures: [{ phase: 'pre-request', source: 'Folder "Users"', message: 'Script timed out after 10 s' }],
+        changedEnvironmentIds: [],
+      },
+    })
+    render(<ResponseViewer path={REQUEST_PATH} />)
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Error in pre-request script of Folder "Users": Script timed out after 10 s',
+    )
+    expect(screen.queryByText('Could not get a response')).toBeNull()
+    expect(screen.queryByText('script_error')).toBeNull()
   })
 })

@@ -3,8 +3,11 @@ import type {
   CollectionTree,
   Environment,
   ImportReport,
+  HttpMethod,
   LoadError,
   RequestItem,
+  ScriptLog,
+  ScriptPhase,
   SendResult,
   TreeNode,
   WorkspaceInfo,
@@ -19,6 +22,7 @@ import {
   toEnvironment,
   type Draft,
 } from '../lib/environments'
+import { composeUrl } from '../lib/url'
 
 /** A tab: the path of a request, or `env:<id>` (see `environmentTabId`) for an environment editor. */
 export interface OpenTab {
@@ -55,7 +59,7 @@ export interface SaveStatus {
   error?: string
 }
 
-export type ResponseTab = 'body' | 'headers' | 'cookies'
+export type ResponseTab = 'body' | 'headers' | 'cookies' | 'tests'
 export type BodyMode = 'pretty' | 'raw' | 'preview'
 
 /** What the response viewer of a request shows; remembered for the session. */
@@ -70,6 +74,25 @@ export interface ResponseEntry {
   state: 'idle' | 'sending' | 'done'
   result?: SendResult
 }
+
+/** One line of the console: a send, a script's console output, or a script that failed. */
+export type ConsoleLine =
+  | {
+      id: number
+      kind: 'request'
+      method: HttpMethod
+      /** The URL the response came from, or the unresolved draft URL when nothing was received. */
+      url: string
+      status?: number
+      ms?: number
+      /** The error code of a send that got no response. */
+      error?: string
+    }
+  | ({ id: number; kind: 'log' } & ScriptLog)
+  | { id: number; kind: 'failure'; phase: ScriptPhase; source: string; message: string }
+
+/** The console keeps this many lines; older ones are dropped. */
+export const CONSOLE_LIMIT = 500
 
 /** Autosave runs this long after the last change. */
 export const AUTOSAVE_DELAY_MS = 500
@@ -99,6 +122,8 @@ export interface AppState {
   responseViews: Record<string, ResponseView>
   /** Environment drafts by environment id; see `EnvironmentDraft`. */
   environmentDrafts: Record<string, EnvironmentDraft>
+  /** What the sends of this workspace session did, oldest first; at most `CONSOLE_LIMIT` lines. */
+  consoleLines: ConsoleLine[]
 }
 
 export interface AppActions {
@@ -171,6 +196,7 @@ export interface AppActions {
   exportEnvironment(id: string): Promise<void>
   setExpanded(path: string, expanded: boolean): void
   dismissError(): void
+  clearConsole(): void
 }
 
 export function initialState(): AppState {
@@ -191,6 +217,7 @@ export function initialState(): AppState {
     responses: {},
     responseViews: {},
     environmentDrafts: {},
+    consoleLines: [],
   }
 }
 
@@ -320,6 +347,37 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
   const adoptRevision = new Set<string>()
   /** Renames, moves and deletes in progress; `flushAll` waits for them. */
   const lockedOps = new Set<Promise<void>>()
+  let consoleSeq = 0
+
+  /**
+   * Adds the lines of one send to the console. Request headers are never logged, and the URL is the one the response
+   * came from (or the unresolved draft URL), so no resolved secret reaches the console through it.
+   */
+  function logSend(draft: RequestItem, result: SendResult): void {
+    const request: ConsoleLine = result.ok
+      ? {
+          id: ++consoleSeq,
+          kind: 'request',
+          method: draft.method,
+          url: result.response.finalUrl,
+          status: result.response.status,
+          ms: result.response.totalMs,
+        }
+      : {
+          id: ++consoleSeq,
+          kind: 'request',
+          method: draft.method,
+          url: composeUrl(draft.url, draft.params),
+          error: result.error.code,
+        }
+    const scripts = result.scripts
+    const added: ConsoleLine[] = [
+      request,
+      ...(scripts?.logs ?? []).map((l): ConsoleLine => ({ id: ++consoleSeq, kind: 'log', ...l })),
+      ...(scripts?.failures ?? []).map((f): ConsoleLine => ({ id: ++consoleSeq, kind: 'failure', ...f })),
+    ]
+    set((s) => ({ consoleLines: [...s.consoleLines, ...added].slice(-CONSOLE_LIMIT) }))
+  }
 
   function resetEditing(): void {
     for (const e of entries.values()) if (e.timer) clearTimeout(e.timer)
@@ -1061,7 +1119,11 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
           { collectionPath: collection?.path ?? null, environmentId: s.activeEnvironmentId, requestPath: path },
           ticket.id,
         )
-        if (epoch !== started || ticket.dead) return
+        if (epoch !== started) return
+        logSend(draft, result)
+        // Scripts saved new current values; open environment editors follow (or flag) them on the reload.
+        if (result.scripts && result.scripts.changedEnvironmentIds.length > 0) void get().refresh()
+        if (ticket.dead) return
         set((cur) => ({ responses: { ...cur.responses, [ticket.path]: { state: 'done', result } } }))
       } catch (e) {
         if (epoch !== started || ticket.dead) return
@@ -1122,5 +1184,6 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
       })
     },
     dismissError: () => set({ error: null }),
+    clearConsole: () => set({ consoleLines: [] }),
   }
 })

@@ -7,6 +7,7 @@ import { KeyValueTable } from './KeyValueTable'
 import { AuthPanel } from './request/AuthPanel'
 import { BodyPanel } from './request/BodyPanel'
 import { Breadcrumb } from './request/Breadcrumb'
+import { ScriptsPanel } from './request/ScriptsPanel'
 import { SectionNav, type Section } from './request/SectionNav'
 import { UrlBar } from './request/UrlBar'
 import { ResponseViewer } from './ResponseViewer'
@@ -43,6 +44,9 @@ export function RequestEditor({ path }: { path: string }): React.JSX.Element {
 
   const store = useApp.getState
   const edit = (patch: Partial<RequestItem>): void => store().editDraft(path, (r) => ({ ...r, ...patch }))
+  // Without scripts the field is left out of the request, not stored empty.
+  const editScripts = (scripts: RequestItem['scripts']): void =>
+    store().editDraft(path, ({ scripts: _old, ...rest }) => (scripts ? { ...rest, scripts } : rest))
 
   function onKeyDown(e: React.KeyboardEvent): void {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
@@ -91,6 +95,7 @@ export function RequestEditor({ path }: { path: string }): React.JSX.Element {
                 )}
                 {section === 'Body' && <BodyPanel draft={draft} edit={edit} />}
                 {section === 'Authorization' && <AuthPanel draft={draft} edit={edit} path={path} />}
+                {section === 'Scripts' && <ScriptsPanel scripts={draft.scripts} onChange={editScripts} />}
               </div>
             </div>
 
