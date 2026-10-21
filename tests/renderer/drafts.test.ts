@@ -626,7 +626,7 @@ describe('send', () => {
     await done
     expect(api.http.send).toHaveBeenCalledWith(
       expect.objectContaining({ url: 'http://unsaved' }),
-      { collectionPath: 'collections/shop', environmentId: null },
+      { collectionPath: 'collections/shop', environmentId: null, requestPath: REQUEST_PATH },
       expect.stringMatching(/^[0-9a-f-]{36}$/),
     )
     expect(useApp.getState().responses[REQUEST_PATH]).toEqual({ state: 'done', result: OK })

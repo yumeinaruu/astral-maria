@@ -360,7 +360,7 @@ describe('request editor', () => {
     await user.click(screen.getByRole('button', { name: 'Send' }))
     expect(send).toHaveBeenCalledWith(
       expect.objectContaining({ url: 'http://unsaved', id: `id-${REQUEST_PATH}` }),
-      { collectionPath: 'collections/shop', environmentId: 'env1' },
+      { collectionPath: 'collections/shop', environmentId: 'env1', requestPath: REQUEST_PATH },
       expect.any(String),
     )
     expect(useApp.getState().responses[REQUEST_PATH]?.state).toBe('done')

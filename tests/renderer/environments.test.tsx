@@ -115,12 +115,20 @@ describe('environment selector', () => {
     await chooseEnvironment(user, 'Dev')
     await user.click(await screen.findByRole('button', { name: 'Send' }))
     await waitFor(() => expect(send).toHaveBeenCalledTimes(1))
-    expect(send.mock.calls[0][1]).toEqual({ collectionPath: 'collections/shop', environmentId: 'dev' })
+    expect(send.mock.calls[0][1]).toEqual({
+      collectionPath: 'collections/shop',
+      environmentId: 'dev',
+      requestPath: REQUEST_PATH,
+    })
 
     await chooseEnvironment(user, 'No environment')
     await user.click(await screen.findByRole('button', { name: 'Send' }))
     await waitFor(() => expect(send).toHaveBeenCalledTimes(2))
-    expect(send.mock.calls[1][1]).toEqual({ collectionPath: 'collections/shop', environmentId: null })
+    expect(send.mock.calls[1][1]).toEqual({
+      collectionPath: 'collections/shop',
+      environmentId: null,
+      requestPath: REQUEST_PATH,
+    })
   })
 
   it('resets the selection with a notice when the active environment disappears after a refresh', async () => {

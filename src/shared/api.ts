@@ -1,11 +1,14 @@
 import type {
+  Auth,
   CollectionTree,
   Environment,
   FolderNode,
   ImportReport,
+  KeyValue,
   LoadError,
   RequestItem,
   RequestNode,
+  Scripts,
   SendResult,
   WorkspaceInfo,
 } from './types'
@@ -32,6 +35,11 @@ export interface AstralApi {
     rename(path: string, newName: string): Promise<string>
     remove(path: string): Promise<void>
     move(path: string, newParentPath: string, index: number): Promise<string>
+    /**
+     * Saves the settings of a collection or folder; only the fields given change. `variables` and `auth` exist only
+     * on a collection: on a folder they reject with `not_a_collection`.
+     */
+    updateSettings(path: string, patch: { scripts?: Scripts; variables?: KeyValue[]; auth?: Auth }): Promise<void>
   }
   environments: {
     list(): Promise<{ environments: Environment[]; errors: LoadError[] }>
@@ -49,10 +57,13 @@ export interface AstralApi {
     exportEnvironment(id: string): Promise<string | null>
   }
   http: {
-    /** `sendId` identifies this send (one per send per tab) so it can be cancelled on its own. */
+    /**
+     * `sendId` identifies this send (one per send per tab) so it can be cancelled on its own. Runs the collection's,
+     * folders' and request's scripts around the send; `requestPath` (the request's file) locates its folders.
+     */
     send(
       request: RequestItem,
-      context: { collectionPath: string | null; environmentId: string | null },
+      context: { collectionPath: string | null; environmentId: string | null; requestPath?: string | null },
       sendId: string,
     ): Promise<SendResult>
     /** Cancels the send with this id; an unknown or finished id is a no-op. */
@@ -79,7 +90,17 @@ export const FLUSH_REQUEST_CHANNEL = 'astral:app.flush-request'
 /** Method names per group; the preload and the main-process handlers are both generated from this table. */
 export const API_METHODS = {
   workspace: ['create', 'open', 'pickDirectory', 'recent', 'close'],
-  collections: ['list', 'createCollection', 'createFolder', 'createRequest', 'saveRequest', 'rename', 'remove', 'move'],
+  collections: [
+    'list',
+    'createCollection',
+    'createFolder',
+    'createRequest',
+    'saveRequest',
+    'rename',
+    'remove',
+    'move',
+    'updateSettings',
+  ],
   environments: ['list', 'save', 'remove'],
   transfer: ['importFiles', 'importText', 'exportCollection', 'exportEnvironment'],
   http: ['send', 'cancel'],

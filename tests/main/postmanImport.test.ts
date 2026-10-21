@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { parsePostman } from '../../src/main/postman/importer'
+import { fromPostmanRequest, parsePostman } from '../../src/main/postman/importer'
 import type { ImportedCollection, ImportedEnvironment, ImportedNode, Parsed } from '../../src/main/postman/importer'
 import type { RequestItem } from '../../src/shared/types'
 
@@ -481,5 +481,36 @@ describe('parsePostman: environments', () => {
       { key: 'timeout', value: '30', secret: false, enabled: true },
     ])
     expect(dev.warnings).toEqual([])
+  })
+})
+
+describe('fromPostmanRequest', () => {
+  it('converts a request object, with headers as a list or an object', () => {
+    const list = fromPostmanRequest(
+      {
+        url: 'https://a.test/x?q=1',
+        method: 'post',
+        header: [{ key: 'A', value: '1' }],
+        body: { mode: 'raw', raw: 'hi' },
+      },
+      'side',
+    )
+    expect(list.request).toMatchObject({
+      name: 'side',
+      method: 'POST',
+      url: 'https://a.test/x',
+      params: [{ key: 'q', value: '1', enabled: true }],
+      headers: [{ key: 'A', value: '1', enabled: true }],
+      body: { mode: 'raw', language: 'text', content: 'hi' },
+      auth: { type: 'inherit' },
+    })
+    const object = fromPostmanRequest({ url: 'https://a.test', header: { B: 2 } }, 'side')
+    expect(object.request.headers).toEqual([{ key: 'B', value: '2', enabled: true }])
+  })
+
+  it('takes a plain string as a GET of that URL', () => {
+    const { request, warnings } = fromPostmanRequest('https://a.test/y', 'side')
+    expect(request).toMatchObject({ method: 'GET', url: 'https://a.test/y', body: { mode: 'none' } })
+    expect(warnings).toEqual([])
   })
 })

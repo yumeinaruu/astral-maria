@@ -87,6 +87,10 @@ function isScripts(v: unknown): v is Scripts {
   return isObject(v) && typeof v.preRequest === 'string' && typeof v.postResponse === 'string'
 }
 
+function isKeyValue(v: unknown): v is KeyValue {
+  return isObject(v) && typeof v.key === 'string' && typeof v.value === 'string' && typeof v.enabled === 'boolean'
+}
+
 function checkMeta(v: unknown, file: string, collection: boolean): FolderMeta {
   const kind = collection ? 'collection metadata' : 'folder metadata'
   if (!isObject(v) || typeof v.id !== 'string' || typeof v.name !== 'string') invalid(file, kind)
@@ -391,6 +395,36 @@ export class CollectionStore {
       if (dst !== src) await this.writeOrder(src, srcOrder)
       await this.writeOrder(dst, dstOrder)
       return `${dst.rel}/${newEntry}`
+    })
+  }
+
+  /**
+   * Changes the scripts of a collection or folder, or the variables and auth of a collection; fields not in `patch`
+   * are kept. The metadata is read inside the queue, so a reorder that ran first keeps its `order`.
+   */
+  updateSettings(
+    containerPath: string,
+    patch: { scripts?: Scripts; variables?: KeyValue[]; auth?: Auth }
+  ): Promise<void> {
+    return this.exclusive(async () => {
+      if (!isObject(patch)) throw new Error('invalid_settings')
+      const { scripts, variables, auth } = patch
+      if (scripts !== undefined && !isScripts(scripts)) throw new Error('invalid_settings')
+      if (variables !== undefined && !(Array.isArray(variables) && variables.every(isKeyValue)))
+        throw new Error('invalid_settings')
+      if (auth !== undefined && !(isObject(auth) && typeof auth.type === 'string')) throw new Error('invalid_settings')
+      const t = await this.item(containerPath)
+      if (isRequestFile(path.posix.basename(t.rel))) throw new Error('invalid_target')
+      const c = await this.container(t)
+      const isCollection = t.rel.split('/').length === 2
+      if (!isCollection && (variables !== undefined || auth !== undefined)) throw new Error('not_a_collection')
+      const { preRequest, postResponse } = scripts ?? {}
+      await writeJsonAtomic(c.metaFile, {
+        ...c.meta,
+        ...(scripts !== undefined && { scripts: { preRequest, postResponse } }),
+        ...(variables !== undefined && { variables }),
+        ...(auth !== undefined && { auth })
+      })
     })
   }
 

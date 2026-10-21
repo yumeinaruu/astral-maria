@@ -1058,7 +1058,7 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
       try {
         const result = await window.astral.http.send(
           draft,
-          { collectionPath: collection?.path ?? null, environmentId: s.activeEnvironmentId },
+          { collectionPath: collection?.path ?? null, environmentId: s.activeEnvironmentId, requestPath: path },
           ticket.id,
         )
         if (epoch !== started || ticket.dead) return

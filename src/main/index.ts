@@ -5,6 +5,7 @@ import { API_METHODS, channelName, FLUSH_REQUEST_CHANNEL } from '../shared/api'
 import { createApi } from './api'
 import { FlushCoordinator, interceptOnce, OperationTracker } from './flushGuard'
 import { appMenuTemplate, windowBackground } from './menu'
+import { createScriptHost } from './scripts/spawn'
 import { createSecretCipher } from './secretCipher'
 import { devServerUrlFor, isAllowedRendererUrl, isE2eAllowed, isPermissionAllowed } from './security'
 
@@ -38,6 +39,8 @@ const rendererRoot = join(__dirname, '../renderer')
 const FLUSH_TIMEOUT_MS = 3000
 
 const operations = new OperationTracker()
+/** The script sandbox, shared by every send; its worker starts on the first script. */
+const scriptHost = createScriptHost()
 const flusher = new FlushCoordinator({
   requestFlush() {
     let asked = 0
@@ -126,6 +129,7 @@ function registerApi(): void {
     recentFile: join(app.getPath('userData'), 'recent-workspaces.json'),
     operations,
     onFlushed: () => flusher.acknowledge(),
+    scriptHost,
   })
   for (const [group, methods] of Object.entries(API_METHODS)) {
     const table = api[group as keyof typeof api] as unknown as Record<string, (...args: unknown[]) => unknown>
@@ -167,6 +171,11 @@ app.on(
     },
   ),
 )
+
+// After the quit flush: stop any script still running and the sandbox's worker.
+app.on('will-quit', () => {
+  void scriptHost.dispose()
+})
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
