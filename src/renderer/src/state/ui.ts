@@ -40,6 +40,8 @@ export interface UiState {
   responseShare: Record<PaneLayout, number>
   /** Long lines of the response body wrap. */
   responseWrap: boolean
+  /** The environment whose sidebar row is in inline rename (just created or duplicated); not persisted. */
+  renamingEnvironment: string | null
   setTheme(theme: ThemePreference): void
   toggleSidebar(): void
   setSidebarWidth(width: number): void
@@ -47,6 +49,7 @@ export interface UiState {
   setLayout(layout: PaneLayout): void
   setResponseShare(layout: PaneLayout, share: number): void
   setResponseWrap(wrap: boolean): void
+  setRenamingEnvironment(id: string | null): void
 }
 
 const isSections = (v: unknown): v is Record<SidebarSection, boolean> =>
@@ -55,7 +58,7 @@ const isSections = (v: unknown): v is Record<SidebarSection, boolean> =>
   isBoolean((v as Record<string, unknown>).collections) &&
   isBoolean((v as Record<string, unknown>).environments)
 
-export function loadUi(): Omit<UiState, `set${string}` | 'toggleSidebar'> {
+export function loadUi(): Omit<UiState, `set${string}` | 'toggleSidebar' | 'renamingEnvironment'> {
   const shares = readPref('responseShare', SHARE_DEFAULTS, isShares)
   return {
     theme: loadTheme(),
@@ -70,6 +73,7 @@ export function loadUi(): Omit<UiState, `set${string}` | 'toggleSidebar'> {
 
 export const useUi = create<UiState>()((set, get) => ({
   ...loadUi(),
+  renamingEnvironment: null,
   setTheme(theme) {
     saveTheme(theme)
     set({ theme })
@@ -102,4 +106,5 @@ export const useUi = create<UiState>()((set, get) => ({
     writePref('responseWrap', responseWrap)
     set({ responseWrap })
   },
+  setRenamingEnvironment: (renamingEnvironment) => set({ renamingEnvironment }),
 }))

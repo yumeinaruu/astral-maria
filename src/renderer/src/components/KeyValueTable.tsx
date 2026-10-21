@@ -120,15 +120,12 @@ export function KeyValueTable({ rows, onChange, noun, title }: Props): React.JSX
                   </td>
                   <td>
                     <div className="grid-cell-flex">
-                      <input
+                      <VarInput
                         className="grid-input"
-                        type="text"
                         aria-label={`${Noun} description ${i + 1}`}
                         placeholder={trailing ? 'Description' : undefined}
                         value={row.description ?? ''}
-                        spellCheck={false}
-                        onChange={(e) => {
-                          const description = e.target.value
+                        onChange={(description) => {
                           if (description === '' && !trailing) {
                             const { description: _dropped, ...rest } = row
                             onChange(rows.map((r, j) => (j === i ? rest : r)))

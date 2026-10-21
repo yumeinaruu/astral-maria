@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { RequestItem } from '../../../shared/types'
-import { variableLookup } from '../lib/variables'
+import { variableLookup, variableOptions } from '../lib/variables'
 import { useApp } from '../state/store'
 import { useUi, SHARE_MAX, SHARE_MIN, type PaneLayout } from '../state/ui'
 import { KeyValueTable } from './KeyValueTable'
@@ -10,7 +10,7 @@ import { Breadcrumb } from './request/Breadcrumb'
 import { SectionNav, type Section } from './request/SectionNav'
 import { UrlBar } from './request/UrlBar'
 import { ResponseViewer } from './ResponseViewer'
-import { VariablesContext } from './VarInput'
+import { VariableOptionsContext, VariablesContext } from './VarInput'
 
 /** Below this width the request sub-sections collapse into a dropdown. */
 const COMPACT_WIDTH = 560
@@ -24,9 +24,10 @@ export function RequestEditor({ path }: { path: string }): React.JSX.Element {
   const paneRef = useRef<HTMLDivElement>(null)
   const compact = useNarrow(paneRef, COMPACT_WIDTH, draft !== undefined)
   const sectionId = useId()
-  const lookup = useVariableLookup(path)
+  const { lookup, options } = useVariables(path)
 
-  // Cmd/Ctrl+S saves the open request wherever the focus is.
+  // Cmd/Ctrl+S saves the open request wherever the focus is. Captured on the window, so an input that stops the key's
+  // propagation (inline rename, CodeMirror, the completion menu) cannot swallow it.
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {
       if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 's') {
@@ -34,8 +35,8 @@ export function RequestEditor({ path }: { path: string }): React.JSX.Element {
         void useApp.getState().saveNow(path)
       }
     }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [path])
 
   if (!draft) return <p className="muted editor-loading">Loading request…</p>
@@ -52,68 +53,76 @@ export function RequestEditor({ path }: { path: string }): React.JSX.Element {
 
   return (
     <VariablesContext.Provider value={lookup}>
-      <div className="request-editor" onKeyDown={onKeyDown}>
-        <Breadcrumb path={path} name={draft.name} />
-        <UrlBar path={path} draft={draft} edit={edit} />
-        <div className={`request-split split-${layout}`} ref={splitRef}>
-          <div className="request-pane" ref={paneRef}>
-            <SectionNav
-              idBase={sectionId}
-              section={section}
-              onSelect={setSection}
-              draft={draft}
-              compact={compact}
-              onCookies={() => store().setResponseView(path, { tab: 'cookies' })}
-            />
-            <div
-              {...(compact
-                ? { role: 'region', 'aria-label': section }
-                : { role: 'tabpanel', id: `${sectionId}-panel`, 'aria-labelledby': `${sectionId}-${section}` })}
-              className="section-panel"
-            >
-              {section === 'Params' && (
-                <KeyValueTable
-                  noun="param"
-                  title="Query Params"
-                  rows={draft.params}
-                  onChange={(params) => edit({ params })}
-                />
-              )}
-              {section === 'Headers' && (
-                <KeyValueTable
-                  noun="header"
-                  title="Headers"
-                  rows={draft.headers}
-                  onChange={(headers) => edit({ headers })}
-                />
-              )}
-              {section === 'Body' && <BodyPanel draft={draft} edit={edit} />}
-              {section === 'Authorization' && <AuthPanel draft={draft} edit={edit} path={path} />}
+      <VariableOptionsContext.Provider value={options}>
+        <div className="request-editor" onKeyDown={onKeyDown}>
+          <Breadcrumb path={path} name={draft.name} />
+          <UrlBar path={path} draft={draft} edit={edit} />
+          <div className={`request-split split-${layout}`} ref={splitRef}>
+            <div className="request-pane" ref={paneRef}>
+              <SectionNav
+                idBase={sectionId}
+                section={section}
+                onSelect={setSection}
+                draft={draft}
+                compact={compact}
+                onCookies={() => store().setResponseView(path, { tab: 'cookies' })}
+              />
+              <div
+                {...(compact
+                  ? { role: 'region', 'aria-label': section }
+                  : { role: 'tabpanel', id: `${sectionId}-panel`, 'aria-labelledby': `${sectionId}-${section}` })}
+                className="section-panel"
+              >
+                {section === 'Params' && (
+                  <KeyValueTable
+                    noun="param"
+                    title="Query Params"
+                    rows={draft.params}
+                    onChange={(params) => edit({ params })}
+                  />
+                )}
+                {section === 'Headers' && (
+                  <KeyValueTable
+                    noun="header"
+                    title="Headers"
+                    rows={draft.headers}
+                    onChange={(headers) => edit({ headers })}
+                  />
+                )}
+                {section === 'Body' && <BodyPanel draft={draft} edit={edit} />}
+                {section === 'Authorization' && <AuthPanel draft={draft} edit={edit} path={path} />}
+              </div>
             </div>
-          </div>
 
-          <Splitter
-            layout={layout}
-            value={share}
-            containerRef={splitRef}
-            onChange={(v) => useUi.getState().setResponseShare(layout, v)}
-          />
-          <section className="response-slot" aria-label="Response" style={{ flexBasis: `${share * 100}%` }}>
-            <ResponseViewer path={path} />
-          </section>
+            <Splitter
+              layout={layout}
+              value={share}
+              containerRef={splitRef}
+              onChange={(v) => useUi.getState().setResponseShare(layout, v)}
+            />
+            <section className="response-slot" aria-label="Response" style={{ flexBasis: `${share * 100}%` }}>
+              <ResponseViewer path={path} />
+            </section>
+          </div>
         </div>
-      </div>
+      </VariableOptionsContext.Provider>
     </VariablesContext.Provider>
   )
 }
 
-/** The variables of the request's collection, the active environment and the globals, as sending resolves them. */
-function useVariableLookup(path: string) {
+/**
+ * The variables of the request's collection, the active environment and the globals, as sending resolves them: a
+ * lookup for highlighting and the list offered by the `{{` completion.
+ */
+function useVariables(path: string) {
   const environments = useApp((s) => s.environments)
   const activeEnvironmentId = useApp((s) => s.activeEnvironmentId)
   const collection = useApp((s) => s.collections.find((c) => path.startsWith(`${c.path}/`)))
   return useMemo(
-    () => variableLookup(environments, activeEnvironmentId, collection),
+    () => ({
+      lookup: variableLookup(environments, activeEnvironmentId, collection),
+      options: variableOptions(environments, activeEnvironmentId, collection),
+    }),
     [environments, activeEnvironmentId, collection],
   )
 }

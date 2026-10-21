@@ -1,8 +1,10 @@
+import { useContext } from 'react'
 import type { RequestBody } from '../../../../shared/types'
 import { prettyJson, prettyXml } from '../../lib/body'
 import { CodeEditor } from '../CodeEditor'
 import { Dropdown } from '../Dropdown'
 import { KeyValueTable } from '../KeyValueTable'
+import { VariableOptionsContext } from '../VarInput'
 import { recall, remember, type PanelProps } from './switching'
 
 type RawLanguage = Extract<RequestBody, { mode: 'raw' }>['language']
@@ -30,6 +32,7 @@ const EMPTY_BODIES: { [M in RequestBody['mode']]: Extract<RequestBody, { mode: M
 
 export function BodyPanel({ draft, edit }: PanelProps): React.JSX.Element {
   const { body } = draft
+  const variableOptions = useContext(VariableOptionsContext)
 
   function switchTo(mode: RequestBody['mode']): void {
     if (mode === body.mode) return
@@ -74,6 +77,7 @@ export function BodyPanel({ draft, edit }: PanelProps): React.JSX.Element {
             language={body.language}
             value={body.content}
             variables
+            completions={variableOptions}
             onChange={(content) => edit({ body: { ...body, content } })}
           />
         </div>

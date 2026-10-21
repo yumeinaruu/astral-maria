@@ -38,16 +38,13 @@ function collectionScope(collection: CollectionTree | undefined): Scope | null {
   return { source: 'collection', name: collection.name, values }
 }
 
-/**
- * The lookup the main process applies when sending: the active environment, then the request's collection, then the
- * globals. Only saved environments count, as only those are sent.
- */
-export function variableLookup(
+/** The scopes in the order sending applies them: the active environment, the request's collection, the globals. */
+function scopesOf(
   environments: Environment[],
   activeEnvironmentId: string | null,
   collection: CollectionTree | undefined,
-): VariableLookup {
-  const scopes = [
+): Scope[] {
+  return [
     environmentScope(
       activeEnvironmentId === null ? undefined : environments.find((e) => e.id === activeEnvironmentId),
       'environment',
@@ -58,6 +55,18 @@ export function variableLookup(
       'globals',
     ),
   ].filter((s): s is Scope => s !== null)
+}
+
+/**
+ * The lookup the main process applies when sending: the active environment, then the request's collection, then the
+ * globals. Only saved environments count, as only those are sent.
+ */
+export function variableLookup(
+  environments: Environment[],
+  activeEnvironmentId: string | null,
+  collection: CollectionTree | undefined,
+): VariableLookup {
+  const scopes = scopesOf(environments, activeEnvironmentId, collection)
   return (name) => {
     for (const scope of scopes) {
       const hit = scope.values.get(name)
@@ -65,6 +74,23 @@ export function variableLookup(
     }
     return null
   }
+}
+
+/** Every enabled variable the request can use, once each, with the value and scope that win when sending. */
+export function variableOptions(
+  environments: Environment[],
+  activeEnvironmentId: string | null,
+  collection: CollectionTree | undefined,
+): Resolution[] {
+  const seen = new Map<string, Resolution>()
+  for (const scope of scopesOf(environments, activeEnvironmentId, collection)) {
+    for (const [name, hit] of scope.values) {
+      if (name !== '' && !seen.has(name)) {
+        seen.set(name, { name, value: hit.value, secret: hit.secret, source: scope.source, scopeName: scope.name })
+      }
+    }
+  }
+  return [...seen.values()]
 }
 
 export interface Segment {

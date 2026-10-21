@@ -175,6 +175,23 @@ describe('request editor', () => {
     expect(api.collections.saveRequest).toHaveBeenCalledTimes(1)
   })
 
+  it('saves with Cmd/Ctrl+S from an input that stops the key, and prevents the default', async () => {
+    const { api } = await openedEditor()
+    typeUrl('http://a/stop')
+    const input = document.createElement('input')
+    input.addEventListener('keydown', (e) => e.stopPropagation())
+    document.body.appendChild(input)
+    try {
+      input.focus()
+      const event = new KeyboardEvent('keydown', { key: 's', metaKey: true, bubbles: true, cancelable: true })
+      input.dispatchEvent(event)
+      expect(event.defaultPrevented).toBe(true)
+      expect(api.collections.saveRequest).toHaveBeenCalledTimes(1)
+    } finally {
+      input.remove()
+    }
+  })
+
   it('shows Saving while an edit is waiting and a failure message when the save fails', async () => {
     const { api } = await openedEditor()
     api.collections.saveRequest.mockRejectedValueOnce(new Error('disk full'))

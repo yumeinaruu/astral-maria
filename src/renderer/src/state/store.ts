@@ -111,11 +111,8 @@ export interface AppActions {
   remove(path: string): Promise<void>
   move(path: string, parentPath: string, index: number): Promise<void>
   openRequest(path: string): void
-  /**
-   * Opens (or activates) the editor tab of environment `id`. `fresh` is the draft of an environment that is not saved
-   * yet (new or duplicated); without it the stored environment (or the empty globals set) is the starting point.
-   */
-  openEnvironment(id: string, fresh?: Draft): void
+  /** Opens (or activates) the editor tab of the stored environment `id` (or of the empty globals set). */
+  openEnvironment(id: string): void
   /** Replaces the draft of an open environment tab; nothing is saved until Save, closing the tab, or `flushAll`. */
   editEnvironmentDraft(id: string, update: (entry: EnvironmentDraft) => EnvironmentDraft): void
   /**
@@ -637,7 +634,7 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
       return {
         environmentDrafts: {
           ...s.environmentDrafts,
-          [id]: { draft: { ...current.draft, name: env.name, isNew: false }, baseline: fingerprint(env) },
+          [id]: { draft: { ...current.draft, name: env.name }, baseline: fingerprint(env) },
         },
       }
     })
@@ -865,12 +862,11 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
         saves: revivedStatus ? { ...s.saves, [path]: revivedStatus } : s.saves,
       }))
     },
-    openEnvironment(id, fresh) {
+    openEnvironment(id) {
       const tab = environmentTabId(id)
       const previous = get().activePath
       if (previous !== tab) flush(previous)
       let entry = get().environmentDrafts[id]
-      if (!entry && fresh) entry = { draft: fresh, baseline: fingerprint(toEnvironment(fresh)) }
       if (!entry) {
         const env = storedEnvironment(id)
         if (!env) return

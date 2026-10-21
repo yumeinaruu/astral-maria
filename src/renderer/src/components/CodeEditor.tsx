@@ -1,10 +1,17 @@
+import {
+  acceptCompletion,
+  autocompletion,
+  type Completion,
+  type CompletionContext,
+  type CompletionResult,
+} from '@codemirror/autocomplete'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import { html } from '@codemirror/lang-html'
 import { json } from '@codemirror/lang-json'
 import { xml } from '@codemirror/lang-xml'
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
 import { highlightSelectionMatches, openSearchPanel, search, searchKeymap } from '@codemirror/search'
-import { Annotation, Compartment, EditorState, type Extension } from '@codemirror/state'
+import { Annotation, Compartment, EditorState, Prec, type Extension } from '@codemirror/state'
 import {
   Decoration,
   EditorView,
@@ -19,6 +26,8 @@ import {
 } from '@codemirror/view'
 import { tags } from '@lezer/highlight'
 import { useEffect, useImperativeHandle, useRef } from 'react'
+import { filterOptions, insertCompletion, optionValue } from '../lib/completion'
+import { SOURCE_LABELS, type Resolution } from '../lib/variables'
 
 export type CodeLanguage = 'json' | 'text' | 'xml' | 'html' | 'javascript'
 
@@ -33,6 +42,8 @@ interface Props {
   wrap?: boolean
   /** Colours `{{variables}}` (request bodies). */
   variables?: boolean
+  /** With `variables`: the variables offered when `{{` is typed. */
+  completions?: Resolution[] | null
   /** Imperative access for toolbar buttons. */
   ref?: React.Ref<CodeEditorHandle>
 }
@@ -101,6 +112,7 @@ const theme = EditorView.theme({
     borderRadius: 'var(--radius-s)',
     padding: '2px 6px',
   },
+  '.cm-textfield:focus': { borderColor: 'var(--border-focus)', outline: 'none' },
   '.cm-button': {
     color: 'var(--code-text)',
     backgroundImage: 'none',
@@ -143,6 +155,70 @@ const highlight = syntaxHighlighting(
   ]),
 )
 
+/** A completion option that keeps the variable it offers, for rendering. */
+interface VariableCompletion extends Completion {
+  variable: Resolution
+}
+
+/** Offers the variables of `current()` after `{{`, filtered and ordered as in the text inputs. */
+function variableSource(current: () => Resolution[] | null | undefined) {
+  return (context: CompletionContext): CompletionResult | null => {
+    const match = context.matchBefore(/\{\{[\w.-]*$/)
+    const options = current()
+    if (!match || !options) return null
+    const from = match.from + 2
+    const matches = filterOptions(options, match.text.slice(2))
+    if (matches.length === 0) return null
+    return {
+      from,
+      filter: false,
+      options: matches.map((variable): VariableCompletion => ({
+        label: variable.name,
+        variable,
+        apply: (view, _completion, start, end) => {
+          const doc = view.state.doc.toString()
+          const done = insertCompletion(doc, start, end, variable.name)
+          view.dispatch({
+            changes: { from: start, to: end, insert: done.insert },
+            selection: { anchor: done.caret },
+            userEvent: 'input.complete',
+          })
+        },
+      })),
+    }
+  }
+}
+
+function optionPart(className: string, text: string): HTMLElement {
+  const span = document.createElement('span')
+  span.className = className
+  span.textContent = text
+  return span
+}
+
+/** The `{{` completion with the same option parts as the text inputs' menu; Tab accepts like Enter. */
+function variableCompletion(current: () => Resolution[] | null | undefined): Extension {
+  return [
+    autocompletion({
+      override: [variableSource(current)],
+      icons: false,
+      optionClass: () => 'var-option',
+      tooltipClass: () => 'var-menu-cm',
+      addToOptions: [
+        {
+          position: 60,
+          render: (c) => optionPart('var-option-value', optionValue((c as VariableCompletion).variable)),
+        },
+        {
+          position: 70,
+          render: (c) => optionPart('var-option-source', SOURCE_LABELS[(c as VariableCompletion).variable.source]),
+        },
+      ],
+    }),
+    Prec.highest(keymap.of([{ key: 'Tab', run: acceptCompletion }])),
+  ]
+}
+
 /** Cmd/Ctrl+Enter is the "send" shortcut of the request editor, so the editor must not claim it. */
 const keys = [...defaultKeymap.filter((binding) => binding.key !== 'Mod-Enter'), ...searchKeymap]
 
@@ -154,11 +230,14 @@ export function CodeEditor({
   label,
   wrap = true,
   variables = false,
+  completions,
   ref,
 }: Props): React.JSX.Element {
   const host = useRef<HTMLDivElement>(null)
   const view = useRef<EditorView | null>(null)
   const onChangeRef = useRef(onChange)
+  const completionsRef = useRef(completions)
+  completionsRef.current = completions
   const initial = useRef({ value, language, readOnly, label, wrap, variables })
   const languageSlot = useRef(new Compartment())
   const readOnlySlot = useRef(new Compartment())
@@ -190,7 +269,7 @@ export function CodeEditor({
           highlightSelectionMatches(),
           theme,
           highlight,
-          start.variables ? variableMarks : [],
+          start.variables ? [variableMarks, variableCompletion(() => completionsRef.current)] : [],
           languageSlot.current.of(languageExtension(start.language)),
           readOnlySlot.current.of(EditorState.readOnly.of(start.readOnly)),
           labelSlot.current.of(EditorView.contentAttributes.of(start.label ? { 'aria-label': start.label } : {})),

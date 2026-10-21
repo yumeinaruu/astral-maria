@@ -209,17 +209,71 @@ describe('environments in the sidebar', () => {
     expect(useApp.getState().openTabs).toEqual([])
   })
 
-  it('creates a new environment from the section header', async () => {
+  it('creates a new environment on disk at once, opens it and renames its row inline', async () => {
+    const { user, environments, disk } = await mount()
+    await user.click(screen.getByRole('button', { name: 'New environment' }))
+    await waitFor(() => expect(environments.save).toHaveBeenCalledTimes(1))
+    const created = environments.save.mock.calls[0][0] as Environment
+    expect(created).toMatchObject({ name: 'New environment', variables: [] })
+    expect(disk.envs.map((e) => e.name)).toContain('New environment')
+    expect(useApp.getState().activePath).toBe(`env:${created.id}`)
+    expect(await screen.findByLabelText('Environment name')).toHaveValue('New environment')
+    expect(screen.queryByText('Not saved yet')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Delete environment' })).toBeInTheDocument()
+    // The row is in inline rename with the whole name selected.
+    const rename = within(screen.getByRole('list', { name: 'Environments' })).getByRole('textbox', {
+      name: 'Name',
+    }) as HTMLInputElement
+    expect(rename).toHaveFocus()
+    expect([rename.selectionStart, rename.selectionEnd]).toEqual([0, 'New environment'.length])
+    await user.keyboard('Staging{Enter}')
+    await waitFor(() => expect(environments.save).toHaveBeenCalledTimes(2))
+    expect(environments.save.mock.calls[1][0]).toMatchObject({ id: created.id, name: 'Staging' })
+    expect(within(screen.getByRole('list', { name: 'Environments' })).getByRole('button', { name: 'Staging' }))
+    expect(screen.getByLabelText('Environment name')).toHaveValue('Staging')
+    // Nothing is left unsaved.
+    expect(useApp.getState().unsavedPaths()).toEqual([])
+  })
+
+  it('numbers the names of new environments', async () => {
+    const { user, environments } = await mount([DEV, { id: 'n', name: 'New environment', variables: [] }])
+    await user.click(screen.getAllByRole('button', { name: 'New environment' })[0])
+    await waitFor(() => expect(environments.save).toHaveBeenCalledTimes(1))
+    expect(environments.save.mock.calls[0][0]).toMatchObject({ name: 'New environment 2' })
+  })
+
+  it('keeps the default name when the inline rename is cancelled with Escape', async () => {
     const { user, environments } = await mount()
     await user.click(screen.getByRole('button', { name: 'New environment' }))
-    expect(screen.getByLabelText('Environment name')).toHaveValue('New environment')
-    expect(screen.getByText('Not saved yet')).toBeInTheDocument()
-    await user.type(rowInput('Variable name'), 'k')
-    await user.click(screen.getByRole('button', { name: 'Save' }))
-    await waitFor(() => expect(environments.save).toHaveBeenCalledTimes(1))
-    expect(environments.save.mock.calls[0][0]).toMatchObject({ name: 'New environment', variables: [{ key: 'k' }] })
-    await waitFor(() => expect(screen.queryByText('Not saved yet')).toBeNull())
-    expect(within(screen.getByRole('list', { name: 'Environments' })).getByRole('button', { name: 'New environment' }))
+    const list = screen.getByRole('list', { name: 'Environments' })
+    const rename = await within(list).findByRole('textbox', { name: 'Name' })
+    await user.type(rename, 'Changed{Escape}')
+    expect(within(list).queryByRole('textbox')).toBeNull()
+    expect(within(list).getByRole('button', { name: 'New environment' })).toBeInTheDocument()
+    expect(environments.save).toHaveBeenCalledTimes(1)
+  })
+
+  it('commits the inline rename of a new environment on blur', async () => {
+    const { user, environments } = await mount()
+    await user.click(screen.getByRole('button', { name: 'New environment' }))
+    const list = screen.getByRole('list', { name: 'Environments' })
+    const rename = await within(list).findByRole('textbox', { name: 'Name' })
+    await user.clear(rename)
+    await user.type(rename, 'QA')
+    await user.click(screen.getByLabelText('Variable name 1'))
+    await waitFor(() => expect(environments.save).toHaveBeenCalledTimes(2))
+    expect(environments.save.mock.calls[1][0]).toMatchObject({ name: 'QA' })
+    expect(within(list).getByRole('button', { name: 'QA' })).toBeInTheDocument()
+  })
+
+  it('reports a new environment that cannot be written, and opens nothing', async () => {
+    const { user, environments } = await mount()
+    environments.save.mockRejectedValueOnce(new Error('disk full'))
+    await user.click(screen.getByRole('button', { name: 'New environment' }))
+    await waitFor(() =>
+      expect(useApp.getState().error).toMatch(/Could not create the environment "New environment": disk full/),
+    )
+    expect(useApp.getState().openTabs).toEqual([])
   })
 
   it('opens the active environment from the status bar, and Globals when none is active', async () => {
@@ -444,7 +498,6 @@ describe('environment editor', () => {
       const { user, environments } = await mount([LOCKED])
       await openEditor(user, 'E')
       await user.click(screen.getByRole('button', { name: 'Duplicate' }))
-      await user.click(screen.getByRole('button', { name: 'Save' }))
       await waitFor(() => expect(environments.save).toHaveBeenCalled())
       expect((environments.save.mock.calls[0][0] as Environment).variables[0]).not.toHaveProperty('locked')
     })
@@ -512,16 +565,21 @@ describe('environment editor', () => {
     const dup = screen.getByRole('button', { name: 'Duplicate' })
     expect(dup).toHaveAttribute('title', expect.stringMatching(/secret values are not copied/i))
     await user.click(dup)
-    expect(useApp.getState().openTabs).toHaveLength(2)
-    expect(screen.getByLabelText('Environment name')).toHaveValue('E copy')
-    expect(rowInput('Value', 1)).toHaveValue('c')
-    expect(rowInput('Value', 2)).toHaveValue('')
-    await user.click(screen.getByRole('button', { name: 'Save' }))
+    // Written at once, without Save.
     await waitFor(() => expect(environments.save).toHaveBeenCalled())
     const saved = environments.save.mock.calls[0][0] as Environment
     expect(saved.id).not.toBe('e')
     expect(saved.name).toBe('E copy')
     expect(saved.variables[1]).toEqual({ key: 'api', value: '', secret: true, enabled: false })
+    expect(useApp.getState().openTabs).toHaveLength(2)
+    expect(useApp.getState().activePath).toBe(`env:${saved.id}`)
+    expect(await screen.findByLabelText('Environment name')).toHaveValue('E copy')
+    expect(rowInput('Value', 1)).toHaveValue('c')
+    expect(rowInput('Value', 2)).toHaveValue('')
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    const rename = within(screen.getByRole('list', { name: 'Environments' })).getByRole('textbox', { name: 'Name' })
+    expect(rename).toHaveValue('E copy')
+    expect(rename).toHaveFocus()
   })
 
   it('stays with the message and the draft when saving rejects', async () => {
@@ -633,6 +691,58 @@ describe('environment editor', () => {
     await user.type(rowInput('Value'), 'X')
     await user.keyboard(`{${MOD}>}s{/${MOD}}`)
     await waitFor(() => expect(environments.save).toHaveBeenCalledTimes(1))
+  })
+
+  it('saves with Cmd/Ctrl+S wherever the focus is, and the browser does nothing else', async () => {
+    const { user, environments } = await mount()
+    await openEditor(user, 'Dev')
+    await user.type(rowInput('Value'), 'X')
+    // Focus in the header search, outside the editor.
+    await user.click(screen.getByRole('combobox', { name: 'Search requests' }))
+    const event = new KeyboardEvent('keydown', {
+      key: 's',
+      [IS_MAC ? 'metaKey' : 'ctrlKey']: true,
+      bubbles: true,
+      cancelable: true,
+    })
+    screen.getByRole('combobox', { name: 'Search requests' }).dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(true)
+    await waitFor(() => expect(environments.save).toHaveBeenCalledTimes(1))
+    expect(environments.save.mock.calls[0][0]).toMatchObject({ id: 'dev' })
+  })
+
+  it('saves with Cmd/Ctrl+S even from an input that stops the key (inline rename)', async () => {
+    const { user, environments } = await mount()
+    await openEditor(user, 'Dev')
+    await user.type(rowInput('Value'), 'Y')
+    await user.click(screen.getByRole('button', { name: 'Actions for Prod' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Rename' }))
+    const rename = within(screen.getByRole('list', { name: 'Environments' })).getByRole('textbox', { name: 'Name' })
+    expect(rename).toHaveFocus()
+    await user.keyboard(`{${MOD}>}s{/${MOD}}`)
+    await waitFor(() => expect(environments.save).toHaveBeenCalledTimes(1))
+    expect(environments.save.mock.calls[0][0]).toMatchObject({ id: 'dev' })
+  })
+
+  it("offers the request's variables in the URL, header and auth fields when {{ is typed", async () => {
+    const globals: Environment = {
+      id: 'globals',
+      name: 'Globals',
+      variables: [
+        { key: 'host', value: 'global.example', secret: false, enabled: true },
+        { key: 'apiKey', value: '', currentValue: SECRET_TEXT, secret: true, enabled: true },
+      ],
+    }
+    const { user } = await mount([DEV, PROD, globals])
+    await chooseEnvironment(user, 'Dev')
+    useApp.getState().openRequest(REQUEST_PATH)
+    const url = await screen.findByRole('textbox', { name: 'URL' })
+    await user.type(url, '{{{{')
+    const options = within(screen.getByRole('listbox', { name: 'Variables' })).getAllByRole('option')
+    // The environment's host wins over the globals' one, as when sending; secrets are masked.
+    expect(options.map((o) => o.textContent)).toEqual(['hostlocalhostEnvironment', 'apiKey••••Globals'])
+    await user.keyboard('{Enter}')
+    expect(url).toHaveValue('{{host}}')
   })
 
   it('disables the form while saving', async () => {

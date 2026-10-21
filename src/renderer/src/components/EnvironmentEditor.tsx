@@ -25,19 +25,18 @@ import {
   isDraftDirty,
   isLocal,
   nameProblem,
-  newId,
   otherNames,
   rowProblems,
   shownValue,
   switchSync,
   toDraft,
   toEnvironment,
-  uniqueName,
   writeValue,
   type Draft,
   type Row,
 } from '../lib/environments'
 import { hasMod, shortcut } from '../lib/platform'
+import { createEnvironment } from '../lib/tabs'
 import { environmentTabId, useApp } from '../state/store'
 import { LoadErrorsBanner } from './Banners'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -96,6 +95,21 @@ export function EnvironmentEditor({ envId }: Props): React.JSX.Element | null {
     }
   }, [])
 
+  /** The latest Save action, for the shortcut. */
+  const saveRef = useRef<() => void>(() => undefined)
+  // Cmd/Ctrl+S saves the draft wherever the focus is. Captured on the window, so an input that stops the key's
+  // propagation (inline rename, CodeMirror) cannot swallow it.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent): void {
+      if (hasMod(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 's') {
+        e.preventDefault()
+        saveRef.current()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [])
+
   const draft = entry?.draft
   const baseline = entry?.baseline ?? ''
   const dirty = entry ? isDraftDirty(entry) : false
@@ -105,8 +119,8 @@ export function EnvironmentEditor({ envId }: Props): React.JSX.Element | null {
   const rowErrors = draft ? rowProblems(draft.rows) : new Map<number, string>()
   const nameError = !draft || isGlobals ? null : nameProblem(draft.name, otherNames(draft, environments))
   const invalid = rowErrors.size > 0 || nameError !== null
-  const changedOnDisk = dirty && !draft?.isNew && storedPrint !== null && storedPrint !== baseline
-  const missingOnDisk = !!draft && !draft.isNew && !isGlobals && stored === undefined && !busy
+  const changedOnDisk = dirty && storedPrint !== null && storedPrint !== baseline
+  const missingOnDisk = !!draft && !isGlobals && stored === undefined && !busy
 
   function setDraft(update: (d: Draft) => Draft): void {
     useApp.getState().editEnvironmentDraft(envId, (e) => ({ ...e, draft: update(e.draft) }))
@@ -122,7 +136,7 @@ export function EnvironmentEditor({ envId }: Props): React.JSX.Element | null {
   // A clean form follows the disk; a dirty one is kept (and flagged) so nothing is overwritten silently. A clean
   // editor of an environment deleted on disk closes.
   useEffect(() => {
-    if (busy || !draft || draft.isNew || dirty) return
+    if (busy || !draft || dirty) return
     if (stored && storedPrint !== baseline) show(stored)
     else if (missingOnDisk) useApp.getState().closeTab(environmentTabId(envId), { discard: true })
   })
@@ -141,7 +155,7 @@ export function EnvironmentEditor({ envId }: Props): React.JSX.Element | null {
       // Applied even if the tab was switched meanwhile: the draft is in the store, not in this component.
       if (!applied || mine !== selection.current) return applied
       useApp.getState().editEnvironmentDraft(envId, (e) => ({
-        draft: afterSave({ ...e.draft, name: env.name, isNew: false }),
+        draft: afterSave({ ...e.draft, name: env.name }),
         baseline: fingerprint(env),
       }))
       return true
@@ -153,14 +167,11 @@ export function EnvironmentEditor({ envId }: Props): React.JSX.Element | null {
     }
   }
 
+  /** Writes a copy of the stored environment at once and opens it, its sidebar row in rename. */
   function duplicate(): void {
-    const source = draft?.isNew ? toEnvironment(draft) : lookup(envId)
+    const source = lookup(envId)
     if (!source) return
-    const names = [...useApp.getState().environments.map((e) => e.name), GLOBALS_NAME]
-    const id = newId()
-    useApp
-      .getState()
-      .openEnvironment(id, toDraft(duplicateOf(source, uniqueName(`${source.name} copy`, names), id), true))
+    void createEnvironment(`${source.name} copy`, duplicateOf(source, source.name, source.id).variables)
   }
 
   async function remove(): Promise<void> {
@@ -237,12 +248,7 @@ export function EnvironmentEditor({ envId }: Props): React.JSX.Element | null {
     })
   }
 
-  function onKeyDown(e: React.KeyboardEvent): void {
-    if (hasMod(e) && e.key.toLowerCase() === 's') {
-      e.preventDefault()
-      void save()
-    }
-  }
+  saveRef.current = () => void save()
 
   const revealable = draft.rows.filter((r) => r.secret && !isLocked(r))
   const allShown = revealable.length > 0 && revealable.every((r) => revealed.has(r.uid))
@@ -262,7 +268,7 @@ export function EnvironmentEditor({ envId }: Props): React.JSX.Element | null {
   ]
 
   return (
-    <div className="env-editor" onKeyDown={onKeyDown}>
+    <div className="env-editor">
       <div className="env-editor-head">
         <Layers size={16} aria-hidden="true" />
         {isGlobals ? (
@@ -287,7 +293,6 @@ export function EnvironmentEditor({ envId }: Props): React.JSX.Element | null {
           </div>
         )}
         <div className="env-editor-actions">
-          {draft.isNew && <span className="env-state">Not saved yet</span>}
           {changedOnDisk && <span className="env-state">Changed on disk</span>}
           <button
             type="button"
@@ -299,7 +304,7 @@ export function EnvironmentEditor({ envId }: Props): React.JSX.Element | null {
             <Copy size={14} aria-hidden="true" />
             Duplicate
           </button>
-          {!isGlobals && !draft.isNew && (
+          {!isGlobals && (
             <button
               type="button"
               className="btn-text"
@@ -442,9 +447,7 @@ export function EnvironmentEditor({ envId }: Props): React.JSX.Element | null {
               ]}
             </tbody>
           </table>
-          {needle !== '' && visible.length === 0 && (
-            <p className="env-empty">No variables match “{query?.trim()}”</p>
-          )}
+          {needle !== '' && visible.length === 0 && <p className="env-empty">No variables match “{query?.trim()}”</p>}
         </fieldset>
       </div>
       {confirmDelete && (

@@ -1,6 +1,6 @@
 import { ChevronDown, ChevronRight, ListFilter, MoreHorizontal, Plus } from 'lucide-react'
 import { useId, useRef, useState } from 'react'
-import { GLOBALS_NAME, newId, toDraft, uniqueName } from '../lib/environments'
+import { createEnvironment } from '../lib/tabs'
 import { useApp } from '../state/store'
 import { SIDEBAR_MAX, SIDEBAR_MIN, useUi, type SidebarSection } from '../state/ui'
 import { LoadErrorsBanner } from './Banners'
@@ -9,15 +9,6 @@ import { EnvironmentList } from './EnvironmentList'
 import { MenuButton } from './MenuButton'
 import { TreeView, type Edit } from './TreeView'
 import { buildIndex, isContainer, type ItemKind } from './treeIndex'
-
-/** Opens the editor of a new, not yet saved environment. */
-export function createEnvironment(): void {
-  const names = [...useApp.getState().environments.map((e) => e.name), GLOBALS_NAME]
-  const id = newId()
-  useApp
-    .getState()
-    .openEnvironment(id, toDraft({ id, name: uniqueName('New environment', names), variables: [] }, true))
-}
 
 export function Sidebar(): React.JSX.Element {
   const collections = useApp((s) => s.collections)
@@ -121,7 +112,7 @@ export function Sidebar(): React.JSX.Element {
               className="icon-btn icon-btn-sm"
               aria-label="New environment"
               title="New environment"
-              onClick={createEnvironment}
+              onClick={() => void createEnvironment()}
             >
               <Plus size={15} aria-hidden="true" />
             </button>

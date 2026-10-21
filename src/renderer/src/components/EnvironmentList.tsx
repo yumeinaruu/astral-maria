@@ -11,6 +11,7 @@ import {
   toEnvironment,
 } from '../lib/environments'
 import { environmentTabId, useApp } from '../state/store'
+import { useUi } from '../state/ui'
 import { ConfirmDialog } from './ConfirmDialog'
 import { ContextMenu } from './ContextMenu'
 import { NameInput } from './NameInput'
@@ -24,7 +25,14 @@ export function EnvironmentList(): React.JSX.Element {
   const environments = useApp((s) => s.environments)
   const activeId = useApp((s) => s.activeEnvironmentId)
   const activeTab = useApp((s) => s.activePath)
-  const [renaming, setRenaming] = useState<string | null>(null)
+  const [renamingFromMenu, setRenamingFromMenu] = useState<string | null>(null)
+  /** A just-created environment's row starts in rename; there blur commits too. */
+  const renamingNew = useUi((s) => s.renamingEnvironment)
+  const renaming = renamingNew ?? renamingFromMenu
+  const setRenaming = (id: string | null): void => {
+    setRenamingFromMenu(id)
+    useUi.getState().setRenamingEnvironment(null)
+  }
   const [deleting, setDeleting] = useState<Environment | null>(null)
   const [menu, setMenu] = useState<{ env: Environment; x: number; y: number; button: HTMLElement } | null>(null)
 
@@ -77,6 +85,7 @@ export function EnvironmentList(): React.JSX.Element {
         {renaming === env.id ? (
           <NameInput
             initial={env.name}
+            commitOnBlur={renamingNew === env.id}
             onCommit={(name) => void rename(env, name)}
             onCancel={() => setRenaming(null)}
           />

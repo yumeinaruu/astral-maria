@@ -1,7 +1,8 @@
-import type { CollectionTree, TreeNode } from '../../../shared/types'
+import type { CollectionTree, EnvVar, TreeNode } from '../../../shared/types'
 import { buildIndex } from '../components/treeIndex'
 import { environmentIdOf, useApp } from '../state/store'
-import { GLOBALS_ID, uniqueName } from './environments'
+import { useUi } from '../state/ui'
+import { GLOBALS_ID, GLOBALS_NAME, newId, uniqueName } from './environments'
 
 /** Activates an open tab of either kind. */
 export function activateTab(path: string): void {
@@ -55,4 +56,25 @@ export async function createRequestHere(): Promise<void> {
 export function openActiveEnvironment(): void {
   const { activeEnvironmentId, openEnvironment } = useApp.getState()
   openEnvironment(activeEnvironmentId ?? GLOBALS_ID)
+}
+
+/**
+ * Creates an environment on disk right away, named `base` (numbered if taken), opens its tab and puts its sidebar row
+ * into inline rename. Used by "New environment" and "Duplicate".
+ */
+export async function createEnvironment(base = 'New environment', variables: EnvVar[] = []): Promise<void> {
+  const { environments, saveEnvironment } = useApp.getState()
+  const name = uniqueName(base, [...environments.map((e) => e.name), GLOBALS_NAME])
+  const id = newId()
+  try {
+    if (!(await saveEnvironment({ id, name, variables }))) return
+  } catch (e) {
+    useApp.setState({
+      error: `Could not create the environment "${name}": ${e instanceof Error ? e.message : String(e)}`,
+    })
+    return
+  }
+  useUi.getState().setSectionOpen('environments', true)
+  useApp.getState().openEnvironment(id)
+  useUi.getState().setRenamingEnvironment(id)
 }

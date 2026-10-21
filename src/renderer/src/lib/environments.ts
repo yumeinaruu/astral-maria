@@ -22,18 +22,15 @@ export interface Draft {
   id: string
   name: string
   rows: Row[]
-  /** Not saved anywhere yet (new or duplicated). */
-  isNew: boolean
 }
 
 let nextUid = 1
 
-export function toDraft(env: Environment, isNew = false): Draft {
+export function toDraft(env: Environment): Draft {
   return {
     id: env.id,
     name: env.name,
     rows: env.variables.map((v) => toRow(v)),
-    isNew,
   }
 }
 
@@ -122,7 +119,6 @@ export function fingerprint(env: Environment): string {
     id: env.id,
     name: env.name,
     rows: env.variables.map((v) => ({ ...v, uid: 0, local: false })),
-    isNew: false,
   })
   // Where a renamed locked value comes from is bookkeeping, not content: the store never returns it.
   return JSON.stringify({
@@ -190,9 +186,9 @@ export function nameProblem(name: string, others: string[]): string | null {
   return null
 }
 
-/** True when the draft differs from what it started from (or was last saved as), or was never saved. */
+/** True when the draft differs from what it started from (or was last saved as). */
 export function isDraftDirty(entry: { draft: Draft; baseline: string }): boolean {
-  return entry.draft.isNew || fingerprint(toEnvironment(entry.draft)) !== entry.baseline
+  return fingerprint(toEnvironment(entry.draft)) !== entry.baseline
 }
 
 /** The names `draft` must not take: every other environment's, and Globals' until globals.json exists. */

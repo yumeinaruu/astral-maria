@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import '@testing-library/jest-dom/vitest'
+import { acceptCompletion, closeCompletion, currentCompletions } from '@codemirror/autocomplete'
 import { EditorView } from '@codemirror/view'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { CodeEditor, type CodeEditorHandle } from '../../src/renderer/src/components/CodeEditor'
+import type { Resolution } from '../../src/renderer/src/lib/variables'
 
 // jsdom has no layout and Range lacks the geometry methods CodeMirror measures with; stub them and restore afterwards.
 const rangeStubs = {
@@ -97,5 +99,85 @@ describe('CodeEditor', () => {
     const before = viewOf()
     rerender(<CodeEditor value="<a/>" language="xml" onChange={() => {}} />)
     expect(viewOf()).toBe(before)
+  })
+
+  describe('{{ completion', () => {
+    const OPTIONS: Resolution[] = [
+      { name: 'baseUrl', value: 'http://h', secret: false, source: 'environment', scopeName: 'Dev' },
+      { name: 'token', value: 'hunter2', secret: true, source: 'globals', scopeName: 'Globals' },
+      { name: 'userBase', value: 'u', secret: false, source: 'collection', scopeName: 'Shop' },
+    ]
+
+    function typeAt(text: string, at: number) {
+      act(() =>
+        viewOf().dispatch({
+          changes: { from: at, insert: text },
+          selection: { anchor: at + text.length },
+          userEvent: 'input.type',
+        }),
+      )
+    }
+
+    async function opened(): Promise<string[]> {
+      await waitFor(() => expect(currentCompletions(viewOf().state).length).toBeGreaterThan(0))
+      // CodeMirror ignores an accept within its interaction delay (75 ms) after opening.
+      await new Promise((r) => setTimeout(r, 100))
+      return currentCompletions(viewOf().state).map((c) => c.label)
+    }
+
+    it('offers the variables after {{, prefix matches first, and inserts name}}', async () => {
+      const onChange = vi.fn()
+      render(<CodeEditor value='{"a": ""}' language="json" onChange={onChange} variables completions={OPTIONS} />)
+      typeAt('{{bas', 7)
+      expect(await opened()).toEqual(['baseUrl', 'userBase'])
+      act(() => {
+        acceptCompletion(viewOf())
+      })
+      expect(viewOf().state.doc.toString()).toBe('{"a": "{{baseUrl}}"}')
+      expect(viewOf().state.selection.main.head).toBe(18)
+      expect(onChange).toHaveBeenLastCalledWith('{"a": "{{baseUrl}}"}')
+    })
+
+    it('does not add a second }} when one follows the caret', async () => {
+      render(<CodeEditor value="{{}}" language="text" onChange={() => {}} variables completions={OPTIONS} />)
+      typeAt('to', 2)
+      expect(await opened()).toEqual(['token'])
+      act(() => {
+        acceptCompletion(viewOf())
+      })
+      expect(viewOf().state.doc.toString()).toBe('{{token}}')
+      expect(viewOf().state.selection.main.head).toBe(9)
+    })
+
+    it('renders the value (secrets masked) and the source like the text inputs', async () => {
+      render(<CodeEditor value="" language="text" onChange={() => {}} variables completions={OPTIONS} />)
+      typeAt('{{', 0)
+      expect(await opened()).toEqual(['baseUrl', 'token', 'userBase'])
+      await waitFor(() => expect(document.querySelectorAll('.var-option')).toHaveLength(3))
+      const token = document.querySelectorAll('.var-option')[1]
+      expect(token.querySelector('.var-option-value')).toHaveTextContent('••••')
+      expect(token).not.toHaveTextContent('hunter2')
+      expect(token.querySelector('.var-option-source')).toHaveTextContent('Globals')
+      expect(screen.getByRole('listbox')).toBeInTheDocument()
+      act(() => {
+        closeCompletion(viewOf())
+      })
+      expect(currentCompletions(viewOf().state)).toEqual([])
+    })
+
+    it('offers nothing without a match, outside {{, or without variables', async () => {
+      const { unmount } = render(
+        <CodeEditor value="" language="text" onChange={() => {}} variables completions={OPTIONS} />,
+      )
+      typeAt('{{zzz', 0)
+      typeAt(' plain', 5)
+      await new Promise((r) => setTimeout(r, 150))
+      expect(currentCompletions(viewOf().state)).toEqual([])
+      unmount()
+      render(<CodeEditor value="" language="text" onChange={() => {}} completions={OPTIONS} />)
+      typeAt('{{', 0)
+      await new Promise((r) => setTimeout(r, 150))
+      expect(currentCompletions(viewOf().state)).toEqual([])
+    })
   })
 })
