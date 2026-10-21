@@ -73,6 +73,13 @@ export function installApi(overrides: Partial<{ [G in keyof AstralApi]: Partial<
       remove: vi.fn().mockResolvedValue(undefined),
       ...overrides.environments,
     },
+    transfer: {
+      importFiles: vi.fn().mockResolvedValue(null),
+      importText: vi.fn().mockResolvedValue({ imported: [], failed: [] }),
+      exportCollection: vi.fn().mockResolvedValue('/tmp/out.postman_collection.json'),
+      exportEnvironment: vi.fn().mockResolvedValue('/tmp/out.postman_environment.json'),
+      ...overrides.transfer,
+    },
     http: {
       send: vi.fn(),
       cancel: vi.fn().mockResolvedValue(undefined),

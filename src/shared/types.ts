@@ -20,6 +20,12 @@ export type Auth =
   | { type: 'basic'; username: string; password: string }
   | { type: 'apikey'; key: string; value: string; in: 'header' | 'query' }
 
+/** Script source as written by the user; run by the scripting plan, only stored for now. */
+export interface Scripts {
+  preRequest: string
+  postResponse: string
+}
+
 /** `url` is the base URL without query string; `params` is the source of truth for the query. */
 export interface RequestItem {
   id: string
@@ -30,6 +36,7 @@ export interface RequestItem {
   headers: KeyValue[]
   body: RequestBody
   auth: Auth
+  scripts?: Scripts
 }
 
 /** All `path` values are workspace-relative with `/` separators. */
@@ -39,6 +46,7 @@ export interface FolderNode {
   name: string
   path: string
   children: TreeNode[]
+  scripts?: Scripts
 }
 
 export interface RequestNode {
@@ -60,6 +68,7 @@ export interface CollectionTree {
   variables: KeyValue[]
   auth: Auth
   children: TreeNode[]
+  scripts?: Scripts
 }
 
 export interface LoadError {
@@ -78,6 +87,16 @@ export interface EnvVar {
    * with `locked: true` and no `currentValue` keeps the stored (encrypted) value; a new `currentValue` replaces it.
    */
   locked?: boolean
+  /**
+   * On a locked secret whose key was renamed in the editor: the key its encrypted value is stored under, so saving
+   * moves the value to the new key instead of dropping it. Never written to disk.
+   */
+  lockedKey?: string
+  /**
+   * A non-secret variable the editor shows and writes as its current value, even where that equals the initial one.
+   * Per machine: kept in `.local/`, never in the committed file. Ignored on secrets, which are always local.
+   */
+  local?: boolean
 }
 
 export interface Environment {
@@ -114,3 +133,18 @@ export interface HttpResponse {
 export type SendResult =
   | { ok: true; response: HttpResponse }
   | { ok: false; error: { code: string; message: string } }
+
+export type ImportKind = 'collection' | 'environment' | 'globals'
+
+/** One file (or pasted text) imported; `source` is its file name or "Pasted text". */
+export interface ImportedItem {
+  source: string
+  kind: ImportKind
+  name: string
+  warnings: string[]
+}
+
+export interface ImportReport {
+  imported: ImportedItem[]
+  failed: { source: string; message: string }[]
+}

@@ -1,9 +1,10 @@
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, session } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, safeStorage, session } from 'electron'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { API_METHODS, channelName, FLUSH_REQUEST_CHANNEL } from '../shared/api'
 import { createApi } from './api'
 import { FlushCoordinator, interceptOnce, OperationTracker } from './flushGuard'
+import { appMenuTemplate, windowBackground } from './menu'
 import { createSecretCipher } from './secretCipher'
 import { devServerUrlFor, isAllowedRendererUrl, isE2eAllowed, isPermissionAllowed } from './security'
 
@@ -58,6 +59,8 @@ function createWindow(): void {
     width: 1200,
     height: 800,
     title: 'Astral Maria',
+    // Matches the renderer's first paint, so the window does not flash white in dark mode.
+    backgroundColor: windowBackground(nativeTheme.shouldUseDarkColors),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -95,11 +98,31 @@ async function pickDirectory(): Promise<string | null> {
   return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0]
 }
 
+const JSON_FILTER = { name: 'JSON', extensions: ['json'] }
+
+async function pickImportFiles(): Promise<string[]> {
+  // E2E hook: the files to import, joined by the platform's path delimiter.
+  const e2eFiles = e2eWorkspace ? process.env.ASTRAL_E2E_IMPORT_FILES : undefined
+  if (e2eFiles !== undefined) return e2eFiles.split(delimiter).filter((p) => p !== '')
+  const result = await dialog.showOpenDialog({ properties: ['openFile', 'multiSelections'], filters: [JSON_FILTER] })
+  return result.canceled ? [] : result.filePaths
+}
+
+async function pickExportPath(defaultName: string): Promise<string | null> {
+  // E2E hook: exports go to this folder under the suggested name.
+  const e2eDir = e2eWorkspace ? process.env.ASTRAL_E2E_EXPORT_DIR : undefined
+  if (e2eDir !== undefined) return join(e2eDir, defaultName)
+  const result = await dialog.showSaveDialog({ defaultPath: defaultName, filters: [JSON_FILTER] })
+  return result.canceled || !result.filePath ? null : result.filePath
+}
+
 /** One handler per API method, generated from the shared method table so main and preload cannot drift. */
 function registerApi(): void {
   const api = createApi({
     cipher: createSecretCipher(safeStorage),
     pickDirectory,
+    pickImportFiles,
+    pickExportPath,
     recentFile: join(app.getPath('userData'), 'recent-workspaces.json'),
     operations,
     onFlushed: () => flusher.acknowledge(),
@@ -113,6 +136,10 @@ function registerApi(): void {
 }
 
 app.whenReady().then(() => {
+  // No Close Window accelerator: Cmd/Ctrl+W reaches the renderer, which closes the active tab.
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate(appMenuTemplate(process.platform, app.name, { devTools: !app.isPackaged })),
+  )
   registerApi()
   const ses = session.defaultSession
   ses.setSpellCheckerEnabled(false)

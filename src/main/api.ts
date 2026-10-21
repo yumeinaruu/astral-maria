@@ -9,10 +9,15 @@ import { CollectionStore } from './storage/collectionStore'
 import { EnvironmentStore, type SecretCipher } from './storage/environmentStore'
 import { readJson, writeJsonAtomic } from './storage/fsJson'
 import { createWorkspace, openWorkspace, readWorkspaceInfo } from './storage/workspaceStore'
+import { exportCollection, exportEnvironment, importFiles, importText } from './transfer'
 
 export interface ApiDeps {
   cipher: SecretCipher
   pickDirectory: () => Promise<string | null>
+  /** Open dialog for Postman files; an empty list when cancelled. */
+  pickImportFiles: () => Promise<string[]>
+  /** Save dialog suggesting `defaultName`; null when cancelled. */
+  pickExportPath: (defaultName: string) => Promise<string | null>
   recentFile: string
   /** Store operations are tracked here so a quit can wait for them. */
   operations?: OperationTracker
@@ -65,6 +70,32 @@ export function createApi(deps: ApiDeps): AstralApi {
   /** In-flight sends by the renderer's send id; each one can be cancelled on its own. */
   const inFlight = new Map<string, AbortController>()
   let recentQueue: Promise<unknown> = Promise.resolve()
+  /** Imports run one at a time, so two globals files dropped together both merge into the globals. */
+  let importQueue: Promise<unknown> = Promise.resolve()
+
+  function serialImport<T>(fn: () => Promise<T>): Promise<T> {
+    const result = importQueue.then(fn)
+    importQueue = result.catch(() => undefined)
+    return result
+  }
+
+  const trackWrite = <T>(write: Promise<T>): Promise<T> => operations.track(write)
+
+  /** The save dialog; once it is answered, the workspace must still be the one it was opened for. */
+  const pickExportPath =
+    (before: Open) =>
+    async (defaultName: string): Promise<string | null> => {
+      const target = await deps.pickExportPath(defaultName)
+      if (target !== null) await sameWorkspace(before)
+      return target
+    }
+
+  /** After a dialog: the workspace must still be the one the dialog was opened for. */
+  async function sameWorkspace(before: Open): Promise<Open> {
+    const ws = await workspace()
+    if (ws !== before) throw new Error('workspace_changed')
+    return ws
+  }
 
   const cancelAllSends = (): void => {
     for (const controller of inFlight.values()) controller.abort()
@@ -175,6 +206,31 @@ export function createApi(deps: ApiDeps): AstralApi {
       list: async () => (await workspace()).environments.list(),
       save: tracked(async (env: Environment) => (await workspace()).environments.save(env)),
       remove: tracked(async (id: string) => (await workspace()).environments.remove(id)),
+    },
+    transfer: {
+      // The dialogs are not tracked: a quit must not wait for the user to answer one.
+      async importFiles() {
+        const before = await workspace()
+        const paths = await deps.pickImportFiles()
+        if (paths.length === 0) return null
+        const ws = await sameWorkspace(before)
+        return tracked(() => serialImport(() => importFiles(ws, paths)))()
+      },
+      importText: tracked(async (text: string, source: string) => {
+        if (typeof text !== 'string' || typeof source !== 'string') throw new Error('invalid_argument')
+        const ws = await workspace()
+        return serialImport(() => importText(ws, text, source))
+      }),
+      async exportCollection(collectionPath: string) {
+        if (typeof collectionPath !== 'string') throw new Error('invalid_argument')
+        const before = await workspace()
+        return exportCollection(before, collectionPath, pickExportPath(before), trackWrite)
+      },
+      async exportEnvironment(id: string) {
+        if (typeof id !== 'string') throw new Error('invalid_argument')
+        const before = await workspace()
+        return exportEnvironment(before, id, pickExportPath(before), trackWrite)
+      },
     },
     http: {
       async send(request, context, sendId) {

@@ -1,0 +1,257 @@
+{
+  "info": {
+    "_postman_id": "0b6f2a6e-4c1d-4e8b-9a51-3f2d7c8e9a10",
+    "name": "Acme Orders API",
+    "description": "Invented collection used by the Astral Maria import tests.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+  },
+  "event": [
+    { "listen": "prerequest", "script": { "type": "text/javascript", "exec": ["console.log('collection pre')"] } },
+    { "listen": "test", "script": { "type": "text/javascript", "exec": "console.log('collection post')" } },
+    { "listen": "test", "disabled": true, "script": { "type": "text/javascript", "exec": ["console.log('off')"] } }
+  ],
+  "variable": [
+    { "key": "base_url", "value": "https://api.example.com" },
+    { "key": "api_version", "value": "v2", "disabled": true },
+    { "key": "retries", "value": 3 },
+    { "key": "empty" }
+  ],
+  "item": [
+    {
+      "name": "Customers",
+      "description": "Everything about customers.",
+      "auth": {
+        "type": "basic",
+        "basic": [
+          { "key": "username", "value": "orders-bot", "type": "string" },
+          { "key": "password", "value": "{{bot_password}}", "type": "string" }
+        ]
+      },
+      "event": [
+        { "listen": "prerequest", "script": { "type": "text/javascript", "exec": ["pm.variables.set('x', 1)", "// folder"] } }
+      ],
+      "item": [
+        {
+          "name": "List customers",
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": "const page = 1" } },
+            {
+              "listen": "test",
+              "script": { "type": "text/javascript", "exec": ["pm.test('ok', () => {", "  pm.response.to.have.status(200)", "})"] }
+            }
+          ],
+          "protocolProfileBehavior": { "disableBodyPruning": true },
+          "request": {
+            "method": "get",
+            "description": "Lists customers page by page.",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "X-Trace", "value": "on", "disabled": true, "description": { "content": "Debug tracing", "type": "text/plain" } },
+              { "key": "X-Client", "value": "astral", "description": "Who is calling" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/customers?page=1&limit=20&debug=true&name=J%C3%B6rg",
+              "host": ["{{base_url}}"],
+              "path": ["customers"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "limit", "value": "20", "description": "Page size" },
+                { "key": "debug", "value": "true", "disabled": true },
+                { "key": "name", "value": "J%C3%B6rg" }
+              ]
+            }
+          },
+          "response": [
+            { "name": "200 OK", "code": 200, "status": "OK", "body": "[]" },
+            { "name": "401", "code": 401, "status": "Unauthorized", "body": "" }
+          ]
+        },
+        {
+          "name": "Create customer",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Jane Example\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{base_url}}/customers"
+          },
+          "response": [{ "name": "201 Created", "code": 201, "status": "Created", "body": "{}" }]
+        },
+        {
+          "name": "Admin",
+          "auth": {
+            "type": "apikey",
+            "apikey": [
+              { "key": "key", "value": "X-Admin-Key", "type": "string" },
+              { "key": "value", "value": "{{admin_key}}", "type": "string" },
+              { "key": "in", "value": "query", "type": "string" }
+            ]
+          },
+          "item": [
+            {
+              "name": "Delete customer",
+              "request": {
+                "method": "delete",
+                "url": {
+                  "raw": "{{base_url}}/customers/:id",
+                  "host": ["{{base_url}}"],
+                  "path": ["customers", ":id"],
+                  "variable": [{ "key": "id", "value": "42" }]
+                }
+              }
+            },
+            {
+              "name": "Audit log",
+              "request": {
+                "method": "GET",
+                "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "audit-token", "type": "string" }] },
+                "url": "{{base_url}}/audit"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Public",
+          "auth": { "type": "noauth" },
+          "item": [
+            { "name": "Health", "request": "https://status.example.com/health" }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bodies",
+      "item": [
+        {
+          "name": "Raw XML",
+          "request": {
+            "method": "POST",
+            "body": { "mode": "raw", "raw": "<order id=\"7\"/>", "options": { "raw": { "language": "xml" } } },
+            "url": "{{base_url}}/orders.xml"
+          }
+        },
+        {
+          "name": "Raw HTML",
+          "request": {
+            "method": "POST",
+            "body": { "mode": "raw", "raw": "<p>hi</p>", "options": { "raw": { "language": "html" } } },
+            "url": "{{base_url}}/pages"
+          }
+        },
+        {
+          "name": "Raw script",
+          "request": {
+            "method": "POST",
+            "body": { "mode": "raw", "raw": "let a = 1", "options": { "raw": { "language": "javascript" } } },
+            "url": "{{base_url}}/scripts"
+          }
+        },
+        {
+          "name": "Raw plain",
+          "request": {
+            "method": "POST",
+            "body": { "mode": "raw", "raw": "hello" },
+            "url": "{{base_url}}/echo"
+          }
+        },
+        {
+          "name": "Login form",
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "user", "value": "jane", "type": "text" },
+                { "key": "remember", "value": "yes", "type": "text", "disabled": true, "description": "Keep me signed in" }
+              ]
+            },
+            "url": "{{base_url}}/login"
+          }
+        },
+        {
+          "name": "Upload avatar",
+          "request": {
+            "method": "PUT",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "title", "value": "Profile picture", "type": "text" },
+                { "key": "avatar", "type": "file", "src": "/Users/jane/Pictures/me.png" },
+                { "key": "draft", "value": "1", "type": "text", "disabled": true }
+              ]
+            },
+            "url": "{{base_url}}/avatar"
+          }
+        },
+        {
+          "name": "Search orders",
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "graphql",
+              "graphql": { "query": "query ($q: String) { orders(q: $q) { id } }", "variables": "{\n  \"q\": \"red\"\n}" }
+            },
+            "url": "{{base_url}}/graphql"
+          }
+        },
+        {
+          "name": "Binary upload",
+          "request": {
+            "method": "POST",
+            "body": { "mode": "file", "file": { "src": "/tmp/blob.bin" } },
+            "url": "{{base_url}}/blobs"
+          }
+        },
+        { "name": "Empty Folder", "item": [] }
+      ]
+    },
+    {
+      "request": {
+        "method": "PURGE",
+        "auth": { "type": "oauth2", "oauth2": [{ "key": "grant_type", "value": "client_credentials", "type": "string" }] },
+        "url": { "protocol": "https", "host": ["api", "example", "com"], "port": "8443", "path": ["v1", "ping"] }
+      }
+    },
+    {
+      "name": "Key in cookie",
+      "request": {
+        "method": "GET",
+        "auth": {
+          "type": "apikey",
+          "apikey": [
+            { "key": "key", "value": "session", "type": "string" },
+            { "key": "value", "value": "abc", "type": "string" },
+            { "key": "in", "value": "cookie", "type": "string" }
+          ]
+        },
+        "url": "{{base_url}}/me"
+      }
+    },
+    {
+      "name": "Key without location",
+      "request": {
+        "method": "GET",
+        "auth": {
+          "type": "apikey",
+          "apikey": [
+            { "key": "key", "value": "X-Api-Key", "type": "string" },
+            { "key": "value", "value": "{{api_key}}", "type": "string" }
+          ]
+        },
+        "url": "{{base_url}}/me"
+      }
+    },
+    {
+      "name": "Open door",
+      "request": { "method": "GET", "auth": { "type": "noauth" }, "url": "{{base_url}}/open" }
+    },
+    { "item": [] }
+  ]
+}

@@ -1,11 +1,18 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createHash } from 'node:crypto'
 import * as fsp from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { CollectionStore } from '../../src/main/storage/collectionStore'
-import { CorruptFileError } from '../../src/main/storage/fsJson'
-import type { FolderNode, RequestItem, RequestNode } from '../../src/shared/types'
+import { CorruptFileError, writeJsonAtomic } from '../../src/main/storage/fsJson'
+import type { ImportedCollection, ImportedNode } from '../../src/main/postman/importer'
+import type { FolderNode, RequestItem, RequestNode, TreeNode } from '../../src/shared/types'
+
+// Pass-through, so a test can make one write fail.
+vi.mock('../../src/main/storage/fsJson', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/main/storage/fsJson')>()
+  return { ...actual, writeJsonAtomic: vi.fn(actual.writeJsonAtomic) }
+})
 
 let dir: string
 let store: CollectionStore
@@ -456,6 +463,12 @@ describe('hostile names', () => {
     }
   )
 
+  it('keeps the dash that makes a reserved device name safe', async () => {
+    const col = await store.createCollection('CON')
+    expect(col.path).toBe('collections/con-')
+    expect((await store.createRequest(col.path, 'nul')).path).toBe('collections/con-/nul-.request.json')
+  })
+
   it('avoids a hand-made file differing only by case', async () => {
     const col = await store.createCollection('C')
     await fsp.writeFile(path.join(dir, col.path, 'Login.request.json'), '{}')
@@ -505,5 +518,269 @@ describe('remove a collection', () => {
     await store.remove(col.path)
     expect((await store.list()).collections).toEqual([])
     expect(await fsp.readdir(path.join(dir, 'collections'))).toEqual([])
+  })
+})
+
+describe('scripts', () => {
+  const scripts = { preRequest: 'a', postResponse: 'b' }
+  const writeJ = (rel: string, v: unknown) => fsp.writeFile(path.join(dir, rel), JSON.stringify(v))
+  const readJ = async (rel: string) => JSON.parse(await read(rel))
+
+  it('lists request, folder and collection scripts as stored', async () => {
+    const col = await store.createCollection('C')
+    const f = await store.createFolder(col.path, 'F')
+    const r = await store.createRequest(f.path, 'R')
+    await writeJ(r.path, { ...r.request, scripts })
+    await writeJ(`${f.path}/folder.json`, { ...(await readJ(`${f.path}/folder.json`)), scripts })
+    await writeJ(`${col.path}/collection.json`, { ...(await readJ(`${col.path}/collection.json`)), scripts })
+
+    const { collections, errors } = await store.list()
+    expect(errors).toEqual([])
+    expect(collections[0].scripts).toEqual(scripts)
+    const folder = collections[0].children[0] as FolderNode
+    expect(folder.scripts).toEqual(scripts)
+    expect((folder.children[0] as RequestNode).request.scripts).toEqual(scripts)
+  })
+
+  it('leaves scripts out where none are stored', async () => {
+    const col = await store.createCollection('C')
+    await store.createFolder(col.path, 'F')
+    const { collections } = await store.list()
+    expect(collections[0]).not.toHaveProperty('scripts')
+    expect(collections[0].children[0]).not.toHaveProperty('scripts')
+  })
+
+  describe.each([
+    ['a string', 'x'],
+    ['an array', ['a', 'b']],
+    ['a missing field', { preRequest: 'a' }],
+    ['a non-string field', { preRequest: 'a', postResponse: 1 }]
+  ])('scripts as %s', (_label, bad) => {
+    it('is a load error for that file only', async () => {
+      const col = await store.createCollection('C')
+      const f = await store.createFolder(col.path, 'F')
+      const r = await store.createRequest(col.path, 'R')
+      await store.createRequest(col.path, 'Good')
+      await writeJ(r.path, { ...r.request, scripts: bad })
+      await writeJ(`${f.path}/folder.json`, { ...(await readJ(`${f.path}/folder.json`)), scripts: bad })
+      await writeJ(`${col.path}/collection.json`, { ...(await readJ(`${col.path}/collection.json`)), scripts: bad })
+      const { collections, errors } = await store.list()
+      expect(errors.map((e) => e.path).sort()).toEqual(
+        [`${col.path}/collection.json`, `${f.path}/folder.json`, r.path].sort()
+      )
+      // Broken metadata falls back to the directory name; the broken request is left out.
+      expect(names(collections[0].children)).toEqual(['f', 'Good'])
+    })
+  })
+
+  it('keeps folder and collection scripts through rename and reorder', async () => {
+    const col = await store.createCollection('C')
+    const f = await store.createFolder(col.path, 'F')
+    await store.createRequest(f.path, 'One')
+    const two = await store.createRequest(f.path, 'Two')
+    await writeJ(`${f.path}/folder.json`, { ...(await readJ(`${f.path}/folder.json`)), scripts })
+    await writeJ(`${col.path}/collection.json`, { ...(await readJ(`${col.path}/collection.json`)), scripts })
+
+    await store.move(two.path, f.path, 0)
+    expect((await readJ(`${f.path}/folder.json`)).scripts).toEqual(scripts)
+    const fPath = await store.rename(f.path, 'G')
+    expect((await readJ(`${fPath}/folder.json`)).scripts).toEqual(scripts)
+    await store.move(fPath, col.path, 0)
+    expect((await readJ(`${col.path}/collection.json`)).scripts).toEqual(scripts)
+    const cPath = await store.rename(col.path, 'D')
+    expect((await readJ(`${cPath}/collection.json`)).scripts).toEqual(scripts)
+  })
+})
+
+describe('importCollection', () => {
+  const imported = (over: Partial<ImportedCollection> = {}): ImportedCollection => ({
+    name: 'Shop API',
+    variables: [{ key: 'base', value: 'https://shop.test', enabled: true }],
+    auth: { type: 'bearer', token: '{{token}}' },
+    scripts: { preRequest: 'col pre', postResponse: '' },
+    children: [
+      {
+        kind: 'folder',
+        name: 'Orders',
+        scripts: { preRequest: '', postResponse: 'folder post' },
+        children: [
+          {
+            kind: 'request',
+            request: {
+              name: 'List orders',
+              method: 'GET',
+              url: '{{base}}/orders',
+              params: [{ key: 'page', value: '1', enabled: true }],
+              headers: [],
+              body: { mode: 'none' },
+              auth: { type: 'inherit' },
+              scripts: { preRequest: 'req pre', postResponse: 'req post' }
+            }
+          }
+        ]
+      },
+      {
+        kind: 'request',
+        request: {
+          name: 'Health',
+          method: 'HEAD',
+          url: '{{base}}/health',
+          params: [],
+          headers: [],
+          body: { mode: 'none' },
+          auth: { type: 'none' }
+        }
+      }
+    ],
+    ...over
+  })
+
+  const request = (name: string): ImportedNode => ({
+    kind: 'request',
+    request: {
+      name,
+      method: 'GET',
+      url: '',
+      params: [],
+      headers: [],
+      body: { mode: 'none' },
+      auth: { type: 'inherit' }
+    }
+  })
+
+  const readJsonFile = async (rel: string) => JSON.parse(await read(rel))
+  const ids = (nodes: TreeNode[]): string[] =>
+    nodes.flatMap((n) => {
+      if (n.kind === 'folder') return [n.id, ...ids(n.children)]
+      expect(n.request.id).toBe(n.id)
+      return [n.id]
+    })
+
+  it('writes the whole tree and lists it back as written', async () => {
+    const tree = await store.importCollection(imported())
+    expect(tree.path).toBe('collections/shop-api')
+    expect(tree.name).toBe('Shop API')
+    const { collections, errors } = await store.list()
+    expect(errors).toEqual([])
+    expect(collections).toEqual([tree])
+
+    expect(tree.variables).toEqual([{ key: 'base', value: 'https://shop.test', enabled: true }])
+    expect(tree.auth).toEqual({ type: 'bearer', token: '{{token}}' })
+    expect(tree.scripts).toEqual({ preRequest: 'col pre', postResponse: '' })
+    expect(names(tree.children)).toEqual(['Orders', 'Health'])
+    const folder = tree.children[0] as FolderNode
+    expect(folder.path).toBe('collections/shop-api/orders')
+    expect(folder.scripts).toEqual({ preRequest: '', postResponse: 'folder post' })
+    const list = folder.children[0] as RequestNode
+    expect(list.path).toBe('collections/shop-api/orders/list-orders.request.json')
+    expect(list.request).toMatchObject({
+      name: 'List orders',
+      url: '{{base}}/orders',
+      params: [{ key: 'page', value: '1', enabled: true }],
+      scripts: { preRequest: 'req pre', postResponse: 'req post' }
+    })
+    expect((tree.children[1] as RequestNode).request.method).toBe('HEAD')
+
+    const meta = await readJsonFile('collections/shop-api/collection.json')
+    expect(meta).toMatchObject({
+      id: tree.id,
+      name: 'Shop API',
+      order: ['orders', 'health.request.json'],
+      variables: tree.variables,
+      auth: tree.auth,
+      scripts: tree.scripts
+    })
+    expect(await readJsonFile('collections/shop-api/orders/folder.json')).toEqual({
+      id: folder.id,
+      name: 'Orders',
+      order: ['list-orders.request.json'],
+      scripts: { preRequest: '', postResponse: 'folder post' }
+    })
+  })
+
+  it('gives every item a fresh id', async () => {
+    const a = await store.importCollection(imported())
+    const b = await store.importCollection(imported())
+    const all = [a.id, b.id, ...ids(a.children), ...ids(b.children)]
+    expect(new Set(all).size).toBe(all.length)
+    for (const id of all) expect(id).toMatch(/^[0-9a-f-]{36}$/)
+  })
+
+  it('imports the same name twice into two directories, both keeping the name', async () => {
+    const a = await store.importCollection(imported())
+    const b = await store.importCollection(imported())
+    expect([a.path, b.path]).toEqual(['collections/shop-api', 'collections/shop-api-2'])
+    expect([a.name, b.name]).toEqual(['Shop API', 'Shop API'])
+    expect((await store.list()).collections.map((c) => c.name)).toEqual(['Shop API', 'Shop API'])
+  })
+
+  it('makes safe, unique slugs from hostile names and keeps the names', async () => {
+    const tree = await store.importCollection(
+      imported({
+        name: '..',
+        children: [request('a/b'), request('..'), request('CON'), request('🙂'), request(''), request('a b')]
+      })
+    )
+    expect(tree.path).toBe('collections/untitled')
+    expect(tree.name).toBe('..')
+    expect(names(tree.children)).toEqual(['a/b', '..', 'CON', '🙂', 'New Request', 'a b'])
+    expect(tree.children.map((n) => path.posix.basename(n.path))).toEqual([
+      'a-b.request.json',
+      'untitled.request.json',
+      'con-.request.json',
+      'untitled-2.request.json',
+      'new-request.request.json',
+      'a-b-2.request.json'
+    ])
+    expect(await fsp.readdir(path.join(dir, 'collections'))).toEqual(['untitled'])
+  })
+
+  it('names empty folders and collections like the importer does', async () => {
+    const tree = await store.importCollection(
+      imported({ name: '', children: [{ kind: 'folder', name: '', children: [] }] })
+    )
+    expect(tree.name).toBe('New Collection')
+    expect(tree.children[0]).toMatchObject({ name: 'New Folder', path: `${tree.path}/new-folder` })
+  })
+
+  it('leaves nothing behind when a write fails', async () => {
+    await store.createCollection('Existing')
+    const actual = await vi.importActual<typeof import('../../src/main/storage/fsJson')>(
+      '../../src/main/storage/fsJson'
+    )
+    vi.mocked(writeJsonAtomic)
+      .mockImplementationOnce(actual.writeJsonAtomic)
+      .mockImplementationOnce(actual.writeJsonAtomic)
+      .mockRejectedValueOnce(new Error('disk full'))
+    await expect(store.importCollection(imported())).rejects.toThrow('disk full')
+    expect(await fsp.readdir(path.join(dir, 'collections'))).toEqual(['existing'])
+    expect((await store.list()).collections.map((c) => c.name)).toEqual(['Existing'])
+    // The store still works afterwards.
+    expect((await store.importCollection(imported())).path).toBe('collections/shop-api')
+  })
+
+  it('writes into a hidden directory that list() skips', async () => {
+    await fsp.mkdir(path.join(dir, 'collections', '.import-leftover'))
+    await fsp.writeFile(
+      path.join(dir, 'collections', '.import-leftover', 'collection.json'),
+      JSON.stringify({ id: 'x', name: 'Half', order: [] })
+    )
+    const seen: string[] = []
+    const actual = await vi.importActual<typeof import('../../src/main/storage/fsJson')>(
+      '../../src/main/storage/fsJson'
+    )
+    vi.mocked(writeJsonAtomic).mockImplementation(async (file, data) => {
+      seen.push(path.relative(dir, file).split(path.sep).join('/'))
+      return actual.writeJsonAtomic(file, data)
+    })
+    try {
+      await store.importCollection(imported())
+    } finally {
+      vi.mocked(writeJsonAtomic).mockImplementation(actual.writeJsonAtomic)
+    }
+    expect(seen.length).toBeGreaterThan(0)
+    for (const file of seen) expect(file).toMatch(/^collections\/\.import-[0-9a-f-]{36}\//)
+    expect((await store.list()).collections.map((c) => c.name)).toEqual(['Shop API'])
+    expect((await fsp.readdir(path.join(dir, 'collections'))).sort()).toEqual(['.import-leftover', 'shop-api'])
   })
 })

@@ -2,6 +2,7 @@ import type {
   CollectionTree,
   Environment,
   FolderNode,
+  ImportReport,
   LoadError,
   RequestItem,
   RequestNode,
@@ -37,6 +38,16 @@ export interface AstralApi {
     save(env: Environment): Promise<void>
     remove(id: string): Promise<void>
   }
+  transfer: {
+    /** Open dialog for .json files (multi-select); imports each in order. Resolves null when cancelled. */
+    importFiles(): Promise<ImportReport | null>
+    /** One file's text, dropped or pasted; `source` names it in the report (file name or "Pasted text"). */
+    importText(text: string, source: string): Promise<ImportReport>
+    /** Save dialog, then writes Collection v2.1; resolves the written path, or null when cancelled. */
+    exportCollection(collectionPath: string): Promise<string | null>
+    /** Save dialog, then writes Postman's environment format (secrets empty); the written path, or null. */
+    exportEnvironment(id: string): Promise<string | null>
+  }
   http: {
     /** `sendId` identifies this send (one per send per tab) so it can be cancelled on its own. */
     send(
@@ -70,6 +81,7 @@ export const API_METHODS = {
   workspace: ['create', 'open', 'pickDirectory', 'recent', 'close'],
   collections: ['list', 'createCollection', 'createFolder', 'createRequest', 'saveRequest', 'rename', 'remove', 'move'],
   environments: ['list', 'save', 'remove'],
+  transfer: ['importFiles', 'importText', 'exportCollection', 'exportEnvironment'],
   http: ['send', 'cancel'],
   app: ['flushed'],
 } as const satisfies { [G in keyof AstralApi]: readonly (keyof AstralApi[G] & string)[] }

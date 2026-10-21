@@ -383,6 +383,32 @@ describe('secrets that cannot be decrypted on this machine', () => {
     expect((await store.list()).environments[0].variables[0]).not.toHaveProperty('locked')
   })
 
+  it('moves the blob to the new key when a locked secret is renamed', async () => {
+    await lockedSetup()
+    const listed = (await store.list()).environments[0]
+    await store.save({
+      ...listed,
+      variables: [{ ...listed.variables[0], key: 'apiToken', lockedKey: 'token' }, listed.variables[1]]
+    })
+    expect(JSON.parse(await read(LOCAL)).values).toEqual({ apiToken: 'foreign-cipher-text' })
+    expect(await read('environments/staging.json')).not.toContain('lockedKey')
+    expect((await store.list()).environments[0].variables[0]).toMatchObject({ key: 'apiToken', locked: true })
+  })
+
+  it('swaps the blobs of two locked secrets whose names were swapped', async () => {
+    await store.save(env({ variables: [tokenVar, { ...tokenVar, key: 'other' }] }))
+    await write(LOCAL, '{"values":{"token":"blob-a","other":"blob-b"}}')
+    const listed = (await store.list()).environments[0]
+    await store.save({
+      ...listed,
+      variables: [
+        { ...listed.variables[0], key: 'other', lockedKey: 'token' },
+        { ...listed.variables[1], key: 'token', lockedKey: 'other' }
+      ]
+    })
+    expect(JSON.parse(await read(LOCAL)).values).toEqual({ other: 'blob-a', token: 'blob-b' })
+  })
+
   it('removes the blob when the variable is deleted', async () => {
     await lockedSetup()
     const listed = (await store.list()).environments[0]
@@ -514,6 +540,11 @@ describe('remove and path safety', () => {
     await store.save(env({ name: '../../etc/passwd' }))
     expect(await fsp.readdir(path.join(dir, 'environments'))).toEqual(['etc-passwd.json'])
   })
+
+  it('keeps the dash that makes a reserved device name safe', async () => {
+    await store.save(env({ name: 'CON' }))
+    expect(await fsp.readdir(path.join(dir, 'environments'))).toEqual(['con-.json'])
+  })
 })
 
 describe('concurrency', () => {
@@ -534,5 +565,63 @@ describe('concurrency', () => {
     await store.save(env({ name: 'Renamed' }))
     expect(await fsp.readdir(path.join(dir, 'environments'))).toEqual(['staging.json'])
     expect((await store.list()).environments[0].name).toBe('Renamed')
+  })
+})
+
+describe('local flag', () => {
+  it('remembers a local variable whose current value equals the initial one', async () => {
+    await store.save(
+      env({ variables: [{ key: 'h', value: 'x', currentValue: 'x', secret: false, enabled: true, local: true }] })
+    )
+    expect(await readJ('.local/environments/staging.json')).toEqual({ values: { h: 'x' }, local: ['h'] })
+    expect(await readJ('environments/staging.json')).toEqual({
+      id: 'e1',
+      name: 'Staging',
+      variables: [{ key: 'h', value: 'x', secret: false, enabled: true }]
+    })
+    const { environments, errors } = await store.list()
+    expect(errors).toEqual([])
+    expect(environments[0].variables).toEqual([
+      { key: 'h', value: 'x', currentValue: 'x', secret: false, enabled: true, local: true }
+    ])
+  })
+
+  it('writes the .local file for a local variable without a current value', async () => {
+    await store.save(env({ variables: [{ key: 'h', value: 'x', secret: false, enabled: true, local: true }] }))
+    expect(await readJ('.local/environments/staging.json')).toEqual({ values: {}, local: ['h'] })
+    const { environments } = await store.list()
+    expect(environments[0].variables).toEqual([{ key: 'h', value: 'x', secret: false, enabled: true, local: true }])
+  })
+
+  it('ignores local on a secret, which is always local', async () => {
+    await store.save(
+      env({ variables: [{ key: 't', value: '', currentValue: 's', secret: true, enabled: true, local: true }] })
+    )
+    expect(await readJ('.local/environments/staging.json')).toEqual({ values: { t: 'enc:s' } })
+    const { environments } = await store.list()
+    expect(environments[0].variables[0]).not.toHaveProperty('local')
+  })
+
+  it('does not mark a variable local when only its current value is stored', async () => {
+    await store.save(env({ variables: [{ key: 'h', value: 'x', currentValue: 'y', secret: false, enabled: true }] }))
+    expect(await readJ('.local/environments/staging.json')).toEqual({ values: { h: 'y' } })
+    const { environments } = await store.list()
+    expect(environments[0].variables[0]).not.toHaveProperty('local')
+  })
+
+  it('drops the .local file once no variable is local', async () => {
+    await store.save(env({ variables: [{ key: 'h', value: 'x', secret: false, enabled: true, local: true }] }))
+    await store.save(env({ variables: [{ key: 'h', value: 'x', secret: false, enabled: true }] }))
+    expect(await exists('.local/environments/staging.json')).toBe(false)
+  })
+
+  it.each([['"h"'], ['[1]'], ['{"h": true}']])('reports a .local file whose local is %s', async (bad) => {
+    await store.save(env({ variables: [{ key: 'h', value: 'x', secret: false, enabled: true }] }))
+    await write('.local/environments/staging.json', `{"values": {}, "local": ${bad}}`)
+    const { environments, errors } = await store.list()
+    expect(errors).toEqual([
+      { path: '.local/environments/staging.json', message: 'Invalid local values in .local/environments/staging.json' }
+    ])
+    expect(environments[0].variables).toEqual([{ key: 'h', value: 'x', secret: false, enabled: true }])
   })
 })

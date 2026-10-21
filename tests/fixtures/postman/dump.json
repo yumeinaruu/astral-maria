@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "collections": [
+    { "id": "11111111-2222-4333-8444-555555555555", "name": "Dumped", "order": [], "folders": [], "requests": [] }
+  ],
+  "environments": [{ "id": "66666666-7777-4888-8999-000000000000", "name": "Dumped env", "values": [] }],
+  "headerPresets": [],
+  "globals": []
+}

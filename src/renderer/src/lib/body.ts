@@ -215,3 +215,43 @@ export function suggestFileName(response: HttpResponse): string {
   const ext = EXTENSIONS[mime] ?? (mime.endsWith('+json') ? 'json' : mime.endsWith('+xml') ? 'xml' : 'bin')
   return `response.${ext}`
 }
+
+/**
+ * Indents well-formed XML two spaces per level; elements holding only text stay on one line. Anything that does not
+ * parse is returned unchanged.
+ */
+export function prettyXml(text: string): string {
+  try {
+    const parsed = new DOMParser().parseFromString(text, 'application/xml')
+    if (parsed.getElementsByTagName('parsererror').length > 0) return text
+  } catch {
+    return text
+  }
+  const tokens = text
+    .trim()
+    .split(/(<!\[CDATA\[[\s\S]*?\]\]>|<!--[\s\S]*?-->|<[^>]+>)/)
+    .filter((t) => t.trim() !== '')
+  const lines: string[] = []
+  let depth = 0
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i]!.trim()
+    const pad = '  '.repeat(depth)
+    if (t.startsWith('</')) {
+      depth = Math.max(0, depth - 1)
+      lines.push('  '.repeat(depth) + t)
+    } else if (t.startsWith('<?') || t.startsWith('<!') || t.endsWith('/>') || !t.startsWith('<')) {
+      lines.push(pad + t)
+    } else {
+      const text = tokens[i + 1]
+      const close = tokens[i + 2]
+      if (text !== undefined && !text.trim().startsWith('<') && close?.trim().startsWith('</')) {
+        lines.push(pad + t + text.trim() + close.trim())
+        i += 2
+      } else {
+        lines.push(pad + t)
+        depth++
+      }
+    }
+  }
+  return lines.join('\n')
+}

@@ -2,8 +2,11 @@ import { useState } from 'react'
 import { useApp } from '../state/store'
 import { ConfirmDialog } from './ConfirmDialog'
 
-/** Top-bar control that writes all drafts, closes the workspace and returns to the gate (with its recent list). */
-export function SwitchWorkspace(): React.JSX.Element {
+/**
+ * "Switch workspace…": writes all drafts, closes the workspace and returns to the gate (with its recent list). If some
+ * changes could not be written, `dialog` asks before discarding them.
+ */
+export function useSwitchWorkspace(): { busy: boolean; start(): void; dialog: React.ReactNode } {
   const [busy, setBusy] = useState(false)
   const [unsaved, setUnsaved] = useState<string[] | null>(null)
 
@@ -18,20 +21,19 @@ export function SwitchWorkspace(): React.JSX.Element {
     }
   }
 
-  return (
-    <>
-      <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => void leave(false)}>
-        Switch workspace…
-      </button>
-      {unsaved && (
-        <ConfirmDialog
-          title="Unsaved changes"
-          message={`These changes could not be saved: ${unsaved.join(', ')}. Switch workspace and discard them?`}
-          confirmLabel="Discard and switch"
-          onConfirm={() => void leave(true)}
-          onCancel={() => setUnsaved(null)}
-        />
-      )}
-    </>
-  )
+  return {
+    busy,
+    start: () => {
+      if (!busy) void leave(false)
+    },
+    dialog: unsaved && (
+      <ConfirmDialog
+        title="Unsaved changes"
+        message={`These changes could not be saved: ${unsaved.join(', ')}. Switch workspace and discard them?`}
+        confirmLabel="Discard and switch"
+        onConfirm={() => void leave(true)}
+        onCancel={() => setUnsaved(null)}
+      />
+    ),
+  }
 }
