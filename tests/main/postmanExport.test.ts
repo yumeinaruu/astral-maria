@@ -297,6 +297,20 @@ describe('exportFileName', () => {
     expect(exportFileName('Dev', 'environment')).toBe('Dev.postman_environment.json')
     expect(exportFileName('Globals', 'globals')).toBe('Globals.postman_globals.json')
   })
+
+  it('uses Untitled when nothing usable is left of the name', () => {
+    expect(exportFileName('', 'collection')).toBe('Untitled.postman_collection.json')
+    expect(exportFileName('   ', 'environment')).toBe('Untitled.postman_environment.json')
+    expect(exportFileName('/:*?', 'collection')).toBe('Untitled.postman_collection.json')
+    expect(exportFileName(' \t/ ', 'collection')).toBe('Untitled.postman_collection.json')
+    expect(exportFileName('...', 'globals')).toBe('Untitled.postman_globals.json')
+  })
+
+  it('trims trailing dots and spaces from the stem', () => {
+    expect(exportFileName('My API. ', 'collection')).toBe('My API.postman_collection.json')
+    expect(exportFileName('v1...', 'environment')).toBe('v1.postman_environment.json')
+    expect(exportFileName('  Lead', 'collection')).toBe('  Lead.postman_collection.json')
+  })
 })
 
 describe('round trip through parsePostman', () => {

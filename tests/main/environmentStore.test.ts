@@ -540,6 +540,11 @@ describe('remove and path safety', () => {
     await store.save(env({ name: '../../etc/passwd' }))
     expect(await fsp.readdir(path.join(dir, 'environments'))).toEqual(['etc-passwd.json'])
   })
+
+  it('keeps the dash that makes a reserved device name safe', async () => {
+    await store.save(env({ name: 'CON' }))
+    expect(await fsp.readdir(path.join(dir, 'environments'))).toEqual(['con-.json'])
+  })
 })
 
 describe('concurrency', () => {

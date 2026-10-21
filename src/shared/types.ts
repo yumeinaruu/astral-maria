@@ -133,3 +133,18 @@ export interface HttpResponse {
 export type SendResult =
   | { ok: true; response: HttpResponse }
   | { ok: false; error: { code: string; message: string } }
+
+export type ImportKind = 'collection' | 'environment' | 'globals'
+
+/** One file (or pasted text) imported; `source` is its file name or "Pasted text". */
+export interface ImportedItem {
+  source: string
+  kind: ImportKind
+  name: string
+  warnings: string[]
+}
+
+export interface ImportReport {
+  imported: ImportedItem[]
+  failed: { source: string; message: string }[]
+}

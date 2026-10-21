@@ -12,6 +12,7 @@ import type {
   Scripts,
   TreeNode
 } from '../../shared/types'
+import type { ImportedCollection, ImportedNode } from '../postman/importer'
 import { CorruptFileError, readJson, readJsonWithRevision, resolveInside, writeJsonAtomic } from './fsJson'
 import { slugify, uniqueSlug } from './slug'
 
@@ -19,6 +20,8 @@ const COLLECTIONS = 'collections'
 const REQUEST_SUFFIX = '.request.json'
 const COLLECTION_FILE = 'collection.json'
 const FOLDER_FILE = 'folder.json'
+/** Prefix of the hidden directory an import is written into; `list()` skips names starting with `.`. */
+const IMPORT_PREFIX = '.import-'
 /** Leaves room for `-NNN` and `.request.json` within the 255-byte file name limit. */
 const MAX_SLUG_BYTES = 200
 
@@ -64,7 +67,9 @@ function compare(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0
 }
 
+/** Only a shortened slug loses trailing dashes: `slugify` ends a reserved name like `con` with one on purpose. */
 function capSlug(slug: string): string {
+  if (Buffer.byteLength(slug) <= MAX_SLUG_BYTES) return slug
   let out = slug
   while (Buffer.byteLength(out) > MAX_SLUG_BYTES) out = Array.from(out).slice(0, -1).join('')
   return out.replace(/-+$/g, '') || 'untitled'
@@ -199,6 +204,48 @@ export class CollectionStore {
         variables: meta.variables,
         auth: meta.auth,
         children: []
+      }
+    })
+  }
+
+  /**
+   * Writes an imported collection with fresh ids; names are kept and only slugs made unique. It is written into a
+   * hidden `collections/.import-<uuid>/` directory and renamed into place last, so a failure leaves no half-written
+   * collection behind: the hidden directory is removed.
+   */
+  importCollection(c: ImportedCollection): Promise<CollectionTree> {
+    return this.exclusive(async () => {
+      const collectionsDir = path.join(this.root, COLLECTIONS)
+      await fs.mkdir(collectionsDir, { recursive: true })
+      const name = c.name || 'New Collection'
+      const slug = uniqueSlug(capSlug(slugify(name)), new Set(await fs.readdir(collectionsDir)))
+      const rel = `${COLLECTIONS}/${slug}`
+      const tmp = path.join(collectionsDir, `${IMPORT_PREFIX}${randomUUID()}`)
+      try {
+        await fs.mkdir(tmp)
+        const { order, children } = await this.writeImported(tmp, rel, c.children)
+        const meta: CollectionMeta = {
+          id: randomUUID(),
+          name,
+          order,
+          variables: c.variables,
+          auth: c.auth,
+          ...(c.scripts && { scripts: c.scripts })
+        }
+        await writeJsonAtomic(path.join(tmp, COLLECTION_FILE), meta)
+        await fs.rename(tmp, path.join(collectionsDir, slug))
+        return {
+          id: meta.id,
+          name,
+          path: rel,
+          variables: meta.variables,
+          auth: meta.auth,
+          children,
+          ...(meta.scripts && { scripts: meta.scripts })
+        }
+      } catch (e) {
+        await fs.rm(tmp, { recursive: true, force: true })
+        throw e
       }
     })
   }
@@ -413,6 +460,55 @@ export class CollectionStore {
 
   private async writeOrder(c: Container, order: string[]): Promise<void> {
     await writeJsonAtomic(c.metaFile, { ...c.meta, order })
+  }
+
+  /**
+   * Writes imported nodes into `abs`, whose final workspace-relative path is `rel`; returns the parent's `order` and
+   * the nodes as they will be listed.
+   */
+  private async writeImported(
+    abs: string,
+    rel: string,
+    nodes: ImportedNode[]
+  ): Promise<{ order: string[]; children: TreeNode[] }> {
+    const taken = new Set<string>()
+    const order: string[] = []
+    const children: TreeNode[] = []
+    for (const node of nodes) {
+      // Same fallbacks as the importer, for names that reach the store empty.
+      const name = node.kind === 'folder' ? node.name || 'New Folder' : node.request.name || 'New Request'
+      const slug = uniqueSlug(capSlug(slugify(name)), taken)
+      taken.add(slug)
+      if (node.kind === 'folder') {
+        const childAbs = path.join(abs, slug)
+        const childRel = `${rel}/${slug}`
+        await fs.mkdir(childAbs)
+        const inner = await this.writeImported(childAbs, childRel, node.children)
+        const meta: FolderMeta = {
+          id: randomUUID(),
+          name,
+          order: inner.order,
+          ...(node.scripts && { scripts: node.scripts })
+        }
+        await writeJsonAtomic(path.join(childAbs, FOLDER_FILE), meta)
+        order.push(slug)
+        children.push({
+          kind: 'folder',
+          id: meta.id,
+          name,
+          path: childRel,
+          children: inner.children,
+          ...(meta.scripts && { scripts: meta.scripts })
+        })
+      } else {
+        const file = `${slug}${REQUEST_SUFFIX}`
+        const request: RequestItem = { id: randomUUID(), ...node.request, name }
+        const revision = await writeJsonAtomic(path.join(abs, file), request)
+        order.push(file)
+        children.push({ kind: 'request', id: request.id, name, path: `${rel}/${file}`, request, revision })
+      }
+    }
+    return { order, children }
   }
 
   private async loadChildren(dirRel: string, order: string[], errors: LoadError[]): Promise<TreeNode[]> {

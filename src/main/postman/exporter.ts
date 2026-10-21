@@ -52,9 +52,14 @@ export function toPostmanEnvironment(env: Environment): Json {
   }
 }
 
-/** `<name>.postman_collection.json` etc., with characters illegal in file names replaced by `_`. */
+/**
+ * `<name>.postman_collection.json` etc., with characters illegal in file names replaced by `_` and trailing dots and
+ * spaces (which Windows drops) trimmed; `Untitled` when nothing but whitespace and illegal characters is left.
+ */
 export function exportFileName(name: string, kind: 'collection' | 'environment' | 'globals'): string {
-  return `${name.replace(ILLEGAL_IN_FILE_NAME, '_')}${SUFFIXES[kind]}`
+  const stem = name.replace(ILLEGAL_IN_FILE_NAME, '_').replace(/[. ]+$/, '')
+  const meaningful = name.replace(ILLEGAL_IN_FILE_NAME, '').trim() !== '' && stem !== ''
+  return `${meaningful ? stem : 'Untitled'}${SUFFIXES[kind]}`
 }
 
 function item(node: TreeNode): Json {

@@ -45,7 +45,9 @@ function isMissing(e: unknown): boolean {
   return (e as NodeJS.ErrnoException).code === 'ENOENT'
 }
 
+/** Only a shortened slug loses trailing dashes: `slugify` ends a reserved name like `con` with one on purpose. */
 function capSlug(slug: string): string {
+  if (Buffer.byteLength(slug) <= MAX_SLUG_BYTES) return slug
   let out = slug
   while (Buffer.byteLength(out) > MAX_SLUG_BYTES) out = Array.from(out).slice(0, -1).join('')
   return out.replace(/-+$/g, '') || 'untitled'

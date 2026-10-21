@@ -4,7 +4,7 @@ import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { createApi } from '../../src/main/api'
+import { createApi, type ApiDeps } from '../../src/main/api'
 import { OperationTracker } from '../../src/main/flushGuard'
 import { API_METHODS, CHANNELS, channelName, unwrapIpcError, type AstralApi } from '../../src/shared/api'
 import type { Environment, RequestItem } from '../../src/shared/types'
@@ -44,8 +44,13 @@ afterEach(async () => {
   await fs.rm(tmp, { recursive: true, force: true })
 })
 
-function makeApi(pick: () => Promise<string | null> = async () => null): AstralApi {
-  return createApi({ cipher, pickDirectory: pick, recentFile: path.join(tmp, 'recent.json') })
+const noDialogs = {
+  pickImportFiles: async (): Promise<string[]> => [],
+  pickExportPath: async (): Promise<string | null> => null,
+}
+
+function makeApi(pick: () => Promise<string | null> = async () => null, over: Partial<ApiDeps> = {}): AstralApi {
+  return createApi({ cipher, pickDirectory: pick, recentFile: path.join(tmp, 'recent.json'), ...noDialogs, ...over })
 }
 
 async function newWorkspace(api: AstralApi, name = 'ws'): Promise<string> {
@@ -89,6 +94,10 @@ describe('workspace guard', () => {
     await expect(api.collections.list()).rejects.toThrow('no_workspace_open')
     await expect(api.collections.createCollection('c')).rejects.toThrow('no_workspace_open')
     await expect(api.environments.list()).rejects.toThrow('no_workspace_open')
+    await expect(api.transfer.importFiles()).rejects.toThrow('no_workspace_open')
+    await expect(api.transfer.importText('{}', 'x')).rejects.toThrow('no_workspace_open')
+    await expect(api.transfer.exportCollection('collections/c')).rejects.toThrow('no_workspace_open')
+    await expect(api.transfer.exportEnvironment('e')).rejects.toThrow('no_workspace_open')
     await expect(api.http.send(req(), { collectionPath: null, environmentId: null }, 's')).rejects.toThrow(
       'no_workspace_open',
     )
@@ -365,6 +374,7 @@ describe('workspace.recent', () => {
   it('still opens a workspace when the recent file cannot be written', async () => {
     const api = createApi({
       cipher,
+      ...noDialogs,
       pickDirectory: async () => null,
       recentFile: path.join(tmp, 'missing', 'dir', 'r.json'),
     })
@@ -396,6 +406,7 @@ describe('quit support', () => {
     let acks = 0
     const api = createApi({
       cipher,
+      ...noDialogs,
       pickDirectory: async () => null,
       recentFile: path.join(tmp, 'recent.json'),
       onFlushed: () => acks++,
@@ -408,6 +419,7 @@ describe('quit support', () => {
     const operations = new OperationTracker()
     const api = createApi({
       cipher,
+      ...noDialogs,
       pickDirectory: async () => null,
       recentFile: path.join(tmp, 'recent.json'),
       operations,
@@ -431,6 +443,86 @@ describe('quit support', () => {
 describe('workspace.pickDirectory', () => {
   it('delegates to the injected picker', async () => {
     expect(await makeApi(async () => '/some/dir').workspace.pickDirectory()).toBe('/some/dir')
+  })
+})
+
+describe('transfer', () => {
+  const fixturePath = (name: string) => path.resolve(__dirname, '../fixtures/postman', name)
+
+  it('importFiles imports the picked files in order into the open workspace', async () => {
+    const api = makeApi(undefined, {
+      pickImportFiles: async () => [
+        fixturePath('full.v21.postman_collection.json'),
+        fixturePath('dev.postman_environment.json'),
+      ],
+    })
+    await newWorkspace(api)
+    const report = await api.transfer.importFiles()
+    expect(report?.failed).toEqual([])
+    expect(report?.imported.map((i) => i.kind)).toEqual(['collection', 'environment'])
+    expect((await api.collections.list()).collections).toHaveLength(1)
+    expect((await api.environments.list()).environments.map((e) => e.name)).toEqual(['Dev'])
+  })
+
+  it('importFiles resolves null when the dialog is cancelled', async () => {
+    const api = makeApi()
+    await newWorkspace(api)
+    expect(await api.transfer.importFiles()).toBeNull()
+  })
+
+  it('importText imports into the open workspace', async () => {
+    const api = makeApi()
+    await newWorkspace(api)
+    const text = await fs.readFile(fixturePath('workspace.postman_globals.json'), 'utf8')
+    const report = await api.transfer.importText(text, 'Pasted text')
+    expect(report.imported).toMatchObject([{ source: 'Pasted text', kind: 'globals' }])
+    expect((await api.environments.list()).environments.map((e) => e.id)).toEqual(['globals'])
+  })
+
+  it('importText rejects a non-string text or source', async () => {
+    const api = makeApi()
+    await newWorkspace(api)
+    await expect(api.transfer.importText(5 as unknown as string, 'x')).rejects.toThrow('invalid_argument')
+    await expect(api.transfer.importText('{}', null as unknown as string)).rejects.toThrow('invalid_argument')
+  })
+
+  it('exports through the save dialog with the suggested file name', async () => {
+    const asked: string[] = []
+    const out = path.join(tmp, 'out')
+    await fs.mkdir(out)
+    const api = makeApi(undefined, {
+      pickExportPath: async (name) => {
+        asked.push(name)
+        return path.join(out, name)
+      },
+    })
+    await newWorkspace(api)
+    const c = await api.collections.createCollection('Shop')
+    await api.environments.save(env('e1', { a: '1' }))
+    expect(await api.transfer.exportCollection(c.path)).toBe(path.join(out, 'Shop.postman_collection.json'))
+    expect(await api.transfer.exportEnvironment('e1')).toBe(path.join(out, 'e1.postman_environment.json'))
+    expect(asked).toEqual(['Shop.postman_collection.json', 'e1.postman_environment.json'])
+    expect(JSON.parse(await fs.readFile(path.join(out, 'Shop.postman_collection.json'), 'utf8')).info.name).toBe('Shop')
+    await expect(api.transfer.exportCollection('collections/nope')).rejects.toThrow('collection_not_found')
+    await expect(api.transfer.exportEnvironment('nope')).rejects.toThrow('environment_not_found')
+  })
+
+  it('tracks imports so a quit can wait for them', async () => {
+    const operations = new OperationTracker()
+    const api = createApi({
+      cipher,
+      ...noDialogs,
+      pickDirectory: async () => null,
+      recentFile: path.join(tmp, 'recent.json'),
+      operations,
+    })
+    await newWorkspace(api)
+    const text = await fs.readFile(fixturePath('full.v21.postman_collection.json'), 'utf8')
+    const order: string[] = []
+    const importing = api.transfer.importText(text, 'x').then(() => order.push('import'))
+    const waiting = operations.idle().then(() => order.push('idle'))
+    await Promise.all([importing, waiting])
+    expect(order).toEqual(['import', 'idle'])
   })
 })
 
