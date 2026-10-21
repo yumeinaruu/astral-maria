@@ -189,6 +189,52 @@ describe('collection and folder settings tab', () => {
     })
   })
 
+  it('saves a pending collection script before a send', async () => {
+    const api = await mounted()
+    const order: string[] = []
+    let finish!: () => void
+    api.collections.updateSettings.mockImplementation(
+      () =>
+        new Promise<void>((done) => {
+          finish = () => {
+            order.push('updateSettings resolved')
+            done()
+          }
+        }),
+    )
+    api.http.send.mockImplementation(async () => {
+      order.push('http.send')
+      return { ok: false, error: { code: 'dns_failed', message: 'x' } }
+    })
+    editFromMenu('Shop')
+    openSection('Scripts')
+    fireEvent.change(screen.getByRole('textbox', { name: 'Pre-request script' }), { target: { value: 'pre()' } })
+    act(() => useApp.getState().openRequest(REQUEST_PATH))
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await tick(0)
+    expect(api.collections.updateSettings).toHaveBeenCalledWith(SHOP, {
+      scripts: { preRequest: 'pre()', postResponse: '' },
+    })
+    expect(api.http.send).not.toHaveBeenCalled()
+    await act(async () => finish())
+    await tick(0)
+    expect(order).toEqual(['updateSettings resolved', 'http.send'])
+  })
+
+  it('does not send when a pending settings save fails', async () => {
+    const api = await mounted()
+    api.collections.updateSettings.mockRejectedValue(new Error('disk_full'))
+    editFromMenu('Users')
+    fireEvent.change(screen.getByRole('textbox', { name: 'Pre-request script' }), { target: { value: 'x()' } })
+    act(() => useApp.getState().openRequest(REQUEST_PATH))
+    await act(() => useApp.getState().send(REQUEST_PATH))
+    expect(api.http.send).not.toHaveBeenCalled()
+    expect(useApp.getState().error).toBe(
+      `The request was not sent: the settings of ${FOLDER_PATH} could not be saved (disk_full)`,
+    )
+    expect(useApp.getState().responses[REQUEST_PATH]).toBeUndefined()
+  })
+
   it('writes a pending change when the tab is closed', async () => {
     const api = await mounted()
     editFromMenu('Users')

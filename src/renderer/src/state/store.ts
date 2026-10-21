@@ -713,6 +713,29 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
     await get().refresh()
   }
 
+  /**
+   * Writes the pending or running settings saves of the collection and folders that contain `path` and waits for
+   * them. Null when there is nothing to wait for (so the send starts synchronously); otherwise resolves null when all of
+   * them are on disk, else the message why the request is not sent.
+   */
+  function saveSettingsAbove(path: string): Promise<string | null> | null {
+    const above = [...containerEntries.values()].filter(
+      (e) =>
+        e.path !== path &&
+        isWithin(path, e.path) &&
+        (e.timer || e.deferred || e.running || e.version !== e.savedVersion),
+    )
+    if (above.length === 0) return null
+    return Promise.all(
+      above.map((e) => (e.timer || e.deferred || e.version !== e.savedVersion ? runContainerSave(e) : e.running)),
+    ).then(() => {
+      const failed = above.find((e) => !e.removed && e.version !== e.savedVersion)
+      if (!failed) return null
+      const reason = get().saves[failed.path]?.error
+      return `The request was not sent: the settings of ${failed.path} could not be saved${reason ? ` (${reason})` : ''}`
+    })
+  }
+
   /** Forgets autosave and send state of requests that are gone (closed, deleted or vanished from disk). */
   function dropEditing(paths: string[], reason: 'closed' | 'removed'): void {
     for (const p of paths) {
@@ -1436,6 +1459,17 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
         },
       }))
       try {
+        // The scripts, auth and variables of the collection and folders above the request are read from disk: a
+        // pending or running save of their settings is written first, and the send stops if one cannot be.
+        const saving = saveSettingsAbove(path)
+        if (saving) {
+          const unsaved = await saving
+          if (epoch !== started || ticket.dead) return
+          if (unsaved !== null) {
+            set((cur) => ({ responses: without(cur.responses, [ticket.path]), error: unsaved }))
+            return
+          }
+        }
         const result = await window.astral.http.send(
           draft,
           { collectionPath: collection?.path ?? null, environmentId: s.activeEnvironmentId, requestPath: path },
