@@ -162,8 +162,16 @@ test('create, send, persist, and keep secrets local', async () => {
 
   await test.step('define an environment with a variable and a secret', async () => {
     await page.getByRole('button', { name: 'New environment' }).click()
+    // Created on disk at once; its sidebar row is in inline rename with the name selected.
+    const rename = page.getByRole('list', { name: 'Environments' }).getByRole('textbox', { name: 'Name' })
+    await expect(rename).toBeFocused()
+    await expect(rename).toHaveValue('New environment')
+    await shotBoth(page, 'd4-new-environment-rename')
+    await rename.fill('Local')
+    await rename.press('Enter')
+    await expect(envRow(page, 'Local')).toBeVisible()
     const editor = page.getByRole('tabpanel')
-    await editor.getByLabel('Environment name').fill('Local')
+    await expect(editor.getByLabel('Environment name')).toHaveValue('Local')
     // Typing into the trailing empty row creates the variable.
     await editor.getByLabel('Variable name 1').fill('baseUrl')
     await editor.getByLabel('Value 1', { exact: true }).fill(baseUrl)
@@ -318,10 +326,7 @@ test('create, send, persist, and keep secrets local', async () => {
     await expect(editor.getByLabel('Variable name 2')).toHaveValue('token')
     await expect(editor.getByLabel('Value 2', { exact: true })).toHaveValue(SECRET)
     await expect(editor.getByLabel('Value 3', { exact: true })).toHaveValue('56')
-    await expect(p.getByRole('button', { name: 'Storage of value 3', exact: true })).toHaveAttribute(
-      'title',
-      /^Local/
-    )
+    await expect(p.getByRole('button', { name: 'Storage of value 3', exact: true })).toHaveAttribute('title', /^Local/)
     await expect(editor.getByLabel('Variable name 4').locator('xpath=ancestor::tr')).toHaveClass(/grid-disabled/)
     expect(second.problems).toEqual([])
   })
@@ -411,6 +416,101 @@ test('create, send, persist, and keep secrets local', async () => {
     await expect(p.getByRole('tab', { name: /Hello/ })).toHaveCount(0)
     expect(app!.windows()).toHaveLength(1)
     await p.getByRole('treeitem', { name: 'Hello' }).click()
+  })
+
+  await test.step('{{ completion, the caret after a variable, and the focus states', async () => {
+    const p = app!.windows()[0]
+    await app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.focus())
+    const url = p.getByRole('textbox', { name: 'URL', exact: true })
+    await url.fill('{{baseUrl}}/users/')
+    await url.press('End')
+    await p.keyboard.type('{{ba')
+    const menu = p.getByRole('listbox', { name: 'Variables' })
+    await expect(menu.getByRole('option').first()).toContainText('baseUrl')
+    if (SHOTS) await p.screenshot({ path: join(SHOTS, 'd2-url-completion.png') })
+    await p.keyboard.press('Enter')
+    await expect(url).toHaveValue('{{baseUrl}}/users/{{baseUrl}}')
+    await expect(menu).toHaveCount(0)
+    // The caret sits right after the last chip; checked by eye in this shot.
+    if (SHOTS) {
+      const box = (await p.locator('.url-box').boundingBox())!
+      await p.screenshot({
+        path: join(SHOTS, 'd1-caret-after-variable.png'),
+        clip: { x: box.x, y: box.y - 4, width: box.width, height: box.height + 8 },
+        caret: 'initial',
+      })
+    }
+    await openSection(p, 'Body')
+    const body = p.locator('.request-pane .cm-content').first()
+    await body.click()
+    await p.keyboard.press('ControlOrMeta+End')
+    await p.keyboard.type('{{to')
+    await expect(p.locator('.cm-tooltip-autocomplete')).toContainText('token')
+    await expect(p.locator('.cm-tooltip-autocomplete')).toContainText('••••')
+    if (SHOTS) await p.screenshot({ path: join(SHOTS, 'd2-body-completion.png') })
+    await p.keyboard.press('Escape')
+
+    // Focus: one border colour change on composed boxes, nothing spilling out of grid cells.
+    const focusShot = async (name: string, target: { x: number; y: number; width: number; height: number }) => {
+      if (SHOTS) {
+        await p.screenshot({
+          path: join(SHOTS, `${name}.png`),
+          clip: {
+            x: Math.max(0, target.x - 12),
+            y: Math.max(0, target.y - 12),
+            width: target.width + 24,
+            height: target.height + 24,
+          },
+          caret: 'initial',
+        })
+      }
+    }
+    await p.getByRole('combobox', { name: 'Search requests' }).focus()
+    await focusShot('d5-focus-search', (await p.locator('.quick-open-box').boundingBox())!)
+    await p.getByRole('searchbox', { name: 'Filter requests' }).focus()
+    await focusShot('d5-focus-filter', (await p.locator('.filter-box').boundingBox())!)
+    await url.focus()
+    await focusShot('d5-focus-url', (await p.locator('.url-box').boundingBox())!)
+    await openSection(p, 'Params')
+    const key = p.getByRole('textbox', { name: 'Param key 1' })
+    await key.focus()
+    await focusShot('d5-focus-grid-cell', (await p.locator('.kv-table').boundingBox())!)
+    // Keyboard focus on a tab: an inside ring.
+    await p.getByRole('tab', { name: /Hello/ }).focus()
+    await p.keyboard.press('ArrowLeft')
+    await p.keyboard.press('ArrowRight')
+    await focusShot('d5-focus-tab', (await p.locator('.tabstrip').boundingBox())!)
+    await envRow(p, 'Local').click()
+    const valueCell = p.getByRole('tabpanel').getByLabel('Value 1', { exact: true })
+    await valueCell.focus()
+    await focusShot('d5-focus-environment-cell', (await p.locator('.env-table').boundingBox())!)
+  })
+
+  await test.step('Cmd/Ctrl+S writes an environment and a request right away', async () => {
+    const p = app!.windows()[0]
+    const editor = p.getByRole('tabpanel')
+    const value = editor.getByLabel('Value 4', { exact: true })
+    await value.fill('http://saved-by-shortcut.example.test')
+    // The environment editor only writes on Save, Cmd/Ctrl+S or close.
+    await p.keyboard.press('ControlOrMeta+s')
+    const envFiles = (await allFiles(workspace)).filter((f) => /\/environments\/[^/]+\.json$/.test(f))
+    await expect
+      .poll(async () => {
+        const texts = await Promise.all(envFiles.map((f) => readFile(f, 'utf8')))
+        return texts.some((t) => t.includes('http://saved-by-shortcut.example.test'))
+      })
+      .toBe(true)
+    await expect(editor.getByRole('button', { name: 'Save', exact: true })).toBeDisabled()
+
+    await p.getByRole('tab', { name: /Hello/ }).click()
+    const url = p.getByRole('textbox', { name: 'URL', exact: true })
+    await url.fill('{{baseUrl}}/saved-by-shortcut')
+    await p.keyboard.press('ControlOrMeta+s')
+    // Well within the 500 ms autosave delay: only the shortcut can have written it this soon.
+    const requestFile = (await allFiles(workspace)).find((f) => f.endsWith('.request.json'))!
+    await expect
+      .poll(async () => JSON.parse(await readFile(requestFile, 'utf8')).url, { timeout: 400, intervals: [25] })
+      .toBe('{{baseUrl}}/saved-by-shortcut')
   })
 
   await test.step('an edit typed just before quitting is on disk after the quit', async () => {
