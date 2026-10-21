@@ -110,6 +110,50 @@ describe('console panel', () => {
     expect(panel()).not.toHaveTextContent('header-secret')
   })
 
+  it('masks secrets of the active environment and of the globals in the request url', async () => {
+    const send = vi.fn().mockResolvedValue({
+      ok: true,
+      response: { ...RESPONSE, finalUrl: 'https://api.example.com/u?key=env-secret&g=glob%2Fal&k2=abc&p=plain-val' },
+    })
+    installApi({
+      http: { send },
+      environments: {
+        list: vi.fn().mockResolvedValue({
+          environments: [
+            {
+              id: 'dev',
+              name: 'Dev',
+              variables: [
+                { key: 'key', value: 'initial', currentValue: 'env-secret', secret: true, enabled: true },
+                { key: 'short', value: 'abc', secret: true, enabled: true },
+                { key: 'plain', value: 'plain-val', secret: false, enabled: true },
+              ],
+            },
+            {
+              id: 'globals',
+              name: 'Globals',
+              variables: [{ key: 'g', value: 'glob/al', secret: true, enabled: true }],
+            },
+            {
+              id: 'other',
+              name: 'Other',
+              variables: [{ key: 'p', value: 'plain-val', secret: true, enabled: true }],
+            },
+          ],
+          errors: [],
+        }),
+      },
+    })
+    await useApp.getState().openWorkspace('/tmp/demo')
+    useApp.getState().setActiveEnvironment('dev')
+    useApp.getState().openRequest(REQUEST_PATH)
+    await act(() => useApp.getState().send(REQUEST_PATH))
+    expect(useApp.getState().consoleLines[0]).toMatchObject({
+      kind: 'request',
+      url: 'https://api.example.com/u?key=••••&g=••••&k2=abc&p=plain-val',
+    })
+  })
+
   it('keeps the failure of a pre-request script that stopped the send', async () => {
     const { user } = await mount({
       ok: false,

@@ -5,7 +5,7 @@ import { MASK } from '../../lib/variables'
 import { useApp } from '../../state/store'
 import { Dropdown } from '../Dropdown'
 import { VarInput, VarText } from '../VarInput'
-import { recall, remember, type PanelProps } from './switching'
+import { recall, remember } from './switching'
 
 const AUTH_TYPES: { value: Auth['type']; label: string }[] = [
   { value: 'inherit', label: 'Inherit from parent' },
@@ -32,6 +32,11 @@ const HELP: Record<Auth['type'], string> = {
   apikey: 'The key and value are added as a header or a query parameter when you send the request.',
 }
 
+/** On a collection the help speaks of the requests that inherit its auth. */
+const COLLECTION_HELP: Partial<Record<Auth['type'], string>> = {
+  none: 'Requests that inherit their authorization from this collection do not use any.',
+}
+
 const ADD_TO: { value: 'header' | 'query'; label: string }[] = [
   { value: 'header', label: 'Header' },
   { value: 'query', label: 'Query params' },
@@ -52,15 +57,27 @@ function TypeIcon({ type }: { type: Auth['type'] }): React.JSX.Element {
   return <Icon className="auth-glyph" size={14} aria-hidden="true" />
 }
 
+interface Props {
+  /** Id of the request or collection; keys the settings remembered when switching types. */
+  id: string
+  auth: Auth
+  onChange(auth: Auth): void
+  /** The request's path, to show the inherited auth of its collection. */
+  path: string
+  /** A collection's own auth: no `Inherit` option (a stored `inherit` is shown as no auth, as it is sent). */
+  collection?: boolean
+}
+
 /** Two columns: the type with its help on the left, its fields on the right. */
-export function AuthPanel({ draft, edit, path }: PanelProps & { path: string }): React.JSX.Element {
-  const { auth } = draft
-  const patch = (change: Partial<Auth>): void => edit({ auth: { ...auth, ...change } as Auth })
+export function AuthPanel({ id, auth: stored, onChange, path, collection = false }: Props): React.JSX.Element {
+  const auth: Auth = collection && stored.type === 'inherit' ? { type: 'none' } : stored
+  const patch = (change: Partial<Auth>): void => onChange({ ...auth, ...change } as Auth)
+  const types = collection ? AUTH_TYPES.filter((t) => t.value !== 'inherit') : AUTH_TYPES
 
   function switchTo(type: Auth['type']): void {
     if (type === auth.type) return
-    remember(draft.id, 'auth', auth)
-    edit({ auth: recall(draft.id, 'auth', type, EMPTY_AUTHS[type]) })
+    remember(id, 'auth', auth)
+    onChange(recall(id, 'auth', type, EMPTY_AUTHS[type]))
   }
 
   return (
@@ -72,10 +89,10 @@ export function AuthPanel({ draft, edit, path }: PanelProps & { path: string }):
           className="bordered-dropdown"
           icon={<TypeIcon type={auth.type} />}
           value={auth.type}
-          options={AUTH_TYPES}
+          options={types}
           onChange={switchTo}
         />
-        <p className="auth-help">{HELP[auth.type]}</p>
+        <p className="auth-help">{(collection && COLLECTION_HELP[auth.type]) || HELP[auth.type]}</p>
       </div>
       <div className="auth-fields">
         {auth.type === 'inherit' && <Inherited path={path} />}

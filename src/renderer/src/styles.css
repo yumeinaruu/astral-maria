@@ -3213,6 +3213,46 @@ select.grid-input {
   color: var(--content-tertiary);
 }
 
+/* ---- collection and folder settings ---- */
+
+.container-editor {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.container-icon {
+  flex: none;
+  margin-right: var(--spacing-xs);
+  color: var(--content-secondary);
+}
+
+.container-panel {
+  padding-top: var(--spacing-m);
+  padding-bottom: var(--spacing-l);
+}
+
+.container-note {
+  display: flex;
+  flex: none;
+  gap: var(--spacing-s);
+  align-items: center;
+  padding: var(--spacing-xs) var(--spacing-l) 0;
+  color: var(--content-tertiary);
+}
+
+.container-note svg {
+  flex: none;
+}
+
+.container-help {
+  flex: none;
+  margin-bottom: var(--spacing-m);
+  color: var(--content-secondary);
+}
+
 /* ---- authorization ---- */
 
 .auth-panel {

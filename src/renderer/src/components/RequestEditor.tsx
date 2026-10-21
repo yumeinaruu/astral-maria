@@ -94,7 +94,9 @@ export function RequestEditor({ path }: { path: string }): React.JSX.Element {
                   />
                 )}
                 {section === 'Body' && <BodyPanel draft={draft} edit={edit} />}
-                {section === 'Authorization' && <AuthPanel draft={draft} edit={edit} path={path} />}
+                {section === 'Authorization' && (
+                  <AuthPanel id={draft.id} auth={draft.auth} onChange={(auth) => edit({ auth })} path={path} />
+                )}
                 {section === 'Scripts' && <ScriptsPanel scripts={draft.scripts} onChange={editScripts} />}
               </div>
             </div>

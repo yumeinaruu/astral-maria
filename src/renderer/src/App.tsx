@@ -2,6 +2,7 @@ import { Plus, Search } from 'lucide-react'
 import { useEffect } from 'react'
 import { ErrorBanner } from './components/Banners'
 import { ConsolePanel } from './components/ConsolePanel'
+import { ContainerEditor } from './components/ContainerEditor'
 import { EnvironmentEditor } from './components/EnvironmentEditor'
 import { Header } from './components/Header'
 import { ImportDialog } from './components/ImportDialog'
@@ -19,6 +20,7 @@ import { useUi } from './state/ui'
 export function App(): React.JSX.Element {
   const workspace = useApp((s) => s.workspace)
   const activePath = useApp((s) => s.activePath)
+  const containerTab = useApp((s) => s.activePath !== null && s.activePath in s.containerDrafts)
   const sidebarVisible = useUi((s) => s.sidebarVisible)
   const importOpen = useUi((s) => s.importOpen)
   const consoleOpen = useUi((s) => s.consoleOpen)
@@ -95,6 +97,8 @@ export function App(): React.JSX.Element {
             <div role="tabpanel" className="tab-panel" aria-labelledby={tabDomId(activePath)}>
               {envId !== null ? (
                 <EnvironmentEditor key={activePath} envId={envId} />
+              ) : containerTab ? (
+                <ContainerEditor key={activePath} path={activePath} />
               ) : (
                 <RequestEditor key={activePath} path={activePath} />
               )}

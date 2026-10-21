@@ -22,6 +22,8 @@ const SHOTS = process.env.ASTRAL_E2E_SHOTS
 let server: Server
 let baseUrl: string
 let hits: string[] = []
+/** The `x-trace` header of each request the server received, in order. */
+let traces: (string | undefined)[] = []
 let root: string
 let userData: string
 let workspace: string
@@ -31,6 +33,8 @@ let app: ElectronApplication | undefined
 test.beforeAll(async () => {
   server = createServer((req, res) => {
     hits.push(req.url ?? '')
+    const trace = req.headers['x-trace']
+    traces.push(Array.isArray(trace) ? trace.join(', ') : trace)
     if (req.url === '/page') {
       res.setHeader('content-type', 'text/html')
       // The tracker image must never be fetched by the preview.
@@ -547,6 +551,34 @@ test('create, send, persist, and keep secrets local', async () => {
     await expect(latest).toContainText('GET')
     await expect(latest).toContainText('200')
     await shotBoth(p, 'f3-console')
+  })
+
+  await test.step('a collection variable and a collection script reach the request', async () => {
+    const p = app!.windows()[0]
+    await p.getByRole('treeitem', { name: 'Demo' }).click({ button: 'right' })
+    await p.getByRole('menuitem', { name: 'Edit', exact: true }).click()
+    await expect(p.getByRole('tab', { name: /Demo/ })).toHaveAttribute('aria-selected', 'true')
+    const editor = p.getByRole('tabpanel')
+    const sections = editor.getByRole('tablist', { name: 'Collection sections' })
+    await sections.getByRole('tab', { name: /^Variables/ }).click()
+    await editor.getByRole('textbox', { name: 'Variable key 1' }).fill('traceId')
+    await editor.getByRole('textbox', { name: 'Variable value 1' }).fill('trace-from-collection')
+    await sections.getByRole('tab', { name: /^Scripts/ }).click()
+    await editor.locator('.scripts-editor .cm-content').click()
+    await p.keyboard.type("pm.request.headers.upsert({ key: 'X-Trace', value: pm.collectionVariables.get('traceId') })")
+    await p.keyboard.press('ControlOrMeta+s')
+    await expect(editor.getByRole('button', { name: 'Save', exact: true })).toBeDisabled()
+    const collectionFile = (await allFiles(workspace)).find((f) => f.endsWith('/collection.json'))!
+    await expect
+      .poll(async () => JSON.parse(await readFile(collectionFile, 'utf8')).variables)
+      .toEqual([{ key: 'traceId', value: 'trace-from-collection', enabled: true }])
+    await shotBoth(p, 'f4-collection-settings')
+
+    await p.getByRole('tab', { name: /Hello/ }).click()
+    traces = []
+    await p.getByRole('button', { name: 'Send', exact: true }).click()
+    await expect(p.getByRole('tab', { name: /^Test Results/ })).toHaveText('Test Results (2/2)')
+    await expect.poll(() => traces).toEqual(['trace-from-collection'])
   })
 
   await test.step('an edit typed just before quitting is on disk after the quit', async () => {
