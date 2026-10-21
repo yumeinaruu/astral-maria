@@ -1,3 +1,4 @@
+import { encode } from '../../shared/queryCodec'
 import type { KeyValue } from '../../shared/types'
 
 /** The URL object of a Postman Collection v2.1 request. */
@@ -47,7 +48,7 @@ function cutFragment(raw: string): [string, string] {
 
 /**
  * Splits a Postman `raw` URL into the base URL (keeping any `#fragment`) and enabled query params. Keys and values
- * stay as written: Postman stores them unencoded or encoded as the user typed them, so nothing is decoded.
+ * are returned as written; the importer decodes them.
  */
 export function splitQuery(raw: string): { url: string; params: KeyValue[] } {
   const [beforeHash, fragment] = cutFragment(raw)
@@ -66,10 +67,12 @@ export function splitQuery(raw: string): { url: string; params: KeyValue[] } {
 
 const PROTOCOL = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//
 
-/** Builds a Postman URL object from a base URL and params; `raw` carries only the enabled params, as written. */
+/** Builds a Postman URL object from a base URL and decoded params; `raw` carries only the enabled params, encoded. */
 export function toPostmanUrl(url: string, params: KeyValue[]): PostmanUrl {
   const [base, fragment] = cutFragment(url)
-  const pairs = params.filter((p) => p.enabled && (p.key !== '' || p.value !== '')).map((p) => `${p.key}=${p.value}`)
+  const pairs = params
+    .filter((p) => p.enabled && (p.key !== '' || p.value !== ''))
+    .map((p) => `${encode(p.key)}=${encode(p.value)}`)
   const raw =
     pairs.length === 0 ? url : `${base}${indexOutside(base, '?') >= 0 ? '&' : '?'}${pairs.join('&')}${fragment}`
   const result: PostmanUrl = { raw }
@@ -95,8 +98,8 @@ export function toPostmanUrl(url: string, params: KeyValue[]): PostmanUrl {
   if (pathText !== '') result.path = splitOutside(pathText, '/')
   if (params.length > 0) {
     result.query = params.map((p) => ({
-      key: p.key,
-      value: p.value,
+      key: encode(p.key),
+      value: encode(p.value),
       ...(p.enabled ? {} : { disabled: true }),
       ...(p.description === undefined ? {} : { description: p.description }),
     }))

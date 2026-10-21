@@ -1,4 +1,5 @@
 import type { Auth, EnvVar, HttpMethod, KeyValue, RequestBody, RequestItem, Scripts } from '../../shared/types'
+import { decode } from '../../shared/queryCodec'
 import { splitQuery } from './url'
 
 export type ImportedNode =
@@ -210,14 +211,20 @@ class CollectionImporter {
     return 'GET'
   }
 
+  /** Params are stored decoded, like the URL bar does; `{{variables}}` and malformed escapes stay as written. */
   private url(value: unknown, name: string): { url: string; params: KeyValue[] } {
-    if (typeof value === 'string') return splitQuery(value)
+    const decoded = (params: KeyValue[]) => params.map((p) => ({ ...p, key: decode(p.key), value: decode(p.value) }))
+    if (typeof value === 'string') {
+      const split = splitQuery(value)
+      return { url: split.url, params: decoded(split.params) }
+    }
     if (!isObject(value)) return { url: '', params: [] }
     if (Array.isArray(value.variable) && value.variable.length > 0) {
       this.warnings.push(`"${name}": path variables are not supported; :name segments are left in the URL`)
     }
     const split = splitQuery(typeof value.raw === 'string' ? value.raw : rebuildUrl(value))
-    return Array.isArray(value.query) ? { url: split.url, params: objects(value.query).map(keyValue) } : split
+    const params = Array.isArray(value.query) ? objects(value.query).map(keyValue) : split.params
+    return { url: split.url, params: decoded(params) }
   }
 
   private body(value: unknown, name: string): RequestBody {

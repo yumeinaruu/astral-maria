@@ -197,19 +197,41 @@ describe('parsePostman: collections', () => {
     )
     expect(parseRequest({ method: 'GET' }).request.url).toBe('')
   })
-  it('takes params from the url query array, keeping disabled ones and values as written', () => {
+  it('takes params from the url query array, keeping disabled ones and decoding values', () => {
     expect(fullRequest('Customers', 'List customers')).toMatchObject({
       url: '{{base_url}}/customers',
       params: [
         { key: 'page', value: '1', enabled: true },
         { key: 'limit', value: '20', enabled: true, description: 'Page size' },
         { key: 'debug', value: 'true', enabled: false },
-        { key: 'name', value: 'J%C3%B6rg', enabled: true },
+        { key: 'name', value: 'Jörg', enabled: true },
       ],
     })
     expect(
       parseRequest({ url: { raw: 'https://example.com/a?raw=1', query: [{ key: 'q', value: null }] } }).request,
     ).toMatchObject({ url: 'https://example.com/a', params: [{ key: 'q', value: '', enabled: true }] })
+  })
+  it('decodes query keys and values from raw and from the query array, like the URL bar', () => {
+    expect(parseRequest({ url: 'https://example.com/s?na%20me=J%C3%B6rg' }).request.params).toEqual([
+      { key: 'na me', value: 'Jörg', enabled: true },
+    ])
+    expect(parseRequest({ url: { raw: 'https://example.com/s?a=%2F' } }).request.params).toEqual([
+      { key: 'a', value: '/', enabled: true },
+    ])
+  })
+  it('keeps malformed escapes as written and leaves {{variables}} untouched when decoding', () => {
+    expect(parseRequest({ url: 'https://example.com/s?rate=100%&t={{token%20x}}%21' }).request.params).toEqual([
+      { key: 'rate', value: '100%', enabled: true },
+      { key: 't', value: '{{token%20x}}!', enabled: true },
+    ])
+    const query = [
+      { key: 'p', value: '50%off' },
+      { key: '{{k}}', value: '{{v}}' },
+    ]
+    expect(parseRequest({ url: { raw: 'x', query } }).request.params).toEqual([
+      { key: 'p', value: '50%off', enabled: true },
+      { key: '{{k}}', value: '{{v}}', enabled: true },
+    ])
   })
   it('keeps the URL of a request with path variables and warns', () => {
     expect(fullRequest('Customers', 'Admin', 'Delete customer').url).toBe('{{base_url}}/customers/:id')

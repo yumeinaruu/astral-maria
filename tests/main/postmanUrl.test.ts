@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { parsePostman } from '../../src/main/postman/importer'
 import { splitQuery, toPostmanUrl } from '../../src/main/postman/url'
 
 describe('splitQuery', () => {
@@ -83,5 +84,28 @@ describe('toPostmanUrl', () => {
   it('omits path and query when there are none', () => {
     const url = toPostmanUrl('https://example.com', [])
     expect(url).toEqual({ raw: 'https://example.com', protocol: 'https', host: ['example', 'com'] })
+  })
+  it('encodes keys and values in raw and query', () => {
+    const url = toPostmanUrl('{{base}}/s', [
+      { key: 'na me', value: 'Jörg & co', enabled: true },
+      { key: 'v', value: '{{v}}', enabled: false },
+    ])
+    expect(url.raw).toBe('{{base}}/s?na%20me=J%C3%B6rg%20%26%20co')
+    expect(url.query).toEqual([
+      { key: 'na%20me', value: 'J%C3%B6rg%20%26%20co' },
+      { key: 'v', value: '{{v}}', disabled: true },
+    ])
+  })
+  it('round-trips params through export and import', () => {
+    const params = [
+      { key: 'name', value: 'Jörg', enabled: true },
+      { key: 'q', value: 'a&b=c', enabled: true },
+      { key: 'off', value: '100%', enabled: false },
+    ]
+    const url = toPostmanUrl('https://example.com/s', params)
+    expect(url.raw).toBe('https://example.com/s?name=J%C3%B6rg&q=a%26b%3Dc')
+    const parsed = parsePostman(JSON.stringify({ info: { name: 'T' }, item: [{ name: 'R', request: { url } }] }))
+    const node = parsed.kind === 'collection' ? parsed.collection.children[0] : undefined
+    expect(node?.kind === 'request' && node.request).toMatchObject({ url: 'https://example.com/s', params })
   })
 })

@@ -1,14 +1,5 @@
+import { decode, encode } from '../../../shared/queryCodec'
 import type { KeyValue } from '../../../shared/types'
-
-const VARIABLE = /(\{\{[^{}]*\}\})/
-
-/** Applies `fn` to the text between `{{variables}}`; the variables themselves are never touched. */
-function mapOutsideVariables(text: string, fn: (part: string) => string): string {
-  return text
-    .split(VARIABLE)
-    .map((part, i) => (i % 2 === 1 ? part : fn(part)))
-    .join('')
-}
 
 const VARIABLE_AT = /\{\{[^{}]*\}\}/y
 
@@ -37,26 +28,6 @@ function splitOutside(text: string, ch: string): string[] {
   }
   parts.push(text.slice(start))
   return parts
-}
-
-function encode(text: string): string {
-  return mapOutsideVariables(text, (part) => {
-    try {
-      return encodeURIComponent(part)
-    } catch {
-      return part // lone surrogate: nothing sensible to encode
-    }
-  })
-}
-
-function decode(text: string): string {
-  return mapOutsideVariables(text, (part) => {
-    try {
-      return decodeURIComponent(part)
-    } catch {
-      return part // not a valid escape sequence: keep what the user typed
-    }
-  })
 }
 
 /** The base URL with the enabled params appended as a query string (before any `#fragment`). */
