@@ -103,7 +103,9 @@
   --button-outline-active: rgb(0 0 0 / 0.48);
   --destructive: #c4321f;
   --destructive-hover: #a6271a;
-  --focus-ring: 0 0 0 1px #ffffff, 0 0 0 3px #7ab8ef;
+  --focus-color: #0b6bcb;
+  /* Drawn inside the element, so it never spills out of its box. */
+  --focus-ring: inset 0 0 0 2px var(--focus-color);
   --status-success-bg: #e5f8ea;
   --status-success-fg: #007f31;
   --status-error-bg: #ffebe7;
@@ -179,7 +181,8 @@
     --button-outline-active: rgb(255 255 255 / 0.64);
     --destructive: #da0653;
     --destructive-hover: #fa387f;
-    --focus-ring: 0 0 0 1px #282923, 0 0 0 3px #8acfff;
+    --focus-color: #8acfff;
+    --focus-ring: inset 0 0 0 2px var(--focus-color);
     --status-success-bg: #263608;
     --status-success-fg: #bde963;
     --status-error-bg: #45021a;
@@ -255,7 +258,8 @@
   --button-outline-active: rgb(255 255 255 / 0.64);
   --destructive: #da0653;
   --destructive-hover: #fa387f;
-  --focus-ring: 0 0 0 1px #282923, 0 0 0 3px #8acfff;
+  --focus-color: #8acfff;
+  --focus-ring: inset 0 0 0 2px var(--focus-color);
   --status-success-bg: #263608;
   --status-success-fg: #bde963;
   --status-error-bg: #45021a;
@@ -325,9 +329,20 @@ p {
   outline: none;
 }
 
+/*
+ * Keyboard focus of buttons, tabs, rows, menu items and checkboxes: a ring drawn inside the element. Text fields get
+ * none of their own; their composed box changes its border colour instead, and grid cells show only the caret.
+ */
 :focus-visible {
+  outline: 2px solid var(--focus-color);
+  outline-offset: -2px;
+}
+
+input:not([type='checkbox'], [type='radio']):focus-visible,
+textarea:focus-visible,
+select.text-input:focus-visible,
+[contenteditable]:focus-visible {
   outline: none;
-  box-shadow: var(--focus-ring);
 }
 
 ::placeholder {
@@ -405,9 +420,7 @@ p {
 }
 
 .btn:focus-visible {
-  box-shadow:
-    inset 0 0 0 1px var(--button-outline),
-    var(--focus-ring);
+  box-shadow: inset 0 0 0 1px var(--button-outline);
 }
 
 .btn:disabled,
@@ -1076,7 +1089,7 @@ input[type='radio'] {
 }
 
 .tree:focus-visible .tree-item.focused > .tree-row {
-  outline: 2px solid var(--brand);
+  outline: 2px solid var(--focus-color);
   outline-offset: -2px;
 }
 
@@ -1263,6 +1276,16 @@ input[type='radio'] {
 .tab-active,
 .tab-active:hover {
   background: var(--highlight-tertiary);
+}
+
+/* The whole tab (name and close button) carries the keyboard focus ring of its main button. */
+.tab-main:focus-visible {
+  outline: none;
+}
+
+.tab:has(> .tab-main:focus-visible) {
+  outline: 2px solid var(--focus-color);
+  outline-offset: -2px;
 }
 
 .tab-main {
@@ -1786,10 +1809,11 @@ input[type='radio'] {
   border-radius: 0;
 }
 
+/* As in Postman, the caret is a grid cell's only focus cue: no ring, no border, nothing outside the cell. */
 .grid-input:focus-visible,
 .grid-input:focus {
   outline: none;
-  box-shadow: inset 0 0 0 1px var(--border-focus);
+  box-shadow: none;
 }
 
 .grid-input:disabled {
@@ -1806,7 +1830,8 @@ select.grid-input {
   align-items: center;
 }
 
-.grid-cell-flex .grid-input {
+.grid-cell-flex .grid-input,
+.grid-cell-flex .var-input {
   flex: 1;
   min-width: 0;
 }
@@ -2282,6 +2307,7 @@ select.grid-input {
 .splitter:hover,
 .splitter:focus-visible {
   background: var(--brand);
+  outline: none;
   box-shadow: none;
 }
 
@@ -2402,7 +2428,7 @@ select.grid-input {
 }
 
 .url-box:focus-within {
-  border-color: var(--content-secondary);
+  border-color: var(--border-focus);
 }
 
 .method-select {
@@ -2492,6 +2518,16 @@ select.grid-input {
   background: var(--code-selection);
 }
 
+/* The input and its mirror share every text metric. */
+.var-input > input,
+.var-input .var-mirror {
+  letter-spacing: normal;
+  word-spacing: normal;
+  text-indent: 0;
+  text-transform: none;
+  font-kerning: auto;
+}
+
 .var-input .var-mirror {
   position: absolute;
   inset: 0;
@@ -2511,9 +2547,16 @@ select.grid-input {
   flex: none;
 }
 
+/*
+ * A chip must not change the text metrics, or the caret (drawn by the input underneath) drifts from the mirror's text:
+ * no padding, border or margin, and the outline is an inset shadow that takes no space.
+ */
 .var-token {
+  margin: 0;
+  padding: 0;
+  border: 0;
   border-radius: var(--radius-default);
-  box-shadow: 0 0 0 1px var(--border-default);
+  box-shadow: inset 0 0 0 1px var(--border-default);
 }
 
 .var-resolved {
@@ -2564,6 +2607,85 @@ select.grid-input {
 
 .var-tip-missing {
   color: var(--content-error);
+}
+
+/* ---- {{ completion menu (text inputs and the body editor) ---- */
+
+.var-menu,
+.cm-editor .cm-tooltip.cm-tooltip-autocomplete.var-menu-cm {
+  padding: var(--spacing-xs);
+  background: var(--background-primary);
+  border: 0;
+  border-radius: var(--radius-default);
+  box-shadow: var(--shadow-popover);
+}
+
+.var-menu {
+  position: fixed;
+  z-index: 45;
+  width: 320px;
+  max-height: 240px;
+  margin: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.cm-editor .cm-tooltip.cm-tooltip-autocomplete.var-menu-cm > ul {
+  width: 320px;
+  max-width: none;
+  max-height: 240px;
+  min-width: 0;
+  font-family: var(--font-family-ui);
+}
+
+.var-option,
+.cm-editor .cm-tooltip.cm-tooltip-autocomplete.var-menu-cm > ul > li.var-option {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-m);
+  height: var(--size-m);
+  padding: 2px var(--spacing-m);
+  font-size: var(--text-size-m);
+  line-height: var(--line-height-m);
+  color: var(--content-primary);
+  border-radius: var(--radius-s);
+  cursor: pointer;
+}
+
+.var-option[aria-selected='true'],
+.cm-editor .cm-tooltip.cm-tooltip-autocomplete.var-menu-cm > ul > li.var-option[aria-selected] {
+  color: var(--content-primary);
+  background: var(--highlight-primary);
+}
+
+.var-option-name,
+.var-option .cm-completionLabel {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.var-option .cm-completionMatchedText {
+  font-weight: var(--font-weight-bold);
+  text-decoration: none;
+}
+
+.var-option-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--content-tertiary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.var-option-source {
+  flex: none;
+  font-size: var(--text-size-xs);
+  line-height: var(--line-height-s);
+  color: var(--content-secondary);
 }
 
 /* ---- sub-section row ---- */
@@ -2695,6 +2817,7 @@ select.grid-input {
 }
 
 .kv-check input:focus-visible {
+  outline: none;
   box-shadow: var(--focus-ring);
 }
 
@@ -2759,6 +2882,7 @@ select.grid-input {
 
 .kv-bulk:focus {
   border-color: var(--border-focus);
+  outline: none;
 }
 
 /* ---- body ---- */
@@ -2790,6 +2914,10 @@ select.grid-input {
   overflow: hidden;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-default);
+}
+
+.body-editor:focus-within {
+  border-color: var(--border-focus);
 }
 
 /* ---- authorization ---- */
