@@ -1,0 +1,15 @@
+{
+  "id": "f1e2d3c4-b5a6-4978-8a9b-0c1d2e3f4a55",
+  "name": "Old Inventory",
+  "order": ["a1b2c3d4-0000-4000-8000-000000000001"],
+  "folders": [],
+  "requests": [
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000001",
+      "name": "Stock",
+      "method": "GET",
+      "url": "https://inventory.example.com/stock",
+      "headers": ""
+    }
+  ]
+}

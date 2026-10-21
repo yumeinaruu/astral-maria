@@ -1,0 +1,36 @@
+{
+  "info": {
+    "_postman_id": "5d1c9e2a-7b3f-4a60-8e2d-1f4c6b8a0d22",
+    "name": "Legacy Shipping",
+    "schema": "https://schema.getpostman.com/json/collection/v2.0.0/collection.json"
+  },
+  "auth": { "type": "bearer", "bearer": { "token": "{{ship_token}}" } },
+  "item": [
+    {
+      "name": "Track parcel",
+      "request": {
+        "method": "GET",
+        "url": "https://ship.example.com/track?code=AB12&verbose",
+        "header": [{ "key": "Accept", "value": "application/json" }]
+      }
+    },
+    {
+      "name": "Depots",
+      "auth": { "type": "basic", "basic": { "username": "depot", "password": "s3cret" } },
+      "item": [
+        {
+          "name": "List depots",
+          "request": { "method": "GET", "url": "https://ship.example.com/depots" }
+        },
+        {
+          "name": "Depot by key",
+          "request": {
+            "method": "GET",
+            "auth": { "type": "apikey", "apikey": { "key": "X-Depot", "value": "{{depot_key}}", "in": "header" } },
+            "url": "https://ship.example.com/depots/1"
+          }
+        }
+      ]
+    }
+  ]
+}
