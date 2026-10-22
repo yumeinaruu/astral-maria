@@ -1,7 +1,8 @@
 import chaiSource from 'chai/index.js?raw'
+import nodeSource from './runtime/node.js?raw'
 import pmSource from './runtime/pm.js?raw'
 
-// The prelude the engine evaluates before every script: chai, then the pm runtime, inside one function scope so
+// The prelude the engine evaluates before every script: chai, then the pm runtime and its Node-style helpers, inside one function scope so
 // neither chai nor the runtime's helpers become globals. Only what pm.js installs on globalThis is visible.
 //
 // chai ships one self-contained ESM bundle (index.js, built by esbuild, no imports). QuickJS evaluates the prelude
@@ -52,4 +53,4 @@ export function chaiAsExpression(source: string): string {
   return `(function () {\n${EVENT_SHIM}\n${source.slice(0, match.index)}\nreturn { ${entries.join(', ')} }\n})()`
 }
 
-export const PRELUDE = `(function () {\n'use strict'\nconst chai = ${chaiAsExpression(chaiSource)}\n${pmSource}\n})()\n`
+export const PRELUDE = `(function () {\n'use strict'\nconst chai = ${chaiAsExpression(chaiSource)}\n${pmSource}\n${nodeSource}\n})()\n`

@@ -90,6 +90,8 @@ describe('the prelude', () => {
       `console.log(typeof chai, typeof expect, typeof pm, typeof postman, typeof tests, typeof __finish)`,
     )
     expect(r.logs).toEqual(['undefined undefined object object object function'])
+    const helpers = await ok(`console.log(typeof g, typeof define, typeof hasOwn, typeof utf8Encode, typeof MODULES)`)
+    expect(helpers.logs).toEqual(['undefined undefined undefined undefined undefined'])
   })
 })
 
@@ -701,5 +703,69 @@ describe('pm.sendRequest', () => {
       failing,
     )
     expect(r.logs).toEqual(['connection refused undefined', 'caught connection refused'])
+  })
+})
+
+describe('Node-style helpers', () => {
+  // A JWT whose payload is {"role":"USER","iat":1700000000,"exp":1700003600,"name":"Jörg"}, base64url without padding.
+  const payload = { role: 'USER', iat: 1700000000, exp: 1700003600, name: 'Jörg' }
+  const token = ['eyJhbGciOiJIUzI1NiJ9', Buffer.from(JSON.stringify(payload)).toString('base64url'), 'sig'].join('.')
+
+  it('decodes a JWT payload with Buffer.from(..., "base64") as a Postman script does', async () => {
+    const r = await ok(
+      `const json = pm.response.json()
+       pm.environment.set('token', json.token)
+       const base64Payload = json.token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')
+       const payload = JSON.parse(Buffer.from(base64Payload, 'base64').toString('utf8'))
+       pm.test('role and expiration', () => {
+         pm.expect(payload.role).to.eql('USER')
+         pm.expect(payload.exp).to.be.above(payload.iat)
+       })
+       console.log(payload.name)`,
+      post({ response: jsonResponse({ body: JSON.stringify({ token }) }) }),
+    )
+    expect(r.tests).toEqual([{ name: 'role and expiration', passed: true, skipped: false }])
+    expect(r.logs).toEqual(['Jörg'])
+    expect(r.variables.environment).toEqual({ token })
+  })
+
+  it('round-trips utf8, base64, base64url, hex and latin1 like Node', async () => {
+    const r = await ok(
+      `const b = Buffer.from('Jörg 🙂')
+       console.log(b.length, b.toString('base64'), b.toString('base64url'), b.toString('hex'))
+       console.log(Buffer.from(b.toString('base64'), 'base64').toString(), Buffer.from(b.toString('hex'), 'hex').toString('utf8'))
+       console.log(Buffer.from('ÿ', 'latin1')[0], Buffer.byteLength('Jörg'), Buffer.isBuffer(b), b instanceof Uint8Array)
+       console.log(Buffer.concat([Buffer.from('a'), Buffer.from('bc')]).toString(), JSON.stringify(Buffer.from('hi')))`,
+    )
+    const b = Buffer.from('Jörg 🙂')
+    expect(r.logs).toEqual([
+      `${b.length} ${b.toString('base64')} ${b.toString('base64url')} ${b.toString('hex')}`,
+      'Jörg 🙂 Jörg 🙂',
+      '255 5 true true',
+      'abc {"type":"Buffer","data":[104,105]}',
+    ])
+  })
+
+  it('decodes unpadded base64url and skips characters outside the alphabet, like Node', async () => {
+    const r = await ok(`console.log(Buffer.from('SGk_-w', 'base64').toString('hex'), Buffer.from('SG k=\\n', 'base64').toString())`)
+    expect(r.logs).toEqual([`${Buffer.from('SGk_-w', 'base64').toString('hex')} Hi`])
+  })
+
+  it('provides atob, btoa, TextEncoder and TextDecoder', async () => {
+    const r = await ok(
+      `console.log(btoa('user:pass'), atob('dXNlcjpwYXNz'), new TextDecoder().decode(new TextEncoder().encode('Jörg')))`,
+    )
+    expect(r.logs).toEqual(['dXNlcjpwYXNz user:pass Jörg'])
+    expect(await failure(`btoa('Jörg 🙂')`)).toBe('btoa: the string contains characters outside of the Latin1 range')
+  })
+
+  it("supports require('buffer'), require('atob') and require('btoa') and still refuses other modules", async () => {
+    const r = await ok(`const { Buffer: B } = require('buffer'); console.log(B === Buffer, require('btoa')('a'), require('atob')('YQ=='))`)
+    expect(r.logs).toEqual(['true YQ== a'])
+    expect(await failure(`require('fs')`)).toBe("require('fs') is not supported in Astral Maria")
+  })
+
+  it('names an unsupported encoding', async () => {
+    expect(await failure(`Buffer.from('a', 'utf16le')`)).toBe('Buffer: unsupported encoding "utf16le" in Astral Maria')
   })
 })
