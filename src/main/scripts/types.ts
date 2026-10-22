@@ -35,6 +35,8 @@ export interface ScriptInput {
   /** As edited, variables unresolved. */
   request: RequestItem
   variables: ScriptVariables
+  /** The runner's data row for this iteration, values as in the data file; `{}` outside the runner. */
+  iterationData: Record<string, unknown>
   /** The selected environment's name, read by `pm.environment.name`. */
   environmentName?: string
   /** Post-response only. */

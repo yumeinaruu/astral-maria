@@ -162,6 +162,8 @@ export interface ScriptReport {
   failures: ScriptFailure[]
   /** Environments (and `globals`) whose current values the scripts changed and that were saved. */
   changedEnvironmentIds: string[]
+  /** The last `postman.setNextRequest` of this send's scripts; null means stop. Absent when none called it. */
+  nextRequest?: string | null
 }
 
 /**
