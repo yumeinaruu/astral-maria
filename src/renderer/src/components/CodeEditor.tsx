@@ -7,6 +7,7 @@ import {
 } from '@codemirror/autocomplete'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import { html } from '@codemirror/lang-html'
+import { javascript } from '@codemirror/lang-javascript'
 import { json } from '@codemirror/lang-json'
 import { xml } from '@codemirror/lang-xml'
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
@@ -64,8 +65,10 @@ function languageExtension(language: CodeLanguage): Extension {
       return xml()
     case 'html':
       return html()
+    case 'javascript':
+      return javascript()
     default:
-      return [] // plain text; no JavaScript grammar is bundled
+      return [] // plain text
   }
 }
 

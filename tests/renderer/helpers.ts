@@ -65,6 +65,7 @@ export function installApi(overrides: Partial<{ [G in keyof AstralApi]: Partial<
       rename: vi.fn().mockResolvedValue('collections/renamed'),
       remove: vi.fn().mockResolvedValue(undefined),
       move: vi.fn().mockResolvedValue('collections/moved'),
+      updateSettings: vi.fn().mockResolvedValue(undefined),
       ...overrides.collections,
     },
     environments: {

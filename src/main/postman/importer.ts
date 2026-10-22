@@ -83,6 +83,24 @@ export function parsePostman(text: string): Parsed {
   throw new Error(NOT_POSTMAN)
 }
 
+/**
+ * Converts one Postman request (`{ url, method, header, body, auth }`, or a plain URL string meaning a GET), as
+ * `pm.sendRequest` receives it. `header` may also be an object of name to value. Without `auth` the request inherits.
+ */
+export function fromPostmanRequest(
+  raw: unknown,
+  name: string,
+): { request: Omit<RequestItem, 'id'>; warnings: string[] } {
+  const warnings: string[] = []
+  let source: unknown = raw
+  if (isObject(raw) && isObject(raw.header)) {
+    const header = Object.entries(raw.header).map(([key, value]) => ({ key, value }))
+    source = { ...raw, header }
+  }
+  const node = new CollectionImporter(warnings).requestItem({ name, request: source }, undefined)
+  return { request: node.request, warnings }
+}
+
 function isCollection(data: Json): boolean {
   if (!isObject(data.info)) return false
   const schema = data.info.schema
@@ -169,7 +187,7 @@ class CollectionImporter {
   /** `inherited` is the nearest folder auth above these items; undefined means the collection's. */
   private items(items: unknown, inherited: Auth | undefined): ImportedNode[] {
     return objects(items).map((item) =>
-      Array.isArray(item.item) ? this.folder(item, inherited) : this.request(item, inherited),
+      Array.isArray(item.item) ? this.folder(item, inherited) : this.requestItem(item, inherited),
     )
   }
 
@@ -183,7 +201,7 @@ class CollectionImporter {
     return folder
   }
 
-  private request(item: Json, inherited: Auth | undefined): ImportedNode {
+  requestItem(item: Json, inherited: Auth | undefined): ImportedNode & { kind: 'request' } {
     const name = nameOf(item.name, 'New Request')
     if (Array.isArray(item.response)) this.examples += item.response.length
     const source: Json =

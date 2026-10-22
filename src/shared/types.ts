@@ -20,7 +20,7 @@ export type Auth =
   | { type: 'basic'; username: string; password: string }
   | { type: 'apikey'; key: string; value: string; in: 'header' | 'query' }
 
-/** Script source as written by the user; run by the scripting plan, only stored for now. */
+/** Script source as written by the user; run around every send (see `main/scripts/pipeline.ts`). */
 export interface Scripts {
   preRequest: string
   postResponse: string
@@ -130,9 +130,47 @@ export interface HttpResponse {
   cookies: ParsedCookie[]
 }
 
+export type ScriptPhase = 'pre-request' | 'post-response'
+
+/** One console line of a script; `source` names where the script lives, e.g. `Folder "Users"`. */
+export interface ScriptLog {
+  level: 'log' | 'info' | 'warn' | 'error' | 'debug'
+  text: string
+  phase: ScriptPhase
+  source: string
+}
+
+export interface ScriptTest {
+  name: string
+  passed: boolean
+  skipped: boolean
+  error?: string
+  source: string
+}
+
+/** A script that threw, timed out, ran out of memory or was cancelled. */
+export interface ScriptFailure {
+  phase: ScriptPhase
+  source: string
+  message: string
+}
+
+/** What the scripts of one send did. */
+export interface ScriptReport {
+  tests: ScriptTest[]
+  logs: ScriptLog[]
+  failures: ScriptFailure[]
+  /** Environments (and `globals`) whose current values the scripts changed and that were saved. */
+  changedEnvironmentIds: string[]
+}
+
+/**
+ * `scripts` is present only when at least one script ran. A failed pre-request script gives
+ * `{ ok: false, error: { code: 'script_error', message }, scripts }` and nothing is sent.
+ */
 export type SendResult =
-  | { ok: true; response: HttpResponse }
-  | { ok: false; error: { code: string; message: string } }
+  | { ok: true; response: HttpResponse; scripts?: ScriptReport }
+  | { ok: false; error: { code: string; message: string }; scripts?: ScriptReport }
 
 export type ImportKind = 'collection' | 'environment' | 'globals'
 

@@ -4,17 +4,23 @@ import { environmentIdOf, useApp } from '../state/store'
 import { useUi } from '../state/ui'
 import { GLOBALS_ID, GLOBALS_NAME, newId, uniqueName } from './environments'
 
-/** Activates an open tab of either kind. */
+/** Activates an open tab of any kind. */
 export function activateTab(path: string): void {
+  const s = useApp.getState()
   const envId = environmentIdOf(path)
-  if (envId === null) useApp.getState().openRequest(path)
-  else useApp.getState().openEnvironment(envId)
+  if (envId !== null) s.openEnvironment(envId)
+  else if (s.containerDrafts[path]) s.openContainer(path)
+  else s.openRequest(path)
 }
 
-/** Where "New request" puts the request: the folder or collection of the active request, else the first collection. */
+/**
+ * Where "New request" puts the request: the folder or collection of the active request, or the active collection or
+ * folder tab itself, else the first collection.
+ */
 export function newRequestParent(collections: CollectionTree[], activePath: string | null): string | null {
   if (activePath !== null && environmentIdOf(activePath) === null) {
-    const parent = buildIndex(collections, {}).byPath.get(activePath)?.parentPath
+    const meta = buildIndex(collections, {}).byPath.get(activePath)
+    const parent = meta && meta.kind !== 'request' ? meta.path : meta?.parentPath
     if (parent) return parent
   }
   return collections[0]?.path ?? null

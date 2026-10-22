@@ -8,6 +8,7 @@ const ENV_DIR = 'environments'
 const LOCAL_ENV_DIR = '.local/environments'
 const GLOBALS_ID = 'globals'
 const GLOBALS_SLUG = 'globals'
+const GLOBALS_NAME = 'Globals'
 const SUFFIX = '.json'
 /** Leaves room for `-NNN` and `.json` within the 255-byte file name limit. */
 const MAX_SLUG_BYTES = 200
@@ -97,6 +98,15 @@ function checkLocal(v: unknown, file: string): Local {
     invalid(file, 'local values')
   }
   return { values: v.values as Record<string, string>, local: (v.local as string[] | undefined) ?? [] }
+}
+
+/** The values a send resolves against: enabled variables, the current value where set, else the initial one. */
+export function valuesOf(env: Environment): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const v of env.variables) {
+    if (v.enabled) out[v.key] = v.currentValue ? v.currentValue : v.value
+  }
+  return out
 }
 
 /** Environments live in `environments/`; secrets and current values only in the git-ignored `.local/`. */
@@ -199,11 +209,68 @@ export class EnvironmentStore {
   async resolvedValues(id: string): Promise<Record<string, string>> {
     const env = (await this.list()).environments.find((e) => e.id === id)
     if (!env) throw new Error('environment_not_found')
-    const out: Record<string, string> = {}
-    for (const v of env.variables) {
-      if (v.enabled) out[v.key] = v.currentValue ? v.currentValue : v.value
-    }
-    return out
+    return valuesOf(env)
+  }
+
+  /**
+   * Applies what scripts did: each key in `set` gets that current value (encrypted on a secret), and a key not yet
+   * in the environment is added with an empty initial value; each key in `unset` is removed. Other variables, and
+   * the stored values of secrets this machine cannot decrypt, are kept as they are. The committed file is written
+   * only when a key was added or removed. The globals are created when they were never saved. Resolves whether
+   * anything was written.
+   */
+  setCurrentValues(id: string, changes: { set: Record<string, string>; unset: string[] }): Promise<boolean> {
+    return this.exclusive(async () => {
+      this.checkId(id)
+      const setKeys = Object.keys(changes.set)
+      if (setKeys.length === 0 && changes.unset.length === 0) return false
+      let entry = await this.find(id)
+      if (!entry) {
+        if (id !== GLOBALS_ID) throw new Error('environment_not_found')
+        if (setKeys.length === 0) return false
+        // Same check as save(): a hand-made globals.json with another id is never overwritten.
+        const env: Committed = { id, name: GLOBALS_NAME, variables: [] }
+        entry = { slug: await this.slugFor(env), env }
+      }
+      const localRel = this.localRel(entry.slug)
+      const localAbs = this.abs(localRel)
+      let stored: Local = { values: {}, local: [] }
+      let localExists = true
+      try {
+        stored = checkLocal(await readJson<unknown>(localAbs, localRel), localRel)
+      } catch (e) {
+        if (!isMissing(e)) throw e
+        localExists = false
+      }
+
+      const unset = new Set(changes.unset.filter((k) => !Object.hasOwn(changes.set, k)))
+      const variables = entry.env.variables.filter((v) => !unset.has(v.key))
+      let committedChanged = variables.length !== entry.env.variables.length
+      const values: Record<string, string> = {}
+      for (const [key, value] of Object.entries(stored.values)) if (!unset.has(key)) values[key] = value
+      for (const key of setKeys) {
+        const value = changes.set[key]
+        const existing = variables.find((v) => v.key === key)
+        if (!existing) {
+          variables.push({ key, value: '', secret: false, enabled: true })
+          committedChanged = true
+        }
+        values[key] = existing?.secret ? this.cipher.encrypt(value) : value
+      }
+      const local = stored.local.filter((k) => !unset.has(k))
+
+      if (Object.keys(values).length > 0 || local.length > 0) {
+        await fs.mkdir(path.dirname(localAbs), { recursive: true })
+        await writeJsonAtomic(localAbs, local.length > 0 ? { values, local } : { values })
+      } else if (localExists) {
+        await fs.rm(localAbs, { force: true })
+      }
+      if (committedChanged) {
+        await fs.mkdir(this.abs(ENV_DIR), { recursive: true })
+        await writeJsonAtomic(this.abs(this.committedRel(entry.slug)), { ...entry.env, variables })
+      }
+      return true
+    })
   }
 
   // ---- helpers ----

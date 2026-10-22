@@ -20,7 +20,15 @@ function devCsp(): Plugin {
 }
 
 export default defineConfig({
-  main: {},
+  main: {
+    build: {
+      rolldownOptions: {
+        // One file per bundle. The script worker (src/main/scripts/spawn.ts) is bundled through `?modulePath` with
+        // this config and evaluated from a string, so it cannot load chunks of its own.
+        output: { codeSplitting: false },
+      },
+    },
+  },
   preload: {},
   renderer: {
     root: resolve(__dirname, 'src/renderer'),

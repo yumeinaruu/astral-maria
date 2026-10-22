@@ -592,6 +592,72 @@ describe('scripts', () => {
   })
 })
 
+describe('updateSettings', () => {
+  const readJ = async (rel: string) => JSON.parse(await read(rel))
+  const scripts = { preRequest: 'pre()', postResponse: 'post()' }
+
+  it('writes scripts, variables and auth on a collection and keeps the rest', async () => {
+    const col = await store.createCollection('C')
+    await store.createRequest(col.path, 'R')
+    const variables = [{ key: 'a', value: '1', enabled: true }]
+    const auth = { type: 'bearer' as const, token: 't' }
+    await store.updateSettings(col.path, { scripts, variables, auth })
+    const meta = await readJ(`${col.path}/collection.json`)
+    expect(meta).toMatchObject({ name: 'C', order: ['r.request.json'], scripts, variables, auth })
+    const { collections } = await store.list()
+    expect(collections[0]).toMatchObject({ scripts, variables, auth })
+  })
+
+  it('changes only the fields in the patch', async () => {
+    const col = await store.createCollection('C')
+    await store.updateSettings(col.path, { variables: [{ key: 'a', value: '1', enabled: true }] })
+    await store.updateSettings(col.path, { scripts })
+    expect(await readJ(`${col.path}/collection.json`)).toMatchObject({
+      scripts,
+      variables: [{ key: 'a', value: '1', enabled: true }],
+      auth: { type: 'none' }
+    })
+  })
+
+  it('writes scripts on a folder and keeps its order', async () => {
+    const col = await store.createCollection('C')
+    const f = await store.createFolder(col.path, 'F')
+    await store.createRequest(f.path, 'One')
+    const two = await store.createRequest(f.path, 'Two')
+    await store.move(two.path, f.path, 0)
+    await store.updateSettings(f.path, { scripts })
+    const meta = await readJ(`${f.path}/folder.json`)
+    expect(meta).toMatchObject({ name: 'F', scripts, order: ['two.request.json', 'one.request.json'] })
+  })
+
+  it('keeps an order change made while the update was queued', async () => {
+    const col = await store.createCollection('C')
+    await store.createRequest(col.path, 'One')
+    const two = await store.createRequest(col.path, 'Two')
+    await Promise.all([store.move(two.path, col.path, 0), store.updateSettings(col.path, { scripts })])
+    expect((await readJ(`${col.path}/collection.json`)).order).toEqual(['two.request.json', 'one.request.json'])
+  })
+
+  it('rejects variables and auth on a folder', async () => {
+    const col = await store.createCollection('C')
+    const f = await store.createFolder(col.path, 'F')
+    await expect(store.updateSettings(f.path, { variables: [] })).rejects.toThrow('not_a_collection')
+    await expect(store.updateSettings(f.path, { auth: { type: 'none' } })).rejects.toThrow('not_a_collection')
+  })
+
+  it('rejects a request path and malformed values', async () => {
+    const col = await store.createCollection('C')
+    const r = await store.createRequest(col.path, 'R')
+    await expect(store.updateSettings(r.path, { scripts })).rejects.toThrow('invalid_target')
+    await expect(
+      store.updateSettings(col.path, { scripts: { preRequest: 1 } as unknown as typeof scripts })
+    ).rejects.toThrow('invalid_settings')
+    await expect(store.updateSettings(col.path, { variables: 'x' as unknown as [] })).rejects.toThrow(
+      'invalid_settings'
+    )
+  })
+})
+
 describe('importCollection', () => {
   const imported = (over: Partial<ImportedCollection> = {}): ImportedCollection => ({
     name: 'Shop API',

@@ -2,6 +2,21 @@ import type { Auth, KeyValue, RequestBody, RequestItem } from '../../shared/type
 
 export type VariableScope = Record<string, string>
 
+/** The scopes a send resolves against, by name; a missing one is empty. */
+export interface NamedScopes {
+  /** Send-local values set by scripts (`pm.variables`). */
+  local?: VariableScope
+  environment?: VariableScope | null
+  /** The collection's enabled variables with the session's overrides on top. */
+  collection?: VariableScope
+  globals?: VariableScope
+}
+
+/** Resolution order, highest first: send-local, environment, collection, globals. */
+export function orderedScopes(scopes: NamedScopes): VariableScope[] {
+  return [scopes.local ?? {}, scopes.environment ?? {}, scopes.collection ?? {}, scopes.globals ?? {}]
+}
+
 const VARIABLE = /\{\{\s*([^{}\s]+)\s*\}\}/g
 
 /** Single pass: earlier scopes win, unknown variables stay literal, inserted values are not expanded again. */

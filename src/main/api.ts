@@ -1,12 +1,23 @@
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import type { AstralApi } from '../shared/api'
-import type { Auth, CollectionTree, Environment, KeyValue, RequestItem, WorkspaceInfo } from '../shared/types'
+import type {
+  Auth,
+  CollectionTree,
+  Environment,
+  KeyValue,
+  RequestItem,
+  Scripts,
+  TreeNode,
+  WorkspaceInfo,
+} from '../shared/types'
 import { OperationTracker } from './flushGuard'
-import { resolveRequest, type VariableScope } from './http/resolve'
+import { orderedScopes, resolveRequest, type VariableScope } from './http/resolve'
 import { sendRequest } from './http/sendRequest'
+import { hasScripts, runWithScripts, type ScriptLimits, type ScriptRunner, type ScriptSource } from './scripts/pipeline'
+import type { ScriptVariables } from './scripts/types'
 import { CollectionStore } from './storage/collectionStore'
-import { EnvironmentStore, type SecretCipher } from './storage/environmentStore'
+import { EnvironmentStore, valuesOf, type SecretCipher } from './storage/environmentStore'
 import { readJson, writeJsonAtomic } from './storage/fsJson'
 import { createWorkspace, openWorkspace, readWorkspaceInfo } from './storage/workspaceStore'
 import { exportCollection, exportEnvironment, importFiles, importText } from './transfer'
@@ -23,13 +34,24 @@ export interface ApiDeps {
   operations?: OperationTracker
   /** Called when the renderer acknowledges a flush request (`app.flushed`). */
   onFlushed?: () => void
+  /** The script sandbox (one per app). Without it, scripts are not run and every send takes the plain path. */
+  scriptHost?: ScriptRunner
+  /** Per-script limits; tests lower them. */
+  scriptLimits?: ScriptLimits
 }
+
+/** Collection variable changes made by scripts: a value, or null for a key a script unset. */
+type Overrides = Map<string, string | null>
 
 interface Open {
   info: WorkspaceInfo
   collections: CollectionStore
   environments: EnvironmentStore
+  /** `pm.collectionVariables` changes by collection path; they last until the workspace is closed or switched. */
+  sessionVariables: Map<string, Overrides>
 }
+
+const GLOBALS_ID = 'globals'
 
 const MAX_RECENT = 10
 
@@ -57,6 +79,52 @@ function enabledScope(variables: KeyValue[]): VariableScope {
 /** `collections/<slug>/...` -> `collections/<slug>`. */
 function collectionRoot(p: string): string {
   return p.split('/').slice(0, 2).join('/')
+}
+
+function withOverrides(scope: VariableScope, overrides: Overrides | undefined): VariableScope {
+  const out = { ...scope }
+  for (const [key, value] of overrides ?? []) {
+    if (value === null) delete out[key]
+    else out[key] = value
+  }
+  return out
+}
+
+/** What a script did to one scope: keys set to a new or changed value, and keys it removed. */
+function changesOf(
+  before: Record<string, string>,
+  after: Record<string, string>,
+): { set: Record<string, string>; unset: string[] } | null {
+  const set: Record<string, string> = {}
+  for (const [key, value] of Object.entries(after)) if (before[key] !== value) set[key] = value
+  const unset = Object.keys(before).filter((key) => !Object.hasOwn(after, key))
+  return Object.keys(set).length === 0 && unset.length === 0 ? null : { set, unset }
+}
+
+const scriptLabel = (kind: string, name: string) => `${kind} "${name}"`
+
+/** The collection's scripts, then those of the folders holding `requestPath` (outer first), then the request's. */
+function scriptSources(
+  collection: CollectionTree | undefined,
+  requestPath: unknown,
+  request: RequestItem,
+): ScriptSource[] {
+  const sources: ScriptSource[] = []
+  const add = (source: string, scripts: Scripts | undefined) => sources.push({ source, ...(scripts && { scripts }) })
+  if (collection) {
+    add(scriptLabel('Collection', collection.name), collection.scripts)
+    if (typeof requestPath === 'string') {
+      let nodes: TreeNode[] = collection.children
+      for (;;) {
+        const folder = nodes.find((n) => n.kind === 'folder' && requestPath.startsWith(`${n.path}/`))
+        if (!folder || folder.kind !== 'folder') break
+        add(scriptLabel('Folder', folder.name), folder.scripts)
+        nodes = folder.children
+      }
+    }
+  }
+  add(scriptLabel('Request', request.name), request.scripts)
+  return sources
 }
 
 export function createApi(deps: ApiDeps): AstralApi {
@@ -129,6 +197,7 @@ export function createApi(deps: ApiDeps): AstralApi {
       info,
       collections: new CollectionStore(info.dir),
       environments: new EnvironmentStore(info.dir, deps.cipher),
+      sessionVariables: new Map(),
     }
     remember(info)
     await recentQueue
@@ -145,7 +214,7 @@ export function createApi(deps: ApiDeps): AstralApi {
     }
   }
 
-  async function valuesOf(ws: Open, id: string | null): Promise<VariableScope> {
+  async function environmentValues(ws: Open, id: string | null): Promise<VariableScope> {
     if (id === null) return {}
     try {
       return await ws.environments.resolvedValues(id)
@@ -153,6 +222,68 @@ export function createApi(deps: ApiDeps): AstralApi {
       // A deleted or unreadable environment is treated as having no values.
       return {}
     }
+  }
+
+  async function sendWithScripts(
+    ws: Open,
+    host: ScriptRunner,
+    send: {
+      request: RequestItem
+      collection: CollectionTree | undefined
+      collectionScope: VariableScope
+      sources: ScriptSource[]
+      environmentId: string | null
+      signal: AbortSignal
+    },
+  ) {
+    let environments: Environment[] = []
+    try {
+      environments = (await ws.environments.list()).environments
+    } catch {
+      // Unreadable environments are treated as having no values, as on the plain path.
+    }
+    const env = send.environmentId === null ? undefined : environments.find((e) => e.id === send.environmentId)
+    const globals = environments.find((e) => e.id === GLOBALS_ID)
+    const secretKeys = (e: Environment | undefined) => e?.variables.filter((v) => v.secret).map((v) => v.key) ?? []
+    const variables: ScriptVariables = {
+      local: {},
+      environment: env ? valuesOf(env) : null,
+      collection: send.collectionScope,
+      globals: globals ? valuesOf(globals) : {},
+    }
+    const collectionPath = send.collection?.path
+    return runWithScripts(
+      { host, send: sendRequest, ...(deps.scriptLimits && { limits: deps.scriptLimits }) },
+      {
+        request: send.request,
+        sources: send.sources,
+        variables,
+        ...(env && { environmentName: env.name }),
+        secretKeys: { environment: secretKeys(env), globals: secretKeys(globals) },
+        prepare: (request) => withInheritedAuth(request, send.collection),
+        signal: send.signal,
+        persist: (initial, final) =>
+          operations.track(
+            (async () => {
+              const changed: string[] = []
+              const write = async (id: string, before: VariableScope | null, after: VariableScope | null) => {
+                const changes = before && after ? changesOf(before, after) : null
+                if (changes && (await ws.environments.setCurrentValues(id, changes))) changed.push(id)
+              }
+              const collectionChanges = changesOf(initial.collection, final.collection)
+              if (collectionPath !== undefined && collectionChanges) {
+                const overrides: Overrides = ws.sessionVariables.get(collectionPath) ?? new Map()
+                for (const [key, value] of Object.entries(collectionChanges.set)) overrides.set(key, value)
+                for (const key of collectionChanges.unset) overrides.set(key, null)
+                ws.sessionVariables.set(collectionPath, overrides)
+              }
+              if (env) await write(env.id, initial.environment, final.environment)
+              if (env?.id !== GLOBALS_ID) await write(GLOBALS_ID, initial.globals, final.globals)
+              return changed
+            })(),
+          ),
+      },
+    )
   }
 
   function withInheritedAuth(request: RequestItem, collection: CollectionTree | undefined): RequestItem {
@@ -201,6 +332,12 @@ export function createApi(deps: ApiDeps): AstralApi {
       move: tracked(async (p: string, newParentPath: string, index: number) =>
         (await workspace()).collections.move(p, newParentPath, index),
       ),
+      updateSettings: tracked(
+        async (p: string, patch: { scripts?: Scripts; variables?: KeyValue[]; auth?: Auth }) => {
+          if (typeof p !== 'string') throw new Error('invalid_argument')
+          await (await workspace()).collections.updateSettings(p, patch)
+        },
+      ),
     },
     environments: {
       list: async () => (await workspace()).environments.list(),
@@ -241,13 +378,26 @@ export function createApi(deps: ApiDeps): AstralApi {
         inFlight.set(sendId, controller)
         try {
           const collection = await findCollection(ws, context.collectionPath)
-          const scopes = [
-            await valuesOf(ws, context.environmentId),
-            enabledScope(collection?.variables ?? []),
-            await valuesOf(ws, 'globals'),
-          ]
-          const resolved = resolveRequest(withInheritedAuth(request, collection), scopes)
-          return await sendRequest(resolved, { signal: controller.signal })
+          const overrides = collection ? ws.sessionVariables.get(collection.path) : undefined
+          const collectionScope = withOverrides(enabledScope(collection?.variables ?? []), overrides)
+          const sources = scriptSources(collection, context.requestPath, request)
+          if (!deps.scriptHost || !hasScripts(sources)) {
+            const scopes = orderedScopes({
+              environment: await environmentValues(ws, context.environmentId),
+              collection: collectionScope,
+              globals: await environmentValues(ws, GLOBALS_ID),
+            })
+            const resolved = resolveRequest(withInheritedAuth(request, collection), scopes)
+            return await sendRequest(resolved, { signal: controller.signal })
+          }
+          return await sendWithScripts(ws, deps.scriptHost, {
+            request,
+            collection,
+            collectionScope,
+            sources,
+            environmentId: context.environmentId,
+            signal: controller.signal,
+          })
         } finally {
           if (inFlight.get(sendId) === controller) inFlight.delete(sendId)
         }

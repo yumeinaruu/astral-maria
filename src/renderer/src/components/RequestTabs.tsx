@@ -1,4 +1,4 @@
-import { ChevronDown, Layers, Plus, X } from 'lucide-react'
+import { ChevronDown, Folder, Layers, Library, Plus, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { draftProblem, GLOBALS_NAME, isDraftDirty } from '../lib/environments'
 import { hasMod } from '../lib/platform'
@@ -21,6 +21,8 @@ interface TabInfo {
   path: string
   name: string
   env: boolean
+  /** Set on the settings tab of a collection or folder. */
+  container?: 'collection' | 'folder'
   method?: AppState['drafts'][string]['method']
   dirty: boolean
 }
@@ -31,6 +33,10 @@ function describeTab(s: AppState, path: string): TabInfo {
     const entry = s.environmentDrafts[envId]
     const name = entry?.draft.name || s.environments.find((e) => e.id === envId)?.name || GLOBALS_NAME
     return { path, name, env: true, dirty: entry ? isDraftDirty(entry) : false }
+  }
+  const settings = s.containerDrafts[path]
+  if (settings) {
+    return { path, name: settings.name, env: false, container: settings.kind, dirty: Boolean(s.saves[path]) }
   }
   const draft = s.drafts[path]
   return { path, name: draft?.name ?? basename(path), env: false, method: draft?.method, dirty: Boolean(s.saves[path]) }
@@ -65,6 +71,7 @@ export function RequestTabs(): React.JSX.Element {
   useApp((s) => s.saves)
   useApp((s) => s.environmentDrafts)
   useApp((s) => s.environments)
+  useApp((s) => s.containerDrafts)
   const described = openTabs.map((t) => describeTab(useApp.getState(), t.path))
   const hasCollections = useApp((s) => s.collections.length > 0)
   const [closing, setClosing] = useState<{ path: string; message: string } | null>(null)
@@ -152,7 +159,15 @@ export function RequestTabs(): React.JSX.Element {
                 onClick={() => activateTab(tab.path)}
                 onKeyDown={(e) => onKeyDown(e, i)}
               >
-                {tab.env ? <Layers size={13} aria-hidden="true" /> : tab.method && <MethodBadge method={tab.method} />}
+                {tab.env ? (
+                  <Layers size={13} aria-hidden="true" />
+                ) : tab.container === 'collection' ? (
+                  <Library size={13} aria-hidden="true" />
+                ) : tab.container === 'folder' ? (
+                  <Folder size={13} aria-hidden="true" />
+                ) : (
+                  tab.method && <MethodBadge method={tab.method} />
+                )}
                 <span className="tab-name">{tab.name || 'Unnamed'}</span>
                 {tab.dirty && <span className="sr-only">Unsaved changes</span>}
               </button>
@@ -188,7 +203,11 @@ export function RequestTabs(): React.JSX.Element {
           disabled={described.length === 0}
           items={() =>
             described.map((t) => ({
-              label: t.env ? `${t.name || 'Unnamed'} (environment)` : `${t.method ?? ''} ${t.name}`.trim(),
+              label: t.env
+                ? `${t.name || 'Unnamed'} (environment)`
+                : t.container
+                  ? `${t.name} (${t.container})`
+                  : `${t.method ?? ''} ${t.name}`.trim(),
               checked: t.path === useApp.getState().activePath,
               onSelect: () => activateTab(t.path),
             }))

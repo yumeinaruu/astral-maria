@@ -382,6 +382,30 @@ describe('workspace.recent', () => {
   })
 })
 
+describe('collections.updateSettings', () => {
+  it('saves collection and folder settings; a folder takes only scripts', async () => {
+    const api = makeApi()
+    await newWorkspace(api)
+    const col = await api.collections.createCollection('Shop')
+    const folder = await api.collections.createFolder(col.path, 'Users')
+    const scripts = { preRequest: 'a()', postResponse: 'b()' }
+    await api.collections.updateSettings(col.path, {
+      scripts,
+      variables: [{ key: 'v', value: '1', enabled: true }],
+      auth: { type: 'bearer', token: 't' },
+    })
+    await api.collections.updateSettings(folder.path, { scripts })
+    await expect(api.collections.updateSettings(folder.path, { variables: [] })).rejects.toThrow('not_a_collection')
+    const [tree] = (await api.collections.list()).collections
+    expect(tree).toMatchObject({ scripts, variables: [{ key: 'v' }], auth: { type: 'bearer', token: 't' } })
+    expect(tree.children[0]).toMatchObject({ kind: 'folder', scripts })
+  })
+
+  it('needs an open workspace', async () => {
+    await expect(makeApi().collections.updateSettings('collections/x', {})).rejects.toThrow('no_workspace_open')
+  })
+})
+
 describe('workspace.close', () => {
   it('cancels sends in flight and leaves no workspace open, which can be opened again', async () => {
     const api = makeApi()

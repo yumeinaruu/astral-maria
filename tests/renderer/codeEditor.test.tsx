@@ -3,6 +3,7 @@ import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import '@testing-library/jest-dom/vitest'
 import { acceptCompletion, closeCompletion, currentCompletions } from '@codemirror/autocomplete'
+import { syntaxTree } from '@codemirror/language'
 import { EditorView } from '@codemirror/view'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { CodeEditor, type CodeEditorHandle } from '../../src/renderer/src/components/CodeEditor'
@@ -92,6 +93,11 @@ describe('CodeEditor', () => {
     rerender(<CodeEditor value="a" language="text" onChange={() => {}} wrap={false} />)
     expect(viewOf()).toBe(before)
     expect(document.querySelector('.cm-lineWrapping')).toBeNull()
+  })
+
+  it('parses JavaScript in the javascript language', () => {
+    render(<CodeEditor value="pm.test('ok', () => {})" language="javascript" onChange={() => {}} />)
+    expect(syntaxTree(viewOf().state).topNode.name).toBe('Script')
   })
 
   it('switches language without recreating the document', () => {

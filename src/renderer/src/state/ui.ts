@@ -25,6 +25,15 @@ const isShares = (v: unknown): v is Record<PaneLayout, number> =>
   isNumber((v as Record<string, unknown>).side) &&
   isNumber((v as Record<string, unknown>).stacked)
 
+/** Height of the bottom console panel in px. */
+export const CONSOLE_MIN = 120
+export const CONSOLE_MAX = 600
+export const CONSOLE_DEFAULT = 200
+
+export function clampConsole(height: number): number {
+  return Math.round(Math.min(CONSOLE_MAX, Math.max(CONSOLE_MIN, height)))
+}
+
 export function clampSidebar(width: number): number {
   return Math.round(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, width)))
 }
@@ -40,6 +49,9 @@ export interface UiState {
   responseShare: Record<PaneLayout, number>
   /** Long lines of the response body wrap. */
   responseWrap: boolean
+  /** The console panel is shown; not persisted. */
+  consoleOpen: boolean
+  consoleHeight: number
   /** The environment whose sidebar row is in inline rename (just created or duplicated); not persisted. */
   renamingEnvironment: string | null
   /** The Import dialog is open; not persisted. */
@@ -53,6 +65,8 @@ export interface UiState {
   setResponseWrap(wrap: boolean): void
   setRenamingEnvironment(id: string | null): void
   setImportOpen(open: boolean): void
+  toggleConsole(): void
+  setConsoleHeight(height: number): void
 }
 
 const isSections = (v: unknown): v is Record<SidebarSection, boolean> =>
@@ -61,7 +75,10 @@ const isSections = (v: unknown): v is Record<SidebarSection, boolean> =>
   isBoolean((v as Record<string, unknown>).collections) &&
   isBoolean((v as Record<string, unknown>).environments)
 
-export function loadUi(): Omit<UiState, `set${string}` | 'toggleSidebar' | 'renamingEnvironment' | 'importOpen'> {
+export function loadUi(): Omit<
+  UiState,
+  `set${string}` | `toggle${string}` | 'renamingEnvironment' | 'importOpen' | 'consoleOpen'
+> {
   const shares = readPref('responseShare', SHARE_DEFAULTS, isShares)
   return {
     theme: loadTheme(),
@@ -71,6 +88,7 @@ export function loadUi(): Omit<UiState, `set${string}` | 'toggleSidebar' | 'rena
     layout: readPref('layout', 'side', oneOf<PaneLayout>('side', 'stacked')),
     responseShare: { side: clampShare(shares.side), stacked: clampShare(shares.stacked) },
     responseWrap: readPref('responseWrap', true, isBoolean),
+    consoleHeight: clampConsole(readPref('consoleHeight', CONSOLE_DEFAULT, isNumber)),
   }
 }
 
@@ -78,6 +96,7 @@ export const useUi = create<UiState>()((set, get) => ({
   ...loadUi(),
   renamingEnvironment: null,
   importOpen: false,
+  consoleOpen: false,
   setTheme(theme) {
     saveTheme(theme)
     set({ theme })
@@ -112,4 +131,10 @@ export const useUi = create<UiState>()((set, get) => ({
   },
   setRenamingEnvironment: (renamingEnvironment) => set({ renamingEnvironment }),
   setImportOpen: (importOpen) => set({ importOpen }),
+  toggleConsole: () => set({ consoleOpen: !get().consoleOpen }),
+  setConsoleHeight(height) {
+    const consoleHeight = clampConsole(height)
+    writePref('consoleHeight', consoleHeight)
+    set({ consoleHeight })
+  },
 }))

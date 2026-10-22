@@ -625,3 +625,65 @@ describe('local flag', () => {
     expect(environments[0].variables).toEqual([{ key: 'h', value: 'x', secret: false, enabled: true }])
   })
 })
+
+describe('setCurrentValues', () => {
+  it('writes current values to .local, encrypting secrets, and leaves the committed file alone', async () => {
+    await store.save(
+      env({
+        variables: [
+          { key: 'a', value: 'init', secret: false, enabled: true },
+          { key: 's', value: '', currentValue: 'old', secret: true, enabled: true },
+          { key: 'keep', value: 'k', currentValue: 'kc', secret: false, enabled: true }
+        ]
+      })
+    )
+    const committed = await read('environments/staging.json')
+    expect(await store.setCurrentValues('e1', { set: { a: 'now', s: 'new' }, unset: [] })).toBe(true)
+    expect(await read('environments/staging.json')).toBe(committed)
+    expect((await readJ('.local/environments/staging.json')).values).toEqual({ a: 'now', s: 'enc:new', keep: 'kc' })
+  })
+
+  it('adds a missing key with an empty initial value and removes an unset one', async () => {
+    await store.save(
+      env({
+        variables: [
+          { key: 'a', value: 'init', currentValue: 'cur', secret: false, enabled: true, local: true },
+          { key: 'b', value: 'b', secret: false, enabled: true }
+        ]
+      })
+    )
+    await store.setCurrentValues('e1', { set: { fresh: 'x' }, unset: ['a'] })
+    expect((await readJ('environments/staging.json')).variables).toEqual([
+      { key: 'b', value: 'b', secret: false, enabled: true },
+      { key: 'fresh', value: '', secret: false, enabled: true }
+    ])
+    expect(await readJ('.local/environments/staging.json')).toEqual({ values: { fresh: 'x' } })
+  })
+
+  it('keeps a locked secret it does not change', async () => {
+    await store.save(env({ variables: [{ key: 's', value: '', secret: true, enabled: true }] }))
+    await write('.local/environments/staging.json', JSON.stringify({ values: { s: 'garbage' } }))
+    await store.setCurrentValues('e1', { set: { other: '1' }, unset: [] })
+    expect((await readJ('.local/environments/staging.json')).values).toEqual({ s: 'garbage', other: '1' })
+  })
+
+  it('creates the globals when they were never saved', async () => {
+    expect(await store.setCurrentValues('globals', { set: { g: 'v' }, unset: [] })).toBe(true)
+    const { environments } = await store.list()
+    expect(environments).toEqual([
+      {
+        id: 'globals',
+        name: 'Globals',
+        variables: [{ key: 'g', value: '', currentValue: 'v', secret: false, enabled: true }]
+      }
+    ])
+  })
+
+  it('rejects an unknown environment and does nothing for an empty change', async () => {
+    await expect(store.setCurrentValues('nope', { set: { a: '1' }, unset: [] })).rejects.toThrow(
+      'environment_not_found'
+    )
+    expect(await store.setCurrentValues('globals', { set: {}, unset: ['x'] })).toBe(false)
+    expect(await exists('environments')).toBe(false)
+  })
+})

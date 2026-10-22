@@ -44,6 +44,7 @@ export function TreeView({
   const activePath = useApp((s) => s.activePath)
   const setExpanded = useApp((s) => s.setExpanded)
   const openRequest = useApp((s) => s.openRequest)
+  const openContainer = useApp((s) => s.openContainer)
   const move = useApp((s) => s.move)
 
   const keep = useMemo(() => filterPaths(collections, filter), [collections, filter])
@@ -69,10 +70,18 @@ export function TreeView({
     setExpanded(meta.path, !expanded[meta.path])
   }
 
+  /** A click: opens a request, expands or collapses a collection or folder. */
   function activate(meta: ItemMeta): void {
     setFocused(meta.path)
     if (meta.kind === 'request') openRequest(meta.path)
     else toggle(meta)
+  }
+
+  /** Enter: opens a request, or the settings tab of a collection or folder. */
+  function openItem(meta: ItemMeta): void {
+    setFocused(meta.path)
+    if (meta.kind === 'request') openRequest(meta.path)
+    else openContainer(meta.path)
   }
 
   function openMenu(path: string, x: number, y: number): void {
@@ -89,6 +98,7 @@ export function TreeView({
       )
     }
     items.push({ label: 'Rename', onSelect: () => onStartRename(meta.path, meta.name) })
+    if (isContainer(meta.kind)) items.push({ label: 'Edit', onSelect: () => openContainer(meta.path) })
     if (meta.kind === 'collection') {
       items.push({ label: 'Export', onSelect: () => void useApp.getState().exportCollection(meta.path) })
     }
@@ -135,7 +145,7 @@ export function TreeView({
       case 'Enter':
         if (!meta) return
         e.preventDefault()
-        return activate(meta)
+        return openItem(meta)
       case 'F2':
         if (!meta) return
         e.preventDefault()

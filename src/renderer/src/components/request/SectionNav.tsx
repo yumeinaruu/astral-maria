@@ -1,7 +1,8 @@
 import type { RequestItem } from '../../../../shared/types'
 import { Dropdown } from '../Dropdown'
+import { hasScripts } from './ScriptsPanel'
 
-export const SECTIONS = ['Params', 'Authorization', 'Headers', 'Body'] as const
+export const SECTIONS = ['Params', 'Authorization', 'Headers', 'Body', 'Scripts'] as const
 export type Section = (typeof SECTIONS)[number]
 
 /** Whether a section holds something, for the dot marker. */
@@ -11,6 +12,7 @@ export function configured(draft: RequestItem): Record<Section, boolean> {
     Authorization: draft.auth.type !== 'none' && draft.auth.type !== 'inherit',
     Headers: draft.headers.some((h) => h.enabled),
     Body: draft.body.mode !== 'none',
+    Scripts: hasScripts(draft.scripts),
   }
 }
 
@@ -65,7 +67,7 @@ export function SectionNav({ idBase, section, onSelect, draft, compact, onCookie
             >
               {name}
               {name === 'Headers' && headerCount > 0 && <span className="pill-count"> ({headerCount})</span>}
-              {(name === 'Body' || name === 'Authorization') && marks[name] && (
+              {(name === 'Body' || name === 'Authorization' || name === 'Scripts') && marks[name] && (
                 <>
                   <span className="config-dot" aria-hidden="true" />
                   <span className="sr-only"> (configured)</span>
