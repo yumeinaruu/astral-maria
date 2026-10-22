@@ -230,3 +230,50 @@ export type RunEvent =
   | { runId: string; type: 'started'; total: number; startedAt: string }
   | { runId: string; type: 'result'; result: RunResult }
   | { runId: string; type: 'finished'; reason: StopReason; durationMs: number }
+
+/** One uncommitted change in a linked workspace. `label` names it, e.g. `Request "Login user" in Auth API`. */
+export interface SyncChange {
+  path: string
+  kind: 'added' | 'modified' | 'deleted' | 'renamed'
+  label: string
+}
+
+/**
+ * A file the merge could not settle on its own. `id` is the file's workspace-relative path.
+ * - `fields`: both sides changed the same fields differently; `fields` lists them, values rendered as short text.
+ * - `file`: the file cannot be merged field by field (invalid JSON, not a workspace file, or added on both sides).
+ * - `deleted_remote`: deleted on the remote, changed here. `ours` keeps it, `theirs` deletes it.
+ * - `deleted_local`: deleted here, changed on the remote. `theirs` keeps it, `ours` deletes it.
+ */
+export interface SyncConflictItem {
+  id: string
+  label: string
+  kind: 'fields' | 'file' | 'deleted_remote' | 'deleted_local'
+  /** `path` is the key to use in `git.resolve`'s field map. */
+  fields?: { path: string; label: string; ours: string; theirs: string }[]
+}
+
+export interface SyncState {
+  /** The workspace folder is itself a git repository (not inside another one) with an `origin` remote. */
+  linked: boolean
+  branch: string | null
+  /** origin's URL, credentials stripped. */
+  remoteUrl: string | null
+  /** Local commits not on the remote, and remote commits not merged here (as of the last fetch). */
+  ahead: number
+  behind: number
+  changes: SyncChange[]
+  merging: boolean
+  /** Unresolved items; empty once every one is resolved, even while `merging`. */
+  conflicts: SyncConflictItem[]
+  /** The name and email git commits with; null when either is missing. */
+  identity: { name: string; email: string } | null
+}
+
+export type SyncOutcome =
+  | { kind: 'up_to_date' }
+  | { kind: 'done'; pulled: number; pushed: number }
+  | { kind: 'conflicts'; state: SyncState }
+
+/** How to resolve one conflict item: a whole side, or a side per field (keys are the `fields[].path` values). */
+export type SyncChoice = 'ours' | 'theirs' | { fields: Record<string, 'ours' | 'theirs'> }

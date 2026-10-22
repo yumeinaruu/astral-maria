@@ -12,6 +12,9 @@ import type {
   RunOptions,
   Scripts,
   SendResult,
+  SyncChoice,
+  SyncOutcome,
+  SyncState,
   WorkspaceInfo,
 } from './types'
 
@@ -85,6 +88,43 @@ export interface AstralApi {
     /** Save dialog; writes `json` and resolves the path, or null when cancelled. */
     saveReport(json: string, defaultName: string): Promise<string | null>
   }
+  /**
+   * Syncing the open workspace with a git repository through the system `git`. Every method but `state` and
+   * `openInEditor` rejects with `Finish or abort the merge first` while a merge is in progress (except the merge
+   * methods themselves). Errors are user-facing messages.
+   */
+  git: {
+    state(): Promise<SyncState>
+    /**
+     * Makes the workspace folder a repository (`git init`, also when it sits inside another repository), sets `origin`
+     * and fetches. When the remote branch exists it is merged (unrelated histories allowed only here); a local
+     * workspace with no commits is committed first. May end with conflicts, shown in the returned state.
+     */
+    link(remoteUrl: string): Promise<SyncState>
+    /**
+     * Directory picker, then clones into the chosen empty folder and opens it as the workspace (creating
+     * `workspace.json` when the repository has none). Null when the picker is cancelled.
+     */
+    clone(remoteUrl: string): Promise<WorkspaceInfo | null>
+    /** Saves the commit identity for this repository only (`git config --local`). */
+    setIdentity(name: string, email: string): Promise<void>
+    /** Commits every change except `.local/`; a no-op when nothing changed. Rejects with `identity_missing`. */
+    commit(message: string): Promise<void>
+    /** Commits (when `message` is given), fetches, merges the remote, pushes. */
+    sync(message: string | null): Promise<SyncOutcome>
+    /** Fetches and merges; rejects when uncommitted changes touch files the remote changed. */
+    pull(): Promise<SyncOutcome>
+    /** Rejects with `The remote has new changes. Pull first` when the remote is ahead. */
+    push(): Promise<SyncOutcome>
+    /** Resolves one conflict item (see `SyncConflictItem` for what each side means) and returns the new state. */
+    resolve(id: string, choice: SyncChoice): Promise<SyncState>
+    /** Opens the conflicted file in the OS default editor. */
+    openInEditor(id: string): Promise<void>
+    /** Commits the merge once every item is resolved, then pushes if the merge came from a sync. */
+    finishMerge(): Promise<SyncOutcome>
+    /** `git merge --abort`: back to the state before the merge; commits made before it are kept. */
+    abortMerge(): Promise<SyncState>
+  }
   app: {
     /** Acknowledges a flush request (see `AstralEvents.onFlushRequest`): every unsaved draft has been written. */
     flushed(): Promise<void>
@@ -126,6 +166,20 @@ export const API_METHODS = {
   transfer: ['importFiles', 'importText', 'exportCollection', 'exportEnvironment'],
   http: ['send', 'cancel'],
   runner: ['start', 'stop', 'pickDataFile', 'saveReport'],
+  git: [
+    'state',
+    'link',
+    'clone',
+    'setIdentity',
+    'commit',
+    'sync',
+    'pull',
+    'push',
+    'resolve',
+    'openInEditor',
+    'finishMerge',
+    'abortMerge',
+  ],
   app: ['flushed'],
 } as const satisfies { [G in keyof AstralApi]: readonly (keyof AstralApi[G] & string)[] }
 

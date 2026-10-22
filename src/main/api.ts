@@ -37,12 +37,14 @@ import type { ScriptVariables } from './scripts/types'
 import { CollectionStore } from './storage/collectionStore'
 import { EnvironmentStore, valuesOf, type SecretCipher } from './storage/environmentStore'
 import { readJson, writeJsonAtomic } from './storage/fsJson'
-import { createWorkspace, openWorkspace, readWorkspaceInfo } from './storage/workspaceStore'
+import * as gitSync from './git/sync'
+import { cloneWorkspace, createWorkspace, openWorkspace, readWorkspaceInfo } from './storage/workspaceStore'
 import { exportCollection, exportEnvironment, importFiles, importText } from './transfer'
 
 export interface ApiDeps {
   cipher: SecretCipher
-  pickDirectory: () => Promise<string | null>
+  /** Folder picker; `clone` asks for the (empty) folder to clone into. */
+  pickDirectory: (purpose?: 'workspace' | 'clone') => Promise<string | null>
   /** Open dialog for Postman files; an empty list when cancelled. */
   pickImportFiles: () => Promise<string[]>
   /** Save dialog suggesting `defaultName`; null when cancelled. */
@@ -60,6 +62,8 @@ export interface ApiDeps {
   pickDataFile?: () => Promise<string | null>
   /** Pushes a runner event to the renderer. */
   emitRunEvent?: (event: RunEvent) => void
+  /** Opens a file in the OS default app (Electron's `shell.openPath`); resolves an error message, '' on success. */
+  openPath?: (absPath: string) => Promise<string>
 }
 
 /** Collection variable changes made by scripts: a value, or null for a key a script unset. */
@@ -225,6 +229,21 @@ export function createApi(deps: ApiDeps): AstralApi {
     importQueue = result.catch(() => undefined)
     return result
   }
+
+  /** Git operations run one at a time, each on the workspace open when its turn comes. */
+  let gitQueue: Promise<unknown> = Promise.resolve()
+
+  function serialGit<T>(fn: (dir: string) => Promise<T>): Promise<T> {
+    const result = gitQueue.then(async () => fn((await workspace()).info.dir))
+    gitQueue = result.catch(() => undefined)
+    return result
+  }
+
+  /** A git operation that changes the repository or the workspace's files: serialized, and a quit waits for it. */
+  const gitOp =
+    <A extends unknown[], R>(fn: (dir: string, ...args: A) => Promise<R>) =>
+    (...args: A): Promise<R> =>
+      operations.track(serialGit((dir) => fn(dir, ...args)))
 
   const trackWrite = <T>(write: Promise<T>): Promise<T> => operations.track(write)
 
@@ -658,6 +677,32 @@ export function createApi(deps: ApiDeps): AstralApi {
         await trackWrite(fs.writeFile(target, json, 'utf8'))
         return target
       },
+    },
+    git: {
+      state: () => serialGit(gitSync.readSyncState),
+      link: gitOp(gitSync.link),
+      async clone(remoteUrl: string) {
+        if (typeof remoteUrl !== 'string' || remoteUrl.trim() === '' || remoteUrl.trim().startsWith('-')) {
+          throw new Error('Enter a repository URL')
+        }
+        // The dialog is not tracked: a quit must not wait for the user to answer it.
+        const dir = await deps.pickDirectory('clone')
+        if (dir === null) return null
+        return tracked(async () => activate(await cloneWorkspace(dir, remoteUrl.trim())))()
+      },
+      setIdentity: gitOp(gitSync.setIdentity),
+      commit: gitOp(gitSync.commit),
+      sync: gitOp(gitSync.sync),
+      pull: gitOp(gitSync.pull),
+      push: gitOp(gitSync.push),
+      resolve: gitOp(gitSync.resolve),
+      async openInEditor(id: string) {
+        const file = await serialGit((dir) => gitSync.conflictPath(dir, id))
+        const error = deps.openPath ? await deps.openPath(file) : 'Opening files is not available'
+        if (error) throw new Error(error)
+      },
+      finishMerge: gitOp(gitSync.finishMerge),
+      abortMerge: gitOp(gitSync.abortMerge),
     },
     app: {
       async flushed() {

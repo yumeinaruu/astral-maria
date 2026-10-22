@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, safeStorage, session } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, safeStorage, session, shell } from 'electron'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { API_METHODS, channelName, FLUSH_REQUEST_CHANNEL, RUN_EVENT_CHANNEL } from '../shared/api'
@@ -95,9 +95,10 @@ function createWindow(): void {
   }
 }
 
-async function pickDirectory(): Promise<string | null> {
-  // E2E hook: the native dialog cannot be driven by Playwright, so tests supply the folder via the environment.
-  if (e2eWorkspace) return e2eWorkspace
+async function pickDirectory(purpose: 'workspace' | 'clone' = 'workspace'): Promise<string | null> {
+  // E2E hook: the native dialog cannot be driven by Playwright, so tests supply the folder via the environment: the
+  // workspace, or for `Open from Git` the empty folder to clone into.
+  if (e2eWorkspace) return purpose === 'clone' ? (process.env.ASTRAL_E2E_CLONE_DIR ?? null) : e2eWorkspace
   const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
   return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0]
 }
@@ -148,6 +149,7 @@ function registerApi(): void {
     pickExportPath,
     pickDataFile,
     emitRunEvent,
+    openPath: (absPath) => shell.openPath(absPath),
     recentFile: join(app.getPath('userData'), 'recent-workspaces.json'),
     operations,
     onFlushed: () => flusher.acknowledge(),

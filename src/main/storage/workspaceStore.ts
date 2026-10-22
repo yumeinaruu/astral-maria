@@ -2,6 +2,7 @@ import * as fs from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import * as path from 'node:path'
 import type { WorkspaceInfo } from '../../shared/types'
+import { runGit } from '../git/git'
 import { CorruptFileError, readJson, writeJsonAtomic } from './fsJson'
 
 interface WorkspaceFile {
@@ -22,7 +23,8 @@ async function exists(p: string): Promise<boolean> {
   }
 }
 
-async function ensureGitignore(dir: string): Promise<void> {
+/** Makes sure `.gitignore` lists `.local/`, appending it when missing. */
+export async function ensureGitignore(dir: string): Promise<void> {
   const file = path.join(dir, '.gitignore')
   let text = ''
   try {
@@ -74,4 +76,23 @@ export async function openWorkspace(dir: string): Promise<WorkspaceInfo> {
   const info = await readWorkspaceInfo(dir)
   await ensureGitignore(dir)
   return info
+}
+
+/**
+ * Clones `remoteUrl` into `dir`, which must be empty or not exist yet, and opens it as a workspace. A repository
+ * without `workspace.json` becomes a new workspace named after the folder.
+ */
+export async function cloneWorkspace(dir: string, remoteUrl: string): Promise<WorkspaceInfo> {
+  let entries: string[] = []
+  try {
+    entries = await fs.readdir(dir)
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
+  }
+  if (entries.length > 0) throw new Error('Choose an empty folder to clone into')
+  const parent = path.dirname(dir)
+  await fs.mkdir(parent, { recursive: true })
+  await runGit(parent, ['clone', '--quiet', '--', remoteUrl, dir])
+  if (await exists(path.join(dir, META_FILE))) return openWorkspace(dir)
+  return createWorkspace(dir, path.basename(dir))
 }

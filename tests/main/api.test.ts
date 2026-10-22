@@ -6,6 +6,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createApi, type ApiDeps } from '../../src/main/api'
 import { OperationTracker } from '../../src/main/flushGuard'
+import { gitSandbox } from './gitHelpers'
 import { API_METHODS, CHANNELS, channelName, unwrapIpcError, type AstralApi } from '../../src/shared/api'
 import type { Environment, RequestItem, RunEvent, RunOptions } from '../../src/shared/types'
 
@@ -467,6 +468,39 @@ describe('quit support', () => {
 describe('workspace.pickDirectory', () => {
   it('delegates to the injected picker', async () => {
     expect(await makeApi(async () => '/some/dir').workspace.pickDirectory()).toBe('/some/dir')
+  })
+})
+
+describe('git', () => {
+  it('needs an open workspace', async () => {
+    const api = makeApi()
+    await expect(api.git.state()).rejects.toThrow('no_workspace_open')
+    await expect(api.git.sync(null)).rejects.toThrow('no_workspace_open')
+  })
+
+  it('clone asks the picker for a clone folder and opens nothing when cancelled', async () => {
+    const purposes: unknown[] = []
+    const api = makeApi(async (...args: unknown[]) => {
+      purposes.push(args[0])
+      return null
+    })
+    expect(await api.git.clone('git@example.com:team/apis.git')).toBeNull()
+    expect(purposes).toEqual(['clone'])
+    await api.workspace.pickDirectory()
+    expect(purposes).toEqual(['clone', undefined])
+    await expect(api.git.clone('-x')).rejects.toThrow('Enter a repository URL')
+    expect(purposes).toHaveLength(2)
+  })
+
+  it('reports a workspace folder that is not a repository as not linked', async () => {
+    const box = gitSandbox() // git's config isolated: this runs the real git
+    try {
+      const api = makeApi()
+      await newWorkspace(api)
+      expect(await api.git.state()).toMatchObject({ linked: false, merging: false, conflicts: [] })
+    } finally {
+      box.cleanup()
+    }
   })
 })
 
