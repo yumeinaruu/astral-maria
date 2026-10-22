@@ -224,11 +224,20 @@ export async function runWithScripts(deps: PipelineDeps, run: PipelineRun): Prom
   return { ...result, scripts: await finish('post-response') }
 }
 
+/** Replaces every secret value of 4 or more characters, longest first, in `text`. */
+export function maskSecrets(text: string, secrets: Iterable<string>): string {
+  return masker(secrets)(text)
+}
+
+function masker(secrets: Iterable<string>): (text: string) => string {
+  const values = [...secrets].filter((s) => s.length >= MIN_MASKED_LENGTH).sort((a, b) => b.length - a.length)
+  return (text) => values.reduce((out, secret) => out.split(secret).join(MASK), text)
+}
+
 /** Replaces every secret value of 4 or more characters, longest first, in the report's texts. */
 function mask(report: ScriptReport, secrets: Set<string>): ScriptReport {
-  const values = [...secrets].filter((s) => s.length >= MIN_MASKED_LENGTH).sort((a, b) => b.length - a.length)
-  if (values.length === 0) return report
-  const hide = (text: string) => values.reduce((out, secret) => out.split(secret).join(MASK), text)
+  if (![...secrets].some((s) => s.length >= MIN_MASKED_LENGTH)) return report
+  const hide = masker(secrets)
   return {
     ...report,
     logs: report.logs.map((l) => ({ ...l, text: hide(l.text) })),

@@ -7,14 +7,32 @@ import type {
   Environment,
   KeyValue,
   RequestItem,
+  RunEvent,
   Scripts,
+  SendResult,
   TreeNode,
   WorkspaceInfo,
 } from '../shared/types'
 import { OperationTracker } from './flushGuard'
 import { orderedScopes, resolveRequest, type VariableScope } from './http/resolve'
-import { sendRequest } from './http/sendRequest'
-import { hasScripts, runWithScripts, type ScriptLimits, type ScriptRunner, type ScriptSource } from './scripts/pipeline'
+import { requestUrl, sendRequest } from './http/sendRequest'
+import { dataScope, MAX_DATA_BYTES, parseDataFile } from './runner/dataFile'
+import {
+  abortableSleep,
+  fileName,
+  startRun,
+  type PlanEntry,
+  type RunHandle,
+  type VariableOverlay,
+} from './runner/runner'
+import {
+  hasScripts,
+  maskSecrets,
+  runWithScripts,
+  type ScriptLimits,
+  type ScriptRunner,
+  type ScriptSource,
+} from './scripts/pipeline'
 import type { ScriptVariables } from './scripts/types'
 import { CollectionStore } from './storage/collectionStore'
 import { EnvironmentStore, valuesOf, type SecretCipher } from './storage/environmentStore'
@@ -38,6 +56,10 @@ export interface ApiDeps {
   scriptHost?: ScriptRunner
   /** Per-script limits; tests lower them. */
   scriptLimits?: ScriptLimits
+  /** Open dialog for one runner data file (.csv / .json); null when cancelled. Without it, nothing is picked. */
+  pickDataFile?: () => Promise<string | null>
+  /** Pushes a runner event to the renderer. */
+  emitRunEvent?: (event: RunEvent) => void
 }
 
 /** Collection variable changes made by scripts: a value, or null for a key a script unset. */
@@ -49,6 +71,26 @@ interface Open {
   environments: EnvironmentStore
   /** `pm.collectionVariables` changes by collection path; they last until the workspace is closed or switched. */
   sessionVariables: Map<string, Overrides>
+  /** The collection run in progress, if any: at most one per workspace. */
+  run?: RunHandle
+}
+
+/** One request to send: as `http.send` gets it, or as the runner loaded it, with the runner's extras. */
+interface SendInput {
+  /** As edited or saved, variables unresolved. */
+  request: RequestItem
+  collection: CollectionTree | undefined
+  /** The request's file; locates its folders' scripts. */
+  requestPath: unknown
+  environmentId: string | null
+  signal: AbortSignal
+  /** The runner's data row; `{}` outside the runner. */
+  iterationData?: Record<string, unknown>
+  info?: { iteration: number; iterationCount: number }
+  /** Variable changes go here instead of to disk and the session (runner, keepVariables off). */
+  overlay?: VariableOverlay | null
+  /** When given, receives the URL sent (or the request's own when nothing was sent), secrets masked. */
+  observe?: { url: string }
 }
 
 const GLOBALS_ID = 'globals'
@@ -99,6 +141,43 @@ function changesOf(
   for (const [key, value] of Object.entries(after)) if (before[key] !== value) set[key] = value
   const unset = Object.keys(before).filter((key) => !Object.hasOwn(after, key))
   return Object.keys(set).length === 0 && unset.length === 0 ? null : { set, unset }
+}
+
+/** Records a script's changes to one scope: a value, or null for a key it removed. */
+function applyChanges(
+  target: Map<string, string | null> | undefined,
+  changes: { set: Record<string, string>; unset: string[] } | null,
+): void {
+  if (!target || !changes) return
+  for (const [key, value] of Object.entries(changes.set)) target.set(key, value)
+  for (const key of changes.unset) target.set(key, null)
+}
+
+/** The overlay layer of the selected environment; the globals' own when the globals are selected. */
+function environmentOverlay(
+  overlay: VariableOverlay | null | undefined,
+  environmentId: string | null,
+): Overrides | undefined {
+  if (!overlay || environmentId === null) return undefined
+  return environmentId === GLOBALS_ID ? overlay.globals : overlay.environment
+}
+
+/** The values, in `scope`, of the secret variables of environment `id`. */
+function secretValues(environments: Environment[], id: string | null, scope: VariableScope): string[] {
+  const env = id === null ? undefined : environments.find((e) => e.id === id)
+  return (env?.variables ?? []).filter((v) => v.secret && Object.hasOwn(scope, v.key)).map((v) => scope[v.key])
+}
+
+const REQUEST_SUFFIX = '.request.json'
+
+/** The folder at `folderPath`, searched depth-first. */
+function findFolder(nodes: TreeNode[], folderPath: string): TreeNode[] | undefined {
+  for (const node of nodes) {
+    if (node.kind !== 'folder') continue
+    if (node.path === folderPath) return node.children
+    if (folderPath.startsWith(`${node.path}/`)) return findFolder(node.children, folderPath)
+  }
+  return undefined
 }
 
 const scriptLabel = (kind: string, name: string) => `${kind} "${name}"`
@@ -165,9 +244,14 @@ export function createApi(deps: ApiDeps): AstralApi {
     return ws
   }
 
+  /** Also stops the workspace's collection run, which emits its `finished` event before this returns. */
   const cancelAllSends = (): void => {
     for (const controller of inFlight.values()) controller.abort()
     inFlight.clear()
+    if (current?.run) {
+      current.run.stop()
+      current.run = undefined
+    }
   }
 
   /** Returns the open workspace, rejecting if none is open or its folder has disappeared. */
@@ -224,66 +308,140 @@ export function createApi(deps: ApiDeps): AstralApi {
     }
   }
 
+  async function listEnvironments(ws: Open): Promise<Environment[]> {
+    try {
+      return (await ws.environments.list()).environments
+    } catch {
+      // Unreadable environments are treated as having no values.
+      return []
+    }
+  }
+
+  /**
+   * The send of one request, for `http.send` and the runner: through the scripts pipeline when any script would run,
+   * else resolved and sent directly. Both paths resolve the runner's data row and read its variable overlay.
+   */
+  async function sendOne(ws: Open, s: SendInput): Promise<SendResult> {
+    const overrides = s.collection ? ws.sessionVariables.get(s.collection.path) : undefined
+    const collectionScope = withOverrides(
+      withOverrides(enabledScope(s.collection?.variables ?? []), overrides),
+      s.overlay?.collection,
+    )
+    const sources = scriptSources(s.collection, s.requestPath, s.request)
+    if (deps.scriptHost && hasScripts(sources)) {
+      return sendWithScripts(ws, deps.scriptHost, s, collectionScope, sources)
+    }
+    const envOverlay = environmentOverlay(s.overlay, s.environmentId)
+    const environment = withOverrides(await environmentValues(ws, s.environmentId), envOverlay)
+    const globals = withOverrides(await environmentValues(ws, GLOBALS_ID), s.overlay?.globals)
+    const scopes = orderedScopes({
+      data: dataScope(s.iterationData ?? {}),
+      environment,
+      collection: collectionScope,
+      globals,
+    })
+    const resolved = resolveRequest(withInheritedAuth(s.request, s.collection), scopes)
+    const result = await sendRequest(resolved, { signal: s.signal })
+    if (s.observe) {
+      const environments = await listEnvironments(ws)
+      const secrets = [
+        ...secretValues(environments, s.environmentId, environment),
+        ...secretValues(environments, GLOBALS_ID, globals),
+      ]
+      s.observe.url = maskSecrets(result.ok ? result.response.finalUrl : requestUrl(resolved), secrets)
+    }
+    return result
+  }
+
   async function sendWithScripts(
     ws: Open,
     host: ScriptRunner,
-    send: {
-      request: RequestItem
-      collection: CollectionTree | undefined
-      collectionScope: VariableScope
-      sources: ScriptSource[]
-      environmentId: string | null
-      signal: AbortSignal
-    },
-  ) {
-    let environments: Environment[] = []
-    try {
-      environments = (await ws.environments.list()).environments
-    } catch {
-      // Unreadable environments are treated as having no values, as on the plain path.
-    }
-    const env = send.environmentId === null ? undefined : environments.find((e) => e.id === send.environmentId)
+    s: SendInput,
+    collectionScope: VariableScope,
+    sources: ScriptSource[],
+  ): Promise<SendResult> {
+    const environments = await listEnvironments(ws)
+    const env = s.environmentId === null ? undefined : environments.find((e) => e.id === s.environmentId)
     const globals = environments.find((e) => e.id === GLOBALS_ID)
     const secretKeys = (e: Environment | undefined) => e?.variables.filter((v) => v.secret).map((v) => v.key) ?? []
+    const overlay = s.overlay ?? null
+    const envOverlay = env ? environmentOverlay(overlay, env.id) : undefined
     const variables: ScriptVariables = {
       local: {},
-      environment: env ? valuesOf(env) : null,
-      collection: send.collectionScope,
-      globals: globals ? valuesOf(globals) : {},
+      environment: env ? withOverrides(valuesOf(env), envOverlay) : null,
+      collection: collectionScope,
+      globals: withOverrides(globals ? valuesOf(globals) : {}, overlay?.globals),
     }
-    const collectionPath = send.collection?.path
-    return runWithScripts(
-      { host, send: sendRequest, ...(deps.scriptLimits && { limits: deps.scriptLimits }) },
+    const collectionPath = s.collection?.path
+    // For `observe`: the secret values the scripts started and ended with, and the main send's resolved URL.
+    const secrets = new Set<string>()
+    const noteSecrets = (vars: ScriptVariables) => {
+      for (const key of secretKeys(env)) if (vars.environment?.[key] !== undefined) secrets.add(vars.environment[key])
+      for (const key of secretKeys(globals)) if (vars.globals[key] !== undefined) secrets.add(vars.globals[key])
+    }
+    let sentUrl: string | undefined
+    let mainSendNext = false
+    const send: typeof sendRequest = (request, options) => {
+      // `prepare` runs just before the main send is resolved; every other send is a `pm.sendRequest`.
+      if (mainSendNext) {
+        mainSendNext = false
+        sentUrl = requestUrl(request)
+      }
+      return sendRequest(request, options)
+    }
+    const result = await runWithScripts(
+      { host, send, ...(deps.scriptLimits && { limits: deps.scriptLimits }) },
       {
-        request: send.request,
-        sources: send.sources,
+        request: s.request,
+        sources,
         variables,
         ...(env && { environmentName: env.name }),
+        ...(s.info && { info: s.info }),
+        ...(s.iterationData && { iterationData: s.iterationData }),
         secretKeys: { environment: secretKeys(env), globals: secretKeys(globals) },
-        prepare: (request) => withInheritedAuth(request, send.collection),
-        signal: send.signal,
-        persist: (initial, final) =>
-          operations.track(
+        prepare: (request) => {
+          mainSendNext = true
+          return withInheritedAuth(request, s.collection)
+        },
+        signal: s.signal,
+        persist: (initial, final) => {
+          noteSecrets(initial)
+          noteSecrets(final)
+          const collectionChanges = changesOf(initial.collection, final.collection)
+          const envChanges = (before: VariableScope | null, after: VariableScope | null) =>
+            before && after ? changesOf(before, after) : null
+          if (overlay) {
+            // Kept for the rest of the run only: nothing is written and no environment is reported as saved.
+            if (collectionPath !== undefined) applyChanges(overlay.collection, collectionChanges)
+            if (env) applyChanges(envOverlay, envChanges(initial.environment, final.environment))
+            if (env?.id !== GLOBALS_ID) applyChanges(overlay.globals, envChanges(initial.globals, final.globals))
+            return Promise.resolve([])
+          }
+          return operations.track(
             (async () => {
               const changed: string[] = []
               const write = async (id: string, before: VariableScope | null, after: VariableScope | null) => {
-                const changes = before && after ? changesOf(before, after) : null
+                const changes = envChanges(before, after)
                 if (changes && (await ws.environments.setCurrentValues(id, changes))) changed.push(id)
               }
-              const collectionChanges = changesOf(initial.collection, final.collection)
               if (collectionPath !== undefined && collectionChanges) {
                 const overrides: Overrides = ws.sessionVariables.get(collectionPath) ?? new Map()
-                for (const [key, value] of Object.entries(collectionChanges.set)) overrides.set(key, value)
-                for (const key of collectionChanges.unset) overrides.set(key, null)
+                applyChanges(overrides, collectionChanges)
                 ws.sessionVariables.set(collectionPath, overrides)
               }
               if (env) await write(env.id, initial.environment, final.environment)
               if (env?.id !== GLOBALS_ID) await write(GLOBALS_ID, initial.globals, final.globals)
               return changed
             })(),
-          ),
+          )
+        },
       },
     )
+    if (s.observe) {
+      const url = result.ok ? result.response.finalUrl : (sentUrl ?? s.request.url)
+      s.observe.url = maskSecrets(url, secrets)
+    }
+    return result
   }
 
   function withInheritedAuth(request: RequestItem, collection: CollectionTree | undefined): RequestItem {
@@ -377,24 +535,10 @@ export function createApi(deps: ApiDeps): AstralApi {
         const controller = new AbortController()
         inFlight.set(sendId, controller)
         try {
-          const collection = await findCollection(ws, context.collectionPath)
-          const overrides = collection ? ws.sessionVariables.get(collection.path) : undefined
-          const collectionScope = withOverrides(enabledScope(collection?.variables ?? []), overrides)
-          const sources = scriptSources(collection, context.requestPath, request)
-          if (!deps.scriptHost || !hasScripts(sources)) {
-            const scopes = orderedScopes({
-              environment: await environmentValues(ws, context.environmentId),
-              collection: collectionScope,
-              globals: await environmentValues(ws, GLOBALS_ID),
-            })
-            const resolved = resolveRequest(withInheritedAuth(request, collection), scopes)
-            return await sendRequest(resolved, { signal: controller.signal })
-          }
-          return await sendWithScripts(ws, deps.scriptHost, {
+          return await sendOne(ws, {
             request,
-            collection,
-            collectionScope,
-            sources,
+            collection: await findCollection(ws, context.collectionPath),
+            requestPath: context.requestPath,
             environmentId: context.environmentId,
             signal: controller.signal,
           })
@@ -407,6 +551,112 @@ export function createApi(deps: ApiDeps): AstralApi {
         if (typeof sendId !== 'string') return
         inFlight.get(sendId)?.abort()
         inFlight.delete(sendId)
+      },
+    },
+    runner: {
+      async start(options) {
+        const ws = await workspace()
+        if (ws.run) throw new Error('runner_busy')
+        /** The collection as it was when the run started; requests run as saved then. */
+        let snapshot: { collection: CollectionTree; requests: Map<string, RequestItem> } | undefined
+        const handle: RunHandle = startRun(
+          {
+            async loadPlan(planPath) {
+              const { collections, errors } = await ws.collections.list()
+              const collection = collections.find((c) => c.path === collectionRoot(planPath))
+              const children =
+                planPath === collection?.path ? collection.children : findFolder(collection?.children ?? [], planPath)
+              if (!collection || !children) throw new Error(`not_found: ${planPath}`)
+              const plan: PlanEntry[] = []
+              const requests = new Map<string, RequestItem>()
+              const walk = (nodes: TreeNode[]) => {
+                for (const node of nodes) {
+                  if (node.kind === 'folder') walk(node.children)
+                  else {
+                    plan.push({ path: node.path, name: node.name, method: node.request.method })
+                    requests.set(node.path, node.request)
+                  }
+                }
+              }
+              walk(children)
+              for (const e of errors) {
+                if (e.path.startsWith(`${planPath}/`) && e.path.endsWith(REQUEST_SUFFIX)) {
+                  plan.push({ path: e.path, name: fileName(e.path), method: 'GET', loadError: e.message })
+                }
+              }
+              snapshot = { collection, requests }
+              return plan
+            },
+            async sendOne(input) {
+              const request = snapshot?.requests.get(input.requestPath)
+              if (!snapshot || !request) {
+                return { ok: false, error: { code: 'not_found', message: 'Request not found' } }
+              }
+              const observe = { url: '' }
+              const result = await sendOne(ws, {
+                request,
+                collection: snapshot.collection,
+                requestPath: input.requestPath,
+                environmentId: input.environmentId,
+                signal: input.signal,
+                iterationData: input.data,
+                info: input.info,
+                overlay: input.overlay,
+                observe,
+              })
+              return { ...result, url: observe.url }
+            },
+            emit(event) {
+              if (event.type === 'finished' && ws.run === handle) ws.run = undefined
+              deps.emitRunEvent?.(event)
+            },
+            sleep: abortableSleep,
+          },
+          options,
+        )
+        ws.run = handle
+        try {
+          await handle.started
+        } catch (e) {
+          if (ws.run === handle) ws.run = undefined
+          throw e
+        }
+        return handle.runId
+      },
+      async stop(runId) {
+        // An unknown or finished run is a no-op.
+        if (current?.run && current.run.runId === runId) {
+          current.run.stop()
+          current.run = undefined
+        }
+      },
+      // The dialogs are not tracked: a quit must not wait for the user to answer one.
+      async pickDataFile() {
+        const file = deps.pickDataFile ? await deps.pickDataFile() : null
+        if (file === null) return null
+        const ext = path.extname(file).toLowerCase()
+        const kind = ext === '.csv' ? 'csv' : ext === '.json' ? 'json' : null
+        if (kind === null) throw new Error('The data file must be a .csv or .json file')
+        const tooBig = () => new Error('The data file is larger than 10 MB')
+        const handle = await fs.open(file, 'r')
+        let bytes: Buffer
+        try {
+          if ((await handle.stat()).size > MAX_DATA_BYTES) throw tooBig()
+          bytes = await handle.readFile()
+        } finally {
+          await handle.close()
+        }
+        // The file may have grown between the check and the read.
+        if (bytes.length > MAX_DATA_BYTES) throw tooBig()
+        return { name: path.basename(file), rows: parseDataFile(bytes.toString('utf8'), kind) }
+      },
+      async saveReport(json, defaultName) {
+        if (typeof json !== 'string' || typeof defaultName !== 'string') throw new Error('invalid_argument')
+        const before = await workspace()
+        const target = await pickExportPath(before)(defaultName)
+        if (target === null) return null
+        await trackWrite(fs.writeFile(target, json, 'utf8'))
+        return target
       },
     },
     app: {

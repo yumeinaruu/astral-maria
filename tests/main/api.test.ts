@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createApi, type ApiDeps } from '../../src/main/api'
 import { OperationTracker } from '../../src/main/flushGuard'
 import { API_METHODS, CHANNELS, channelName, unwrapIpcError, type AstralApi } from '../../src/shared/api'
-import type { Environment, RequestItem } from '../../src/shared/types'
+import type { Environment, RequestItem, RunEvent, RunOptions } from '../../src/shared/types'
 
 const cipher = {
   encrypt: (s: string) => `x:${s}`,
@@ -547,6 +547,144 @@ describe('transfer', () => {
     const waiting = operations.idle().then(() => order.push('idle'))
     await Promise.all([importing, waiting])
     expect(order).toEqual(['import', 'idle'])
+  })
+})
+
+describe('runner', () => {
+  function runnerApi(over: Partial<ApiDeps> = {}) {
+    const events: RunEvent[] = []
+    const api = makeApi(undefined, { emitRunEvent: (e) => events.push(e), ...over })
+    const finished = () => waitFor(() => events.some((e) => e.type === 'finished'))
+    return { api, events, finished }
+  }
+
+  async function savedRequest(api: AstralApi, parent: string, name: string, over: Partial<RequestItem>) {
+    const node = await api.collections.createRequest(parent, name)
+    await api.collections.saveRequest(node.path, { ...node.request, ...over })
+    return node.path
+  }
+
+  const runOptions = (over: Partial<RunOptions> & Pick<RunOptions, 'path' | 'requestPaths'>): RunOptions => ({
+    environmentId: null,
+    iterations: 1,
+    delayMs: 0,
+    data: null,
+    keepVariables: true,
+    stopOnError: false,
+    ...over,
+  })
+
+  it('start drives real sends, resolving data values on the plain path, and emits the events in order', async () => {
+    const { api, events, finished } = runnerApi()
+    await newWorkspace(api)
+    await api.environments.save(env('e1', { baseUrl: base, user: 'fromEnv' }))
+    const c = await api.collections.createCollection('Shop')
+    const one = await savedRequest(api, c.path, 'One', { url: '{{baseUrl}}/one/{{user}}' })
+    const two = await savedRequest(api, c.path, 'Two', { url: '{{baseUrl}}/two', method: 'POST' })
+    const runId = await api.runner.start(
+      runOptions({
+        path: c.path,
+        requestPaths: [one, two],
+        environmentId: 'e1',
+        iterations: 2,
+        data: { name: 'users.csv', rows: [{ user: 'ann' }, { user: { id: 7 } }] },
+      }),
+    )
+    await finished()
+    expect(seen.map((r) => r.url)).toEqual(['/one/ann', '/two', '/one/%7B%22id%22:7%7D', '/two'])
+    expect(events.map((e) => e.type)).toEqual(['started', 'result', 'result', 'result', 'result', 'finished'])
+    expect(events.every((e) => e.runId === runId)).toBe(true)
+    expect(events[0]).toMatchObject({ type: 'started', total: 4 })
+    expect(events[1]).toMatchObject({
+      type: 'result',
+      result: { iteration: 0, path: one, name: 'One', method: 'GET', url: `${base}/one/ann`, status: 200 },
+    })
+    expect(events[2]).toMatchObject({ result: { iteration: 0, name: 'Two', method: 'POST' } })
+    expect(events[3]).toMatchObject({ result: { iteration: 1, name: 'One' } })
+    expect(events.at(-1)).toMatchObject({ type: 'finished', reason: 'completed' })
+  })
+
+  it('masks secret values in the reported URL', async () => {
+    const { api, events, finished } = runnerApi()
+    await newWorkspace(api)
+    await api.environments.save({
+      id: 'e1',
+      name: 'e1',
+      variables: [{ key: 'key', value: '', currentValue: 'supersecret', secret: true, enabled: true }],
+    })
+    const c = await api.collections.createCollection('Shop')
+    const r = await savedRequest(api, c.path, 'R', {
+      url: `${base}/m`,
+      params: [{ key: 'k', value: '{{key}}', enabled: true }],
+    })
+    await api.runner.start(runOptions({ path: c.path, requestPaths: [r], environmentId: 'e1' }))
+    await finished()
+    expect(seen[0].url).toBe('/m?k=supersecret')
+    const result = events.find((e) => e.type === 'result')
+    expect(result?.type === 'result' && result.result.url).toBe(`${base}/m?k=••••`)
+  })
+
+  it('stop(id) of an unknown run is a no-op, and the methods need an open workspace', async () => {
+    const { api } = runnerApi()
+    const options = runOptions({ path: 'collections/c', requestPaths: ['collections/c/r'] })
+    await expect(api.runner.start(options)).rejects.toThrow('no_workspace_open')
+    await expect(api.runner.saveReport('{}', 'r.json')).rejects.toThrow('no_workspace_open')
+    await api.runner.stop('nope')
+  })
+
+  describe('pickDataFile', () => {
+    async function pick(name: string, content: string | null) {
+      const file = path.join(tmp, name)
+      if (content !== null) await fs.writeFile(file, content)
+      const { api } = runnerApi({ pickDataFile: async () => file })
+      return api.runner.pickDataFile()
+    }
+
+    it('parses a CSV or JSON file by its extension', async () => {
+      expect(await pick('users.csv', 'name,age\nann,3\n')).toEqual({
+        name: 'users.csv',
+        rows: [{ name: 'ann', age: '3' }],
+      })
+      expect(await pick('users.JSON', '[{"age":3}]')).toEqual({ name: 'users.JSON', rows: [{ age: 3 }] })
+    })
+
+    it('resolves null when the dialog is cancelled', async () => {
+      const { api } = runnerApi({ pickDataFile: async () => null })
+      expect(await api.runner.pickDataFile()).toBeNull()
+    })
+
+    it('rejects with the parse message, another extension and a file over 10 MB', async () => {
+      await expect(pick('empty.csv', '')).rejects.toThrow('The data file has no rows')
+      await expect(pick('data.txt', 'a\n1')).rejects.toThrow('The data file must be a .csv or .json file')
+      const big = path.join(tmp, 'big.csv')
+      await fs.writeFile(big, 'a\n1\n')
+      await fs.truncate(big, 10 * 1024 * 1024 + 1)
+      await expect(pick('big.csv', null)).rejects.toThrow('The data file is larger than 10 MB')
+    })
+  })
+
+  describe('saveReport', () => {
+    it('writes the report where the save dialog says', async () => {
+      const asked: string[] = []
+      const target = path.join(tmp, 'report.json')
+      const { api } = runnerApi({
+        pickExportPath: async (name) => {
+          asked.push(name)
+          return target
+        },
+      })
+      await newWorkspace(api)
+      expect(await api.runner.saveReport('{"ok":true}', 'Shop.run.json')).toBe(target)
+      expect(asked).toEqual(['Shop.run.json'])
+      expect(await fs.readFile(target, 'utf8')).toBe('{"ok":true}')
+    })
+
+    it('resolves null when cancelled and rejects non-string arguments', async () => {
+      const { api } = runnerApi()
+      await newWorkspace(api)
+      expect(await api.runner.saveReport('{}', 'r.json')).toBeNull()
+      await expect(api.runner.saveReport(5 as unknown as string, 'r.json')).rejects.toThrow('invalid_argument')
+    })
   })
 })
 

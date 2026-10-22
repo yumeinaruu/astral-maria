@@ -3,10 +3,12 @@ import {
   API_METHODS,
   channelName,
   FLUSH_REQUEST_CHANNEL,
+  RUN_EVENT_CHANNEL,
   unwrapIpcError,
   type AstralApi,
   type AstralEvents
 } from '../shared/api'
+import type { RunEvent } from '../shared/types'
 
 /** Built from the same method table the main process registers handlers from. */
 function buildApi(): AstralApi {
@@ -33,6 +35,13 @@ const events: AstralEvents = {
     ipcRenderer.on(FLUSH_REQUEST_CHANNEL, handler)
     return () => {
       ipcRenderer.removeListener(FLUSH_REQUEST_CHANNEL, handler)
+    }
+  },
+  onRunEvent(listener) {
+    const handler = (_event: Electron.IpcRendererEvent, runEvent: RunEvent): void => listener(runEvent)
+    ipcRenderer.on(RUN_EVENT_CHANNEL, handler)
+    return () => {
+      ipcRenderer.removeListener(RUN_EVENT_CHANNEL, handler)
     }
   }
 }

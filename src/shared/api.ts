@@ -8,6 +8,8 @@ import type {
   LoadError,
   RequestItem,
   RequestNode,
+  RunEvent,
+  RunOptions,
   Scripts,
   SendResult,
   WorkspaceInfo,
@@ -69,6 +71,20 @@ export interface AstralApi {
     /** Cancels the send with this id; an unknown or finished id is a no-op. */
     cancel(sendId: string): Promise<void>
   }
+  runner: {
+    /**
+     * Starts a run of a collection or folder; resolves the run id once the run has started (its `started` event is
+     * sent first). Results then arrive as RunEvents. Rejects with `invalid_run_options: <field>`, `runner_busy` (a run
+     * is in progress in this workspace) or `not_found: <path>`. Closing or switching the workspace stops the run.
+     */
+    start(options: RunOptions): Promise<string>
+    /** Stops the run: its `finished` event (`stopped`) is sent before this resolves. An unknown id is a no-op. */
+    stop(runId: string): Promise<void>
+    /** Open dialog for one .csv/.json file; parsed rows, or null when cancelled; rejects with the parse message. */
+    pickDataFile(): Promise<{ name: string; rows: Record<string, unknown>[] } | null>
+    /** Save dialog; writes `json` and resolves the path, or null when cancelled. */
+    saveReport(json: string, defaultName: string): Promise<string | null>
+  }
   app: {
     /** Acknowledges a flush request (see `AstralEvents.onFlushRequest`): every unsaved draft has been written. */
     flushed(): Promise<void>
@@ -82,10 +98,15 @@ export interface AstralEvents {
    * function that removes the listener.
    */
   onFlushRequest(listener: () => void): () => void
+  /** A collection run's progress (see `runner.start`). Returns a function that removes the listener. */
+  onRunEvent(listener: (event: RunEvent) => void): () => void
 }
 
 /** The channel main uses to send a flush request to the renderer. */
 export const FLUSH_REQUEST_CHANNEL = 'astral:app.flush-request'
+
+/** The channel main uses to push runner events to the renderer. */
+export const RUN_EVENT_CHANNEL = 'astral:runner.event'
 
 /** Method names per group; the preload and the main-process handlers are both generated from this table. */
 export const API_METHODS = {
@@ -104,6 +125,7 @@ export const API_METHODS = {
   environments: ['list', 'save', 'remove'],
   transfer: ['importFiles', 'importText', 'exportCollection', 'exportEnvironment'],
   http: ['send', 'cancel'],
+  runner: ['start', 'stop', 'pickDataFile', 'saveReport'],
   app: ['flushed'],
 } as const satisfies { [G in keyof AstralApi]: readonly (keyof AstralApi[G] & string)[] }
 

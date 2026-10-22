@@ -1,7 +1,8 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, safeStorage, session } from 'electron'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
-import { API_METHODS, channelName, FLUSH_REQUEST_CHANNEL } from '../shared/api'
+import { API_METHODS, channelName, FLUSH_REQUEST_CHANNEL, RUN_EVENT_CHANNEL } from '../shared/api'
+import type { RunEvent } from '../shared/types'
 import { createApi } from './api'
 import { FlushCoordinator, interceptOnce, OperationTracker } from './flushGuard'
 import { appMenuTemplate, windowBackground } from './menu'
@@ -119,6 +120,25 @@ async function pickExportPath(defaultName: string): Promise<string | null> {
   return result.canceled || !result.filePath ? null : result.filePath
 }
 
+async function pickDataFile(): Promise<string | null> {
+  // E2E hook: the data file the runner reads.
+  const e2eFile = e2eWorkspace ? process.env.ASTRAL_E2E_DATA_FILE : undefined
+  if (e2eFile !== undefined) return e2eFile
+  const result = await dialog.showOpenDialog({
+    properties: ['openFile'],
+    filters: [{ name: 'CSV or JSON', extensions: ['csv', 'json'] }],
+  })
+  return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0]
+}
+
+/** Pushes a runner event to every window. */
+function emitRunEvent(event: RunEvent): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed() || win.webContents.isDestroyed()) continue
+    win.webContents.send(RUN_EVENT_CHANNEL, event)
+  }
+}
+
 /** One handler per API method, generated from the shared method table so main and preload cannot drift. */
 function registerApi(): void {
   const api = createApi({
@@ -126,6 +146,8 @@ function registerApi(): void {
     pickDirectory,
     pickImportFiles,
     pickExportPath,
+    pickDataFile,
+    emitRunEvent,
     recentFile: join(app.getPath('userData'), 'recent-workspaces.json'),
     operations,
     onFlushed: () => flusher.acknowledge(),
