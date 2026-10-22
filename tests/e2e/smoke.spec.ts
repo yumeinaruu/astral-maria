@@ -555,7 +555,8 @@ test('create, send, persist, and keep secrets local', async () => {
 
   await test.step('a collection variable and a collection script reach the request', async () => {
     const p = app!.windows()[0]
-    await p.getByRole('treeitem', { name: 'Demo' }).click({ button: 'right' })
+    // Demo is expanded, so click its own row rather than the middle of the item and its children.
+    await p.getByRole('treeitem', { name: 'Demo' }).locator('.tree-row').first().click({ button: 'right' })
     await p.getByRole('menuitem', { name: 'Edit', exact: true }).click()
     await expect(p.getByRole('tab', { name: /Demo/ })).toHaveAttribute('aria-selected', 'true')
     const editor = p.getByRole('tabpanel')
