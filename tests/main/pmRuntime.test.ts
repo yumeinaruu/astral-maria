@@ -49,6 +49,7 @@ function makeInput(over: Over = {}): ScriptInput {
       iterationCount: 1,
     },
     request: request(),
+    iterationData: {},
     environmentName: 'Dev',
     ...over,
     variables: { local: {}, environment: {}, collection: {}, globals: {}, ...over.variables },
@@ -582,6 +583,95 @@ describe('response assertions', () => {
   })
 })
 
+describe('iteration data', () => {
+  const row = { user: 'ann', id: 7, nested: { a: [1, 'x'] }, empty: null }
+
+  it('reads the row through pm.iterationData, values as they are in the data file', async () => {
+    const r = await ok(
+      `console.log(pm.iterationData.get('user'), pm.iterationData.get('id') === 7, pm.iterationData.get('nope'))
+       console.log(JSON.stringify(pm.iterationData.get('nested')), pm.iterationData.get('empty') === null)
+       console.log(pm.iterationData.has('user'), pm.iterationData.has('empty'), pm.iterationData.has('nope'))
+       console.log(JSON.stringify(pm.iterationData.toObject()), JSON.stringify(pm.iterationData))`,
+      makeInput({ iterationData: row }),
+    )
+    const all = JSON.stringify(row)
+    expect(r.logs).toEqual(['ann true undefined', '{"a":[1,"x"]} true', 'true true false', `${all} ${all}`])
+  })
+
+  it('unsets a key for the rest of the script only', async () => {
+    const r = await ok(
+      `pm.iterationData.unset('user')
+       console.log(pm.iterationData.has('user'), pm.variables.get('user'), pm.iterationData.has('id'))`,
+      makeInput({ iterationData: row }),
+    )
+    expect(r.logs).toEqual(['false undefined true'])
+    expect(r.variables).toEqual({ local: {}, environment: {}, collection: {}, globals: {} })
+  })
+
+  it('gives copies, so changing a returned value leaves the row alone', async () => {
+    const r = await ok(
+      `pm.iterationData.get('nested').a.push(2)
+       pm.iterationData.toObject().user = 'bob'
+       console.log(JSON.stringify(pm.iterationData.get('nested')), pm.iterationData.get('user'))`,
+      makeInput({ iterationData: row }),
+    )
+    expect(r.logs).toEqual(['{"a":[1,"x"]} ann'])
+  })
+
+  it('resolves data after local variables and before the environment', async () => {
+    const input = makeInput({
+      iterationData: { a: 'data-a', b: 'data-b', n: 5, o: { x: 1 }, z: null },
+      variables: { local: { a: 'local-a' }, environment: { a: 'env-a', b: 'env-b', c: 'env-c' } },
+    })
+    const r = await ok(
+      `console.log(pm.variables.get('a'), pm.variables.get('b'), pm.variables.get('c'))
+       const v = pm.variables
+       console.log(v.get('n'), v.get('o'), JSON.stringify(v.get('z')), v.has('z'))
+       console.log(pm.variables.replaceIn('{{a}}/{{b}}/{{n}}/{{o}}/{{c}}/{{missing}}'))
+       console.log(JSON.stringify(pm.variables.toObject()))`,
+      input,
+    )
+    expect(r.logs).toEqual([
+      'local-a data-b env-c',
+      '5 {"x":1} "" true',
+      'local-a/data-b/5/{"x":1}/env-c/{{missing}}',
+      '{"a":"local-a","b":"data-b","c":"env-c","n":"5","o":"{\\"x\\":1}","z":""}',
+    ])
+  })
+
+  it('exposes the row as the frozen legacy global data', async () => {
+    const r = await ok(
+      `data.user = 'bob'
+       console.log(data.user, data.id, Object.isFrozen(data))`,
+      makeInput({ iterationData: row }),
+    )
+    expect(r.logs).toEqual(['ann 7 true'])
+  })
+
+  it('treats a key named __proto__ as data', async () => {
+    const r = await ok(
+      `const d = pm.iterationData
+       console.log(d.get('__proto__'), pm.variables.get('__proto__'), d.has('toString'))`,
+      makeInput({ iterationData: JSON.parse('{"__proto__":"p"}') }),
+    )
+    expect(r.logs).toEqual(['p p false'])
+  })
+
+  it('is empty outside the runner', async () => {
+    const r = await ok(`console.log(JSON.stringify(pm.iterationData.toObject()), JSON.stringify(data))`)
+    expect(r.logs).toEqual(['{} {}'])
+  })
+
+  it('reflects the iteration in pm.info', async () => {
+    const input = makeInput()
+    const r = await ok(
+      `console.log(pm.info.iteration, pm.info.iterationCount)`,
+      makeInput({ info: { ...input.info, iteration: 2, iterationCount: 5 } }),
+    )
+    expect(r.logs).toEqual(['2 5'])
+  })
+})
+
 describe('postman.setNextRequest', () => {
   it('records the next request, or null to stop', async () => {
     expect((await ok(`postman.setNextRequest('Login')`)).nextRequest).toBe('Login')
@@ -644,7 +734,7 @@ describe('unsupported members', () => {
     expect(await failure(`pm.foo`)).toBe('pm.foo is not supported in Astral Maria')
   })
 
-  it.each(['vault', 'iterationData', 'visualizer', 'execution', 'require'])('pm.%s is unsupported', async (name) => {
+  it.each(['vault', 'visualizer', 'execution', 'require'])('pm.%s is unsupported', async (name) => {
     expect(await failure(`pm.${name}`)).toBe(`pm.${name} is not supported in Astral Maria`)
   })
 

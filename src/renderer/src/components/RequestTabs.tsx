@@ -1,9 +1,9 @@
-import { ChevronDown, Folder, Layers, Library, Plus, X } from 'lucide-react'
+import { ChevronDown, Folder, Layers, Library, ListChecks, Plus, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { draftProblem, GLOBALS_NAME, isDraftDirty } from '../lib/environments'
 import { hasMod } from '../lib/platform'
 import { activateTab, createRequestHere } from '../lib/tabs'
-import { environmentIdOf, useApp, type AppState } from '../state/store'
+import { containerNames, environmentIdOf, runnerPathOf, useApp, type AppState } from '../state/store'
 import { ConfirmDialog } from './ConfirmDialog'
 import { EnvironmentSelector } from './EnvironmentSelector'
 import { MenuButton } from './MenuButton'
@@ -23,6 +23,8 @@ interface TabInfo {
   env: boolean
   /** Set on the settings tab of a collection or folder. */
   container?: 'collection' | 'folder'
+  /** Set on a Runner tab. */
+  runner?: boolean
   method?: AppState['drafts'][string]['method']
   dirty: boolean
 }
@@ -33,6 +35,11 @@ function describeTab(s: AppState, path: string): TabInfo {
     const entry = s.environmentDrafts[envId]
     const name = entry?.draft.name || s.environments.find((e) => e.id === envId)?.name || GLOBALS_NAME
     return { path, name, env: true, dirty: entry ? isDraftDirty(entry) : false }
+  }
+  const runnerPath = runnerPathOf(path)
+  if (runnerPath !== null) {
+    const name = containerNames(s.collections, runnerPath)?.name ?? basename(runnerPath)
+    return { path, name: `Runner · ${name}`, env: false, runner: true, dirty: false }
   }
   const settings = s.containerDrafts[path]
   if (settings) {
@@ -72,6 +79,7 @@ export function RequestTabs(): React.JSX.Element {
   useApp((s) => s.environmentDrafts)
   useApp((s) => s.environments)
   useApp((s) => s.containerDrafts)
+  useApp((s) => s.collections)
   const described = openTabs.map((t) => describeTab(useApp.getState(), t.path))
   const hasCollections = useApp((s) => s.collections.length > 0)
   const [closing, setClosing] = useState<{ path: string; message: string } | null>(null)
@@ -161,6 +169,8 @@ export function RequestTabs(): React.JSX.Element {
               >
                 {tab.env ? (
                   <Layers size={13} aria-hidden="true" />
+                ) : tab.runner ? (
+                  <ListChecks size={13} aria-hidden="true" />
                 ) : tab.container === 'collection' ? (
                   <Library size={13} aria-hidden="true" />
                 ) : tab.container === 'folder' ? (
@@ -205,7 +215,9 @@ export function RequestTabs(): React.JSX.Element {
             described.map((t) => ({
               label: t.env
                 ? `${t.name || 'Unnamed'} (environment)`
-                : t.container
+                : t.runner
+                  ? t.name
+                  : t.container
                   ? `${t.name} (${t.container})`
                   : `${t.method ?? ''} ${t.name}`.trim(),
               checked: t.path === useApp.getState().activePath,

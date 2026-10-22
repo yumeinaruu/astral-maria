@@ -6,15 +6,23 @@ export type VariableScope = Record<string, string>
 export interface NamedScopes {
   /** Send-local values set by scripts (`pm.variables`). */
   local?: VariableScope
+  /** The runner's data row for this iteration, values converted to strings. */
+  data?: VariableScope
   environment?: VariableScope | null
   /** The collection's enabled variables with the session's overrides on top. */
   collection?: VariableScope
   globals?: VariableScope
 }
 
-/** Resolution order, highest first: send-local, environment, collection, globals. */
+/** Resolution order, highest first: send-local, iteration data, environment, collection, globals. */
 export function orderedScopes(scopes: NamedScopes): VariableScope[] {
-  return [scopes.local ?? {}, scopes.environment ?? {}, scopes.collection ?? {}, scopes.globals ?? {}]
+  return [
+    scopes.local ?? {},
+    scopes.data ?? {},
+    scopes.environment ?? {},
+    scopes.collection ?? {},
+    scopes.globals ?? {},
+  ]
 }
 
 const VARIABLE = /\{\{\s*([^{}\s]+)\s*\}\}/g

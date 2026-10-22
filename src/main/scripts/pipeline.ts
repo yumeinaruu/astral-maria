@@ -12,6 +12,7 @@ import type {
 import { orderedScopes, resolveRequest } from '../http/resolve'
 import type { sendRequest } from '../http/sendRequest'
 import { fromPostmanRequest } from '../postman/importer'
+import { dataScope } from '../runner/dataFile'
 import type { EngineHooks, RunOptions, RunOutput } from './engine'
 import { PRELUDE } from './prelude'
 import type { ScriptInput, ScriptResponse, ScriptResult, ScriptVariables } from './types'
@@ -51,6 +52,10 @@ export interface PipelineRun {
   /** The variables before the first script; `environment` is null when none is selected. */
   variables: ScriptVariables
   environmentName?: string
+  /** The runner's iteration, zero-based, and the number of iterations; 0 of 1 outside the runner. */
+  info?: { iteration: number; iterationCount: number }
+  /** The runner's data row for this iteration; `{}` outside the runner. */
+  iterationData?: Record<string, unknown>
   /** Keys of secret variables, whose values are masked in the report. */
   secretKeys: { environment: string[]; globals: string[] }
   /** Applied to the request after the pre-request scripts, before resolving it (e.g. inherited auth). */
@@ -103,6 +108,9 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
  * - `pm.sendRequest` resolves its request against the variables as the calling script started with them and sends
  *   it without scripts, under the same abort signal.
  * - Variables are persisted once, after the last script that ran.
+ * - The report's `nextRequest` is the last `postman.setNextRequest` call of all the scripts that ran.
+ * - The runner's data row resolves after send-local variables and before the environment, in the send and in
+ *   `pm.sendRequest`; outside the runner it is empty.
  */
 export async function runWithScripts(deps: PipelineDeps, run: PipelineRun): Promise<SendResult> {
   const limits = deps.limits ?? SCRIPT_LIMITS
@@ -124,7 +132,12 @@ export async function runWithScripts(deps: PipelineDeps, run: PipelineRun): Prom
 
   let request = run.request
   let variables = run.variables
+  let nextRequest: string | null | undefined
   noteSecrets(variables)
+  const iteration = run.info ?? { iteration: 0, iterationCount: 1 }
+  const iterationData = run.iterationData ?? {}
+  const data = dataScope(iterationData)
+  const scopesOf = (vars: ScriptVariables) => orderedScopes({ ...vars, data })
 
   const hooksFor = (vars: ScriptVariables): EngineHooks => ({
     async sendRequest(raw) {
@@ -134,7 +147,7 @@ export async function runWithScripts(deps: PipelineDeps, run: PipelineRun): Prom
         ...converted,
         auth: converted.auth.type === 'inherit' ? { type: 'none' } : converted.auth,
       }
-      const result = await deps.send(resolveRequest(item, orderedScopes(vars)), { signal })
+      const result = await deps.send(resolveRequest(item, scopesOf(vars)), { signal })
       if (!result.ok) throw new Error(result.error.message)
       return toScriptResponse(result.response)
     },
@@ -152,11 +165,12 @@ export async function runWithScripts(deps: PipelineDeps, run: PipelineRun): Prom
           eventName: name === 'pre-request' ? 'prerequest' : 'test',
           requestName: run.request.name,
           requestId: run.request.id,
-          iteration: 0,
-          iterationCount: 1,
+          iteration: iteration.iteration,
+          iterationCount: iteration.iterationCount,
         },
         request,
         variables,
+        iterationData,
         ...(run.environmentName !== undefined && { environmentName: run.environmentName }),
         ...(response && { response }),
       }
@@ -167,6 +181,7 @@ export async function runWithScripts(deps: PipelineDeps, run: PipelineRun): Prom
         if (name === 'pre-request') request = result.request
         variables = result.variables
         noteSecrets(variables)
+        if (result.nextRequest !== undefined) nextRequest = result.nextRequest
         for (const t of result.tests) {
           const test: ScriptTest = { name: t.name, passed: t.passed, skipped: t.skipped, source: source.source }
           if (t.error !== undefined) test.error = t.error
@@ -189,7 +204,9 @@ export async function runWithScripts(deps: PipelineDeps, run: PipelineRun): Prom
     } catch (e) {
       failures.push({ phase: phaseRan, source: 'Variables', message: `Variables could not be saved: ${message(e)}` })
     }
-    return mask({ tests, logs, failures, changedEnvironmentIds }, secrets)
+    const report: ScriptReport = { tests, logs, failures, changedEnvironmentIds }
+    if (nextRequest !== undefined) report.nextRequest = nextRequest
+    return mask(report, secrets)
   }
 
   const stopped = await phase('pre-request')
@@ -201,17 +218,26 @@ export async function runWithScripts(deps: PipelineDeps, run: PipelineRun): Prom
     return { ok: false, error: { code: 'script_error', message: text }, scripts }
   }
 
-  const result = await deps.send(resolveRequest(run.prepare(request), orderedScopes(variables)), { signal })
+  const result = await deps.send(resolveRequest(run.prepare(request), scopesOf(variables)), { signal })
   if (!result.ok) return { ...result, scripts: await finish('pre-request') }
   await phase('post-response', toScriptResponse(result.response))
   return { ...result, scripts: await finish('post-response') }
 }
 
+/** Replaces every secret value of 4 or more characters, longest first, in `text`. */
+export function maskSecrets(text: string, secrets: Iterable<string>): string {
+  return masker(secrets)(text)
+}
+
+function masker(secrets: Iterable<string>): (text: string) => string {
+  const values = [...secrets].filter((s) => s.length >= MIN_MASKED_LENGTH).sort((a, b) => b.length - a.length)
+  return (text) => values.reduce((out, secret) => out.split(secret).join(MASK), text)
+}
+
 /** Replaces every secret value of 4 or more characters, longest first, in the report's texts. */
 function mask(report: ScriptReport, secrets: Set<string>): ScriptReport {
-  const values = [...secrets].filter((s) => s.length >= MIN_MASKED_LENGTH).sort((a, b) => b.length - a.length)
-  if (values.length === 0) return report
-  const hide = (text: string) => values.reduce((out, secret) => out.split(secret).join(MASK), text)
+  if (![...secrets].some((s) => s.length >= MIN_MASKED_LENGTH)) return report
+  const hide = masker(secrets)
   return {
     ...report,
     logs: report.logs.map((l) => ({ ...l, text: hide(l.text) })),

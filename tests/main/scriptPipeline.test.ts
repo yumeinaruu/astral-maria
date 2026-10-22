@@ -6,7 +6,8 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApi } from '../../src/main/api'
 import { runScript } from '../../src/main/scripts/engine'
-import type { ScriptRunner } from '../../src/main/scripts/pipeline'
+import { sendRequest } from '../../src/main/http/sendRequest'
+import { runWithScripts, type PipelineRun, type ScriptRunner } from '../../src/main/scripts/pipeline'
 import type { AstralApi } from '../../src/shared/api'
 import type { Environment, RequestItem, ScriptReport, SendResult } from '../../src/shared/types'
 
@@ -364,5 +365,83 @@ describe('masking', () => {
     `
     const result = await send(req({ scripts: scripts(pre) }), { environmentId: 'env1' })
     expect(report(result).logs.map((l) => l.text)).toEqual(['long=•••• short=abc', 'now ••••'])
+  })
+})
+
+describe('setNextRequest', () => {
+  it('reports no nextRequest when no script called it', async () => {
+    const result = await send(req({ scripts: scripts(`pm.test('t', () => {})`, `pm.test('u', () => {})`) }))
+    expect('nextRequest' in report(result)).toBe(false)
+  })
+
+  it('reports the last call across the scripts of the send', async () => {
+    const t = await tree()
+    await api.collections.updateSettings(t.col, { scripts: scripts(`postman.setNextRequest('A')`) })
+    await api.collections.updateSettings(t.folder, { scripts: scripts('', `postman.setNextRequest('B')`) })
+    const request = req({ scripts: scripts(`postman.setNextRequest(null)`, `pm.test('t', () => {})`) })
+    const result = await send(request, { collectionPath: t.col, requestPath: t.request })
+    expect(report(result).nextRequest).toBe('B')
+  })
+
+  it('reports null when the last call stops the run', async () => {
+    const request = req({ scripts: scripts(`postman.setNextRequest('A')`, `postman.setNextRequest(null)`) })
+    expect(report(await send(request)).nextRequest).toBeNull()
+  })
+})
+
+describe('iteration info and data', () => {
+  function runOf(over: Partial<PipelineRun>): PipelineRun {
+    return {
+      request: req(),
+      sources: [],
+      variables: { local: {}, environment: { user: 'env-user', other: 'env-other' }, collection: {}, globals: {} },
+      secretKeys: { environment: [], globals: [] },
+      prepare: (r) => r,
+      persist: async () => [],
+      signal: new AbortController().signal,
+      ...over,
+    }
+  }
+
+  it('passes the iteration and the row to every script', async () => {
+    const pre = `console.log(pm.info.iteration, pm.info.iterationCount, pm.iterationData.get('n'), data.user)`
+    const run = runOf({
+      sources: [{ source: 'Request "Get"', scripts: scripts(pre, pre) }],
+      info: { iteration: 3, iterationCount: 4 },
+      iterationData: { user: 'ann', n: 7 },
+    })
+    const result = await runWithScripts({ host, send: sendRequest, limits: LIMITS }, run)
+    expect(report(result).logs.map((l) => l.text)).toEqual(['3 4 7 ann', '3 4 7 ann'])
+  })
+
+  it('defaults to the first of one iteration with no data', async () => {
+    const pre = `console.log(pm.info.iteration, pm.info.iterationCount, JSON.stringify(pm.iterationData.toObject()))`
+    const run = runOf({ sources: [{ source: 'Request "Get"', scripts: scripts(pre) }] })
+    const result = await runWithScripts({ host, send: sendRequest, limits: LIMITS }, run)
+    expect(report(result).logs.map((l) => l.text)).toEqual(['0 1 {}'])
+  })
+
+  it('resolves {{key}} from the row, after send-local variables and before the environment', async () => {
+    const run = runOf({
+      request: req({
+        url: `${base}/{{user}}/{{id}}`,
+        headers: [{ key: 'X-Trail', value: '{{other}}-{{local}}', enabled: true }],
+      }),
+      sources: [{ source: 'Request "Get"', scripts: scripts(`pm.variables.set('local', 'L')`) }],
+      iterationData: { user: 'ann', id: 7, local: 'data-local', other: { a: 1 } },
+    })
+    const result = await runWithScripts({ host, send: sendRequest, limits: LIMITS }, run)
+    expect(json(result)).toMatchObject({ url: '/ann/7', trail: '{"a":1}-L' })
+  })
+
+  it('resolves pm.sendRequest from the row too', async () => {
+    const pre = `pm.sendRequest('${base}/{{user}}', (err, res) => { pm.variables.set('seen', res.json().url) })`
+    const run = runOf({
+      request: req({ headers: [{ key: 'X-Trail', value: '{{seen}}', enabled: true }] }),
+      sources: [{ source: 'Request "Get"', scripts: scripts(pre) }],
+      iterationData: { user: 'bob' },
+    })
+    const result = await runWithScripts({ host, send: sendRequest, limits: LIMITS }, run)
+    expect(json(result).trail).toBe('/bob')
   })
 })

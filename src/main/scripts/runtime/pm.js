@@ -87,15 +87,26 @@ function plainCopy(store) {
   return out
 }
 
+/** A deep copy of a JSON value, so a script can change what it gets without touching the input. */
+const copyJson = (value) => (value === undefined ? undefined : JSON.parse(JSON.stringify(value)))
+
+/** The runner's data row as in the data file; `pm.iterationData.unset` removes keys for the rest of this script. */
+const dataRow = Object.create(null)
+for (const key of Object.keys(input.iterationData || {})) dataRow[key] = input.iterationData[key]
+
 const stores = {
   local: toStore(input.variables.local),
+  // The row as variables: values converted as pm.environment.set converts them.
+  data: Object.create(null),
   environment: input.variables.environment === null ? null : toStore(input.variables.environment),
   collection: toStore(input.variables.collection),
   globals: toStore(input.variables.globals),
 }
 
+for (const key of Object.keys(dataRow)) stores.data[key] = toValue(dataRow[key])
+
 /** Resolution order, highest first. */
-const RESOLUTION = ['local', 'environment', 'collection', 'globals']
+const RESOLUTION = ['local', 'data', 'environment', 'collection', 'globals']
 
 function lookup(scope, key) {
   const store = stores[scope]
@@ -170,6 +181,21 @@ const variables = {
     return out
   },
   replaceIn: (text) => replaceIn(text, resolve),
+}
+
+const iterationData = {
+  get: (key) => (hasOwn(dataRow, String(key)) ? copyJson(dataRow[String(key)]) : undefined),
+  has: (key) => hasOwn(dataRow, String(key)),
+  toObject() {
+    const out = {}
+    for (const key of Object.keys(dataRow)) put(out, key, copyJson(dataRow[key]))
+    return out
+  },
+  toJSON: () => iterationData.toObject(),
+  unset(key) {
+    delete dataRow[String(key)]
+    delete stores.data[String(key)]
+  },
 }
 
 // ---- Key/value lists (query params, headers) ---------------------------------------------------------------------
@@ -659,6 +685,7 @@ const pm = guard(
     globals: scopeApi('globals', 'pm.globals'),
     collectionVariables: scopeApi('collection', 'pm.collectionVariables'),
     variables,
+    iterationData,
     request: pmRequest,
     get response() {
       if (!response) throw new Error('pm.response is only available in post-response scripts')
@@ -699,6 +726,7 @@ define(
 )
 
 define('tests', {})
+define('data', Object.freeze(copyJson(plainCopy(dataRow))))
 
 if (response) {
   define('responseBody', response.text())

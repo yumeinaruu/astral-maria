@@ -162,6 +162,8 @@ export interface ScriptReport {
   failures: ScriptFailure[]
   /** Environments (and `globals`) whose current values the scripts changed and that were saved. */
   changedEnvironmentIds: string[]
+  /** The last `postman.setNextRequest` of this send's scripts; null means stop. Absent when none called it. */
+  nextRequest?: string | null
 }
 
 /**
@@ -186,3 +188,45 @@ export interface ImportReport {
   imported: ImportedItem[]
   failed: { source: string; message: string }[]
 }
+
+/** What the collection runner runs, and how (see `main/runner/runner.ts`). */
+export interface RunOptions {
+  /** A collection or folder path. */
+  path: string
+  /** Request paths to run, in tree order; requests not listed are skipped. */
+  requestPaths: string[]
+  environmentId: string | null
+  iterations: number
+  delayMs: number
+  data: { name: string; rows: Record<string, unknown>[] } | null
+  /** When false, variable changes last only within the run and are never persisted. */
+  keepVariables: boolean
+  stopOnError: boolean
+}
+
+/** One request execution of a run. */
+export interface RunResult {
+  /** 0-based. */
+  iteration: number
+  path: string
+  name: string
+  method: HttpMethod
+  /** The final URL, secrets masked. */
+  url: string
+  status?: number
+  statusText?: string
+  timeMs?: number
+  sizeBytes?: number
+  tests: ScriptTest[]
+  failures: ScriptFailure[]
+  /** A send error, a load error or a script_error message. */
+  error?: string
+}
+
+export type StopReason = 'completed' | 'stopped' | 'error' | 'loop_guard' | `next_request_not_found: "${string}"`
+
+/** Progress of a run, pushed from main to the renderer; nothing follows `finished`. */
+export type RunEvent =
+  | { runId: string; type: 'started'; total: number; startedAt: string }
+  | { runId: string; type: 'result'; result: RunResult }
+  | { runId: string; type: 'finished'; reason: StopReason; durationMs: number }

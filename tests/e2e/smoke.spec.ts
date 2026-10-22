@@ -8,6 +8,8 @@ import { delimiter, join, relative, resolve } from 'node:path'
 
 const MAIN = resolve(__dirname, '../../out/main/index.js')
 const POSTMAN_FIXTURES = resolve(__dirname, '../fixtures/postman')
+/** Two rows (alice, bob) for the collection runner. */
+const RUNNER_DATA = resolve(__dirname, '../fixtures/runner-data.csv')
 // A valid 1x1 PNG.
 const PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==',
@@ -28,6 +30,7 @@ let root: string
 let userData: string
 let workspace: string
 let downloadDir: string
+let runnerExportDir: string
 let app: ElectronApplication | undefined
 
 test.beforeAll(async () => {
@@ -58,7 +61,8 @@ test.beforeAll(async () => {
   userData = join(root, 'user-data')
   workspace = join(root, 'workspace')
   downloadDir = join(root, 'downloads')
-  await Promise.all([mkdir(userData), mkdir(workspace), mkdir(downloadDir)])
+  runnerExportDir = join(root, 'runner-exports')
+  await Promise.all([mkdir(userData), mkdir(workspace), mkdir(downloadDir), mkdir(runnerExportDir)])
 })
 
 test.afterAll(async () => {
@@ -319,7 +323,10 @@ test('create, send, persist, and keep secrets local', async () => {
   app = undefined
 
   await test.step('restart on the same workspace: everything is still there', async () => {
-    const second = await launch()
+    const second = await launch(workspace, {
+      ASTRAL_E2E_DATA_FILE: RUNNER_DATA,
+      ASTRAL_E2E_EXPORT_DIR: runnerExportDir,
+    })
     const p = second.page
     await p.getByRole('button', { name: 'Open workspace' }).click()
     await expect(p.locator('.workspace-name')).toHaveText('Smoke')
@@ -582,6 +589,56 @@ test('create, send, persist, and keep secrets local', async () => {
     await expect.poll(() => traces).toEqual(['trace-from-collection'])
   })
 
+  await test.step('run the collection with a data file and export the results', async () => {
+    const p = app!.windows()[0]
+    // A second request that reads the iteration data.
+    await p.getByRole('treeitem', { name: 'Demo' }).locator('.tree-row').first().click({ button: 'right' })
+    await p.getByRole('menuitem', { name: 'New request' }).click()
+    await p.getByLabel('Name', { exact: true }).fill('Echo user')
+    await p.getByLabel('Name', { exact: true }).press('Enter')
+    await p.getByRole('treeitem', { name: 'Echo user' }).click()
+    await p.getByRole('textbox', { name: 'URL', exact: true }).fill('{{baseUrl}}/users/{{user}}')
+    await openSection(p, 'Scripts')
+    await p.getByRole('tablist', { name: 'Scripts' }).getByRole('tab', { name: /^Post-response/ }).click()
+    await p.locator('.scripts-editor .cm-content').click()
+    await p.keyboard.type(
+      "pm.test('status is 200', () => pm.response.to.have.status(200)); " +
+        "pm.test('user comes from the data', () => " +
+        "pm.expect(['alice', 'bob']).to.include(pm.iterationData.get('user')))",
+    )
+
+    await p.getByRole('treeitem', { name: 'Demo' }).locator('.tree-row').first().click({ button: 'right' })
+    await p.getByRole('menuitem', { name: 'Run', exact: true }).click()
+    await expect(p.getByRole('tab', { name: 'Runner · Demo' })).toHaveAttribute('aria-selected', 'true')
+    const order = p.getByRole('list', { name: 'Run order' })
+    await expect(order.getByRole('checkbox')).toHaveCount(2)
+    await p.getByLabel('Iterations').fill('2')
+    await p.getByRole('button', { name: 'Select file' }).click()
+    await expect(p.getByText('runner-data.csv')).toBeVisible()
+    await expect(p.getByText('2 rows')).toBeVisible()
+    await expect(p.getByRole('table', { name: 'Data preview' }).getByRole('row')).toHaveCount(3)
+    await shotBoth(p, 'g1-runner-config')
+
+    hits = []
+    await p.getByRole('button', { name: 'Run Demo' }).click()
+    await expect(p.getByText('Completed', { exact: true })).toBeVisible()
+    await expect(p.locator('.runner-item')).toHaveCount(4)
+    const summary = p.getByRole('region', { name: 'Run summary' })
+    await expect(summary.locator('.runner-passed')).toHaveText('8 passed')
+    await expect(summary.locator('.runner-failed')).toHaveText('0 failed')
+    expect(hits.filter((h) => h.startsWith('/users/'))).toEqual(['/users/alice', '/users/bob'])
+    await shotBoth(p, 'g2-runner-results')
+
+    await p.getByRole('button', { name: 'Export results' }).click()
+    await expect.poll(async () => (await readdir(runnerExportDir)).length).toBe(1)
+    const [file] = await readdir(runnerExportDir)
+    expect(file).toMatch(/^Demo-run-\d{4}-\d{2}-\d{2}-\d{6}\.json$/)
+    const report = JSON.parse(await readFile(join(runnerExportDir, file), 'utf8'))
+    expect(report.totals.requests).toBe(4)
+    expect(report.totals.tests).toEqual({ passed: 8, failed: 0, skipped: 0 })
+    await p.getByRole('tab', { name: /Hello/ }).click()
+  })
+
   await test.step('an edit typed just before quitting is on disk after the quit', async () => {
     const p = app!.windows()[0]
     await p.getByRole('textbox', { name: 'URL', exact: true }).fill('{{baseUrl}}/typed-before-quit')
@@ -589,8 +646,9 @@ test('create, send, persist, and keep secrets local', async () => {
     await app!.close()
     app = undefined
     const files = (await allFiles(workspace)).filter((f) => f.endsWith('.request.json'))
-    expect(files).toHaveLength(1)
-    expect(JSON.parse(await readFile(files[0], 'utf8')).url).toBe('{{baseUrl}}/typed-before-quit')
+    expect(files).toHaveLength(2)
+    const requests = await Promise.all(files.map(async (f) => JSON.parse(await readFile(f, 'utf8'))))
+    expect(requests.find((r) => r.name === 'Hello')?.url).toBe('{{baseUrl}}/typed-before-quit')
   })
 })
 

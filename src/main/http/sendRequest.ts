@@ -51,6 +51,15 @@ function withoutQuery(url: string): string {
   return cut < 0 ? url : `${url.slice(0, cut)}?…`
 }
 
+/** The URL a resolved request goes to, query included; the request's own URL when it is not a valid one. */
+export function requestUrl(request: RequestItem): string {
+  try {
+    return buildUrl(request).toString()
+  } catch {
+    return request.url
+  }
+}
+
 function buildUrl(request: RequestItem): URL {
   let url: URL
   try {

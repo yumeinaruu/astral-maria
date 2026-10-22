@@ -8,10 +8,14 @@ import type {
   KeyValue,
   LoadError,
   RequestItem,
+  RunEvent,
+  RunOptions,
+  RunResult,
   ScriptLog,
   ScriptPhase,
   Scripts,
   SendResult,
+  StopReason,
   TreeNode,
   WorkspaceInfo,
 } from '../../../shared/types'
@@ -25,12 +29,14 @@ import {
   toEnvironment,
   type Draft,
 } from '../lib/environments'
+import type { RunMeta } from '../lib/runReport'
 import { composeUrl } from '../lib/url'
 import { MASK } from '../lib/variables'
 
 /**
- * A tab: the path of a request, the path of a collection or folder (its settings; see `containerDrafts`), or
- * `env:<id>` (see `environmentTabId`) for an environment editor.
+ * A tab: the path of a request, the path of a collection or folder (its settings; see `containerDrafts`),
+ * `env:<id>` (see `environmentTabId`) for an environment editor, or `runner:<path>` (see `runnerTabId`) for the Runner
+ * of a collection or folder.
  */
 export interface OpenTab {
   path: string
@@ -46,6 +52,128 @@ export function environmentTabId(id: string): string {
 /** The environment id of an environment tab, or null for a request tab. */
 export function environmentIdOf(tab: string): string | null {
   return tab.startsWith(ENV_TAB) ? tab.slice(ENV_TAB.length) : null
+}
+
+const RUNNER_TAB = 'runner:'
+
+/** The tab id of the Runner of the collection or folder at `path`; tree paths never start with `runner:`. */
+export function runnerTabId(path: string): string {
+  return RUNNER_TAB + path
+}
+
+/** The collection or folder path of a Runner tab, or null for any other tab. */
+export function runnerPathOf(tab: string): string | null {
+  return tab.startsWith(RUNNER_TAB) ? tab.slice(RUNNER_TAB.length) : null
+}
+
+/** The tree path a tab belongs to: its own path, or the collection or folder of a Runner tab. */
+function tabTarget(tab: string): string {
+  return runnerPathOf(tab) ?? tab
+}
+
+/** The bounds of the run settings (main checks them too). */
+export const RUN_LIMITS = {
+  iterations: { min: 1, max: 10_000 },
+  delayMs: { min: 0, max: 600_000 },
+} as const
+
+/** The configuration view of a Runner tab. Numbers are kept as typed, so an invalid entry can be shown as such. */
+export interface RunnerConfig {
+  /** Requests the user unchecked; every other request of the collection or folder runs. */
+  deselected: string[]
+  iterations: string
+  delayMs: string
+  data: { name: string; rows: Record<string, unknown>[] } | null
+  /** Why the chosen data file could not be read. */
+  dataError: string | null
+  keepVariables: boolean
+  stopOnError: boolean
+}
+
+export function defaultRunnerConfig(): RunnerConfig {
+  return {
+    deselected: [],
+    iterations: '1',
+    delayMs: '0',
+    data: null,
+    dataError: null,
+    keepVariables: true,
+    stopOnError: false,
+  }
+}
+
+/** A run of a Runner tab, as its events reported it. */
+export interface RunnerRun {
+  runId: string
+  options: RunOptions
+  meta: RunMeta
+  /** The number of request executions the run plans (from its `started` event). */
+  total: number
+  results: RunResult[]
+  finished: { reason: StopReason; durationMs: number } | null
+}
+
+/** The state of a Runner tab; kept until the tab is closed. */
+export interface RunnerState {
+  view: 'config' | 'results'
+  config: RunnerConfig
+  /** The latest run, or null before the first one. */
+  run: RunnerRun | null
+  /** `runner.start` is in flight (after the drafts were written). */
+  starting: boolean
+  /** Why the last start was rejected; shown in the configuration. */
+  error: string | null
+}
+
+/** A request a Runner can run. */
+export interface RunnableRequest {
+  path: string
+  name: string
+  method: HttpMethod
+}
+
+/** The requests at or below the collection or folder `path`, depth-first in tree order (the run order). */
+export function requestsInRunOrder(collections: CollectionTree[], path: string): RunnableRequest[] {
+  const out: RunnableRequest[] = []
+  const collect = (nodes: TreeNode[]): void => {
+    for (const n of nodes) {
+      if (n.kind === 'request') out.push({ path: n.path, name: n.name, method: n.request.method })
+      else collect(n.children)
+    }
+  }
+  const find = (nodes: TreeNode[]): boolean => {
+    for (const n of nodes) {
+      if (n.kind !== 'folder' || !isWithin(path, n.path)) continue
+      if (n.path === path) {
+        collect(n.children)
+        return true
+      }
+      return find(n.children)
+    }
+    return false
+  }
+  for (const c of collections) {
+    if (c.path === path) {
+      collect(c.children)
+      break
+    }
+    if (isWithin(path, c.path) && find(c.children)) break
+  }
+  return out
+}
+
+/** The name of the collection or folder at `path`, and the name of its collection; null when it is not in the tree. */
+export function containerNames(
+  collections: CollectionTree[],
+  path: string,
+): { name: string; collection: string; folder: boolean } | null {
+  for (const c of collections) {
+    if (c.path === path) return { name: c.name, collection: c.name, folder: false }
+    if (!isWithin(path, c.path)) continue
+    const settings = containerFromTree([c], path)
+    return settings ? { name: settings.name, collection: c.name, folder: true } : null
+  }
+  return null
 }
 
 /**
@@ -145,6 +273,8 @@ export interface AppState {
   containerDrafts: Record<string, ContainerSettings>
   /** What the sends of this workspace session did, oldest first; at most `CONSOLE_LIMIT` lines. */
   consoleLines: ConsoleLine[]
+  /** The state of each open Runner tab, by the path of its collection or folder. */
+  runners: Record<string, RunnerState>
 }
 
 export interface AppActions {
@@ -222,6 +352,20 @@ export interface AppActions {
   setExpanded(path: string, expanded: boolean): void
   dismissError(): void
   clearConsole(): void
+  /** Opens (or activates) the Runner tab of the collection or folder at `path`. */
+  openRunner(path: string): void
+  editRunnerConfig(path: string, update: (config: RunnerConfig) => RunnerConfig): void
+  /** Shows the configuration of a Runner tab again ("New run"); the last run's results stay until the next start. */
+  showRunnerConfig(path: string): void
+  /**
+   * Writes every unsaved draft (as `flushAll`), then starts the run. A rejected start is shown in the configuration.
+   * Events of the run may arrive before `runner.start` resolves with its id; they are kept and applied.
+   */
+  startRun(path: string, options: RunOptions): Promise<void>
+  /** Stops the run of a Runner tab, if one is going. */
+  stopRun(path: string): Promise<void>
+  /** A runner event from main (see `AstralEvents.onRunEvent`). */
+  receiveRunEvent(event: RunEvent): void
 }
 
 export function initialState(): AppState {
@@ -244,6 +388,7 @@ export function initialState(): AppState {
     environmentDrafts: {},
     containerDrafts: {},
     consoleLines: [],
+    runners: {},
   }
 }
 
@@ -480,6 +625,71 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
   /** Autosave state of the collection and folder settings tabs, by path. */
   const containerEntries = new Map<string, ContainerEntry>()
   let consoleSeq = 0
+  /** The run id of each run a Runner tab follows, to the path of that tab's collection or folder. */
+  const runTabs = new Map<string, string>()
+  /** A `runner.start` in flight; `adopted` is the run id taken from its `started` event, if that came first. */
+  let runStart: { path: string; options: RunOptions; meta: RunMeta; adopted: string | null } | null = null
+  /** Events of unknown runs received while a start is in flight; they may belong to it. */
+  let runBuffer: RunEvent[] = []
+
+  function setRunner(path: string, update: (state: RunnerState) => RunnerState): void {
+    set((s) => {
+      const state = s.runners[path]
+      return state ? { runners: { ...s.runners, [path]: update(state) } } : s
+    })
+  }
+
+  /** Makes run `runId` the run of the Runner tab that started it; stops it if that tab was closed meanwhile. */
+  function adoptRun(start: NonNullable<typeof runStart>, runId: string): void {
+    start.adopted = runId
+    if (!get().runners[start.path]) {
+      window.astral.runner.stop(runId).catch(() => undefined)
+      return
+    }
+    runTabs.set(runId, start.path)
+    const run: RunnerRun = {
+      runId,
+      options: start.options,
+      meta: start.meta,
+      total: start.options.requestPaths.length * start.options.iterations,
+      results: [],
+      finished: null,
+    }
+    setRunner(start.path, (st) => ({ ...st, run, view: 'results', starting: false, error: null }))
+    const buffered = runBuffer.filter((e) => e.runId === runId)
+    runBuffer = runBuffer.filter((e) => e.runId !== runId)
+    for (const e of buffered) applyRunEvent(start.path, e)
+  }
+
+  function applyRunEvent(path: string, event: RunEvent): void {
+    setRunner(path, (st) => {
+      const run = st.run
+      if (!run || run.runId !== event.runId || run.finished) return st
+      if (event.type === 'started') {
+        return { ...st, run: { ...run, total: event.total, meta: { ...run.meta, startedAt: event.startedAt } } }
+      }
+      if (event.type === 'result') return { ...st, run: { ...run, results: [...run.results, event.result] } }
+      return { ...st, run: { ...run, finished: { reason: event.reason, durationMs: event.durationMs } } }
+    })
+    if (event.type === 'finished') runTabs.delete(event.runId)
+  }
+
+  function isRunning(state: RunnerState | undefined): boolean {
+    return Boolean(state?.run && !state.run.finished)
+  }
+
+  /** Forgets the Runner tabs of `paths` (closed or removed), stopping the runs they follow. */
+  function dropRunners(paths: string[]): void {
+    const runners = get().runners
+    for (const p of paths) {
+      const run = runners[p]?.run
+      if (run && !run.finished) {
+        runTabs.delete(run.runId)
+        window.astral.runner.stop(run.runId).catch(() => undefined)
+      }
+    }
+    set((s) => ({ runners: without(s.runners, paths) }))
+  }
 
   /**
    * Adds the lines of one send to the console. Request headers are never logged. The URL is the one the response came
@@ -523,6 +733,10 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
     locks = []
     revisions.clear()
     adoptRevision.clear()
+    // Main stops the runs of a workspace it closes; nothing of them may reach the next one.
+    runTabs.clear()
+    runStart = null
+    runBuffer = []
   }
 
   function isLocked(path: string): boolean {
@@ -957,9 +1171,21 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
 
   function remapTabs(from: string, to: string): void {
     remapEditing(from, to)
+    const remapTab = (tab: string): string => {
+      const target = runnerPathOf(tab)
+      return target === null ? remapPath(tab, from, to) : runnerTabId(remapPath(target, from, to))
+    }
+    for (const [id, p] of runTabs) runTabs.set(id, remapPath(p, from, to))
+    if (runStart) runStart.path = remapPath(runStart.path, from, to)
     set((s) => ({
-      openTabs: s.openTabs.map((t) => ({ path: remapPath(t.path, from, to) })),
-      activePath: s.activePath === null ? null : remapPath(s.activePath, from, to),
+      openTabs: s.openTabs.map((t) => ({ path: remapTab(t.path) })),
+      activePath: s.activePath === null ? null : remapTab(s.activePath),
+      runners: Object.fromEntries(
+        Object.entries(s.runners).map(([p, st]) => [
+          remapPath(p, from, to),
+          { ...st, config: { ...st.config, deselected: st.config.deselected.map((d) => remapPath(d, from, to)) } },
+        ]),
+      ),
       expanded: Object.fromEntries(Object.keys(s.expanded).map((p) => [remapPath(p, from, to), true as const])),
     }))
   }
@@ -1048,8 +1274,11 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
         adoptRevision.clear()
         // A path a rename, move or delete is changing right now may be read mid-change; that action reconciles it.
         // Environment tabs are not files of the tree; their editor deals with an environment that vanished.
-        const present = (p: string): boolean =>
-          saved.has(p) || containers.has(p) || isLocked(p) || environmentIdOf(p) !== null
+        const present = (p: string): boolean => {
+          const target = runnerPathOf(p)
+          if (target !== null) return containers.has(target) || isLocked(target)
+          return saved.has(p) || containers.has(p) || isLocked(p) || environmentIdOf(p) !== null
+        }
         const current = get()
         const vanished = current.openTabs.map((t) => t.path).filter((p) => !present(p))
         const vanishedPending = [...pending.keys()].filter((p) => !present(p))
@@ -1102,6 +1331,7 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
           }
         })
         dropEditing([...vanished, ...vanishedPending], 'removed')
+        dropRunners(vanished.map(runnerPathOf).filter((p): p is string => p !== null))
         if (lost.length > 0) set((s) => ({ error: [s.error, ...lost].filter(Boolean).join('. ') }))
         // A dirty draft keeps its edits but must not write an outdated name over a rename done on disk.
         for (const e of [...entries.values(), ...pending.values()]) {
@@ -1167,9 +1397,10 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
           () => window.astral.collections.remove(path),
           () => {
             const s = get()
-            const closing = s.activePath !== null && isWithin(s.activePath, path)
+            const closing = s.activePath !== null && isWithin(tabTarget(s.activePath), path)
             const index = s.openTabs.findIndex((t) => t.path === s.activePath)
-            const openTabs = s.openTabs.filter((t) => !isWithin(t.path, path))
+            const openTabs = s.openTabs.filter((t) => !isWithin(tabTarget(t.path), path))
+            dropRunners(Object.keys(s.runners).filter((p) => isWithin(p, path)))
             set({
               openTabs,
               activePath: closing ? neighbour(openTabs, Math.min(index, openTabs.length)) : s.activePath,
@@ -1299,6 +1530,16 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
     },
     closeTab(path, options) {
       if (!get().openTabs.some((t) => t.path === path)) return
+      const runnerPath = runnerPathOf(path)
+      if (runnerPath !== null) {
+        dropRunners([runnerPath])
+        set((s) => {
+          const index = s.openTabs.findIndex((t) => t.path === path)
+          const openTabs = s.openTabs.filter((t) => t.path !== path)
+          return { openTabs, activePath: s.activePath === path ? neighbour(openTabs, index) : s.activePath }
+        })
+        return
+      }
       const envId = environmentIdOf(path)
       if (envId !== null) {
         const entry = get().environmentDrafts[envId]
@@ -1545,5 +1786,100 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
     },
     dismissError: () => set({ error: null }),
     clearConsole: () => set({ consoleLines: [] }),
+
+    openRunner(path) {
+      const tab = runnerTabId(path)
+      const previous = get().activePath
+      if (previous !== tab) flush(previous)
+      if (!get().runners[path] && !containerNames(get().collections, path)) return
+      set((s) => ({
+        openTabs: s.openTabs.some((t) => t.path === tab) ? s.openTabs : [...s.openTabs, { path: tab }],
+        activePath: tab,
+        runners: s.runners[path]
+          ? s.runners
+          : {
+              ...s.runners,
+              [path]: { view: 'config', config: defaultRunnerConfig(), run: null, starting: false, error: null },
+            },
+      }))
+    },
+    editRunnerConfig(path, update) {
+      setRunner(path, (st) => ({ ...st, config: update(st.config) }))
+    },
+    showRunnerConfig(path) {
+      setRunner(path, (st) => (isRunning(st) ? st : { ...st, view: 'config' }))
+    },
+    async startRun(path, options) {
+      const state = get().runners[path]
+      if (!state || state.starting || isRunning(state) || runStart) return
+      const started = epoch
+      setRunner(path, (st) => ({ ...st, starting: true, error: null }))
+      // Requests run from disk, as saved.
+      await get().flushAll()
+      if (epoch !== started) return
+      if (!get().runners[path]) return
+      if (runStart) {
+        // Another Runner tab started first; main would refuse this one the same way.
+        setRunner(path, (st) => ({ ...st, starting: false, view: 'config', error: 'runner_busy' }))
+        return
+      }
+      const s = get()
+      const names = containerNames(s.collections, path)
+      const meta: RunMeta = {
+        collection: names?.collection ?? path,
+        ...(names?.folder ? { folder: names.name } : {}),
+        environment:
+          s.activeEnvironmentId === null
+            ? null
+            : (s.environments.find((e) => e.id === s.activeEnvironmentId)?.name ?? null),
+        startedAt: new Date().toISOString(),
+        iterations: options.iterations,
+        delayMs: options.delayMs,
+        dataFile: options.data?.name ?? null,
+      }
+      const start = { path, options, meta, adopted: null as string | null }
+      runStart = start
+      runBuffer = []
+      try {
+        const runId = await window.astral.runner.start(options)
+        if (epoch !== started || runStart !== start) return
+        runStart = null
+        if (start.adopted === null) adoptRun(start, runId)
+        runBuffer = []
+      } catch (e) {
+        if (epoch !== started || runStart !== start) return
+        runStart = null
+        runBuffer = []
+        if (isGateError(e)) {
+          fail(e)
+          return
+        }
+        setRunner(start.path, (st) => ({ ...st, starting: false, view: 'config', error: messageOf(e) }))
+      }
+    },
+    async stopRun(path) {
+      const run = get().runners[path]?.run
+      if (!run || run.finished) return
+      try {
+        await window.astral.runner.stop(run.runId)
+      } catch (e) {
+        if (isGateError(e)) fail(e)
+      }
+    },
+    receiveRunEvent(event) {
+      const path = runTabs.get(event.runId)
+      if (path !== undefined) {
+        applyRunEvent(path, event)
+        return
+      }
+      const start = runStart
+      if (!start) return
+      if (start.adopted === null && event.type === 'started') {
+        runBuffer.push(event)
+        adoptRun(start, event.runId)
+      } else if (start.adopted === null) {
+        runBuffer.push(event)
+      }
+    },
   }
 })

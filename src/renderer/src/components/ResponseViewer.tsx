@@ -38,7 +38,7 @@ const ERROR_EXPLANATIONS: Record<string, string> = {
   network_error: 'The request failed because of a network problem.',
 }
 
-function statusClass(status: number): string {
+export function statusClass(status: number): string {
   if (status >= 500) return 'status-5xx'
   if (status >= 400) return 'status-4xx'
   if (status >= 300) return 'status-3xx'

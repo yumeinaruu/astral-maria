@@ -98,7 +98,12 @@ export function TreeView({
       )
     }
     items.push({ label: 'Rename', onSelect: () => onStartRename(meta.path, meta.name) })
-    if (isContainer(meta.kind)) items.push({ label: 'Edit', onSelect: () => openContainer(meta.path) })
+    if (isContainer(meta.kind)) {
+      items.push(
+        { label: 'Edit', onSelect: () => openContainer(meta.path) },
+        { label: 'Run', onSelect: () => useApp.getState().openRunner(meta.path) },
+      )
+    }
     if (meta.kind === 'collection') {
       items.push({ label: 'Export', onSelect: () => void useApp.getState().exportCollection(meta.path) })
     }

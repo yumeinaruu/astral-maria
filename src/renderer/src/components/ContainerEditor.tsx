@@ -1,4 +1,4 @@
-import { ChevronRight, Folder, Info, Library, Save } from 'lucide-react'
+import { ChevronRight, Folder, Info, Library, Play, Save } from 'lucide-react'
 import { useEffect, useId, useMemo, useState } from 'react'
 import type { Auth } from '../../../shared/types'
 import { shortcut } from '../lib/platform'
@@ -195,6 +195,15 @@ function Header({ path, draft }: { path: string; draft: ContainerSettings }): Re
         >
           <Save size={14} aria-hidden="true" />
           Save
+        </button>
+        <button
+          type="button"
+          className="btn"
+          title={`Run this ${noun.toLowerCase()}`}
+          onClick={() => store().openRunner(path)}
+        >
+          <Play size={14} aria-hidden="true" />
+          Run
         </button>
       </div>
     </div>
