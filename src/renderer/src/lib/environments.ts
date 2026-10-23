@@ -98,7 +98,7 @@ function meaningful<T extends EnvVar>(rows: T[]): T[] {
 }
 
 /**
- * What gets saved: no blank trailing rows, no shared value for secrets, no empty current values; `locked` only on a
+ * What gets saved: no blank trailing rows, no shared value for secrets, no empty current values except on local rows; `locked` only on a
  * secret without a new current value; `local` only on a local row that is not secret.
  */
 export function toEnvironment(draft: Draft): Environment {
@@ -108,7 +108,8 @@ export function toEnvironment(draft: Draft): Environment {
     variables: meaningful(draft.rows).map((r) => {
       const v: EnvVar = { key: r.key, value: r.secret ? '' : r.value, secret: r.secret, enabled: r.enabled }
       if (r.local && !r.secret) v.local = true
-      if (r.currentValue) v.currentValue = r.currentValue
+      // A local row keeps an empty current value: it overrides the initial one rather than falling back to it.
+      if (r.currentValue || (r.currentValue === '' && r.local && !r.secret)) v.currentValue = r.currentValue
       // An undecryptable secret round-trips its flag so the store keeps its stored value, until a new one is typed.
       else if (r.secret && r.locked) {
         v.locked = true

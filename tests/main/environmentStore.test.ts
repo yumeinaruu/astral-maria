@@ -199,13 +199,13 @@ describe('list and resolvedValues', () => {
     })
   })
 
-  it('prefers the current value, falls back to the shared one, skips disabled', async () => {
+  it('prefers the current value (an empty one too), falls back to the shared one, skips disabled', async () => {
     await store.save(env({ variables: vars }))
     expect(await store.resolvedValues('e1')).toEqual({
       token: 'hunter2',
       host: 'localhost',
       port: '8080',
-      empty: 'fallback'
+      empty: ''
     })
   })
 
@@ -627,6 +627,16 @@ describe('local flag', () => {
 })
 
 describe('setCurrentValues', () => {
+  it('keeps an empty value a script set instead of falling back to the initial one', async () => {
+    await store.save(env({ variables: [{ key: 'a', value: 'init', secret: false, enabled: true }] }))
+    await store.setCurrentValues('e1', { set: { a: '' }, unset: [] })
+    expect((await readJ('.local/environments/staging.json')).values).toEqual({ a: '' })
+    expect(await store.resolvedValues('e1')).toEqual({ a: '' })
+    // Saved back from the editor unchanged, it stays empty.
+    await store.save((await store.list()).environments[0])
+    expect(await store.resolvedValues('e1')).toEqual({ a: '' })
+  })
+
   it('writes current values to .local, encrypting secrets, and leaves the committed file alone', async () => {
     await store.save(
       env({

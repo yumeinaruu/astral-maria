@@ -1208,6 +1208,19 @@ describe('the local flag in the editor model', () => {
     expect(vars.map((v) => v.local)).toEqual([undefined, true, true, undefined])
   })
 
+  it('keeps an empty current value on a local row and drops it on a secret', () => {
+    const vars = toEnvironment(
+      toDraft({
+        ...env,
+        variables: [
+          { key: 'cleared', value: 'a', currentValue: '', secret: false, enabled: true },
+          { key: 'token', value: '', currentValue: '', secret: true, enabled: true },
+        ],
+      })
+    ).variables
+    expect(vars.map((v) => v.currentValue)).toEqual(['', undefined])
+  })
+
   it('lets an explicit local: false win over a differing current value', () => {
     const draft = toDraft({ ...env, variables: [{ ...env.variables[1], local: false }] })
     expect(draft.rows[0].local).toBe(false)

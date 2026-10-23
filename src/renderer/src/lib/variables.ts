@@ -26,7 +26,7 @@ function environmentScope(env: Environment | undefined, source: VariableSource):
   if (!env) return null
   const values = new Map<string, { value: string; secret: boolean }>()
   for (const v of env.variables) {
-    if (v.enabled) values.set(v.key, { value: v.currentValue ? v.currentValue : v.value, secret: v.secret })
+    if (v.enabled) values.set(v.key, { value: v.currentValue !== undefined ? v.currentValue : v.value, secret: v.secret })
   }
   return { source, name: env.name, values }
 }

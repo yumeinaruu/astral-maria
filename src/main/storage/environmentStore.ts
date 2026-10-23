@@ -100,11 +100,14 @@ function checkLocal(v: unknown, file: string): Local {
   return { values: v.values as Record<string, string>, local: (v.local as string[] | undefined) ?? [] }
 }
 
-/** The values a send resolves against: enabled variables, the current value where set, else the initial one. */
+/**
+ * The values a send resolves against: enabled variables, the current value where set (an empty one too, as a script's
+ * `set(key, '')` leaves it), else the initial one.
+ */
 export function valuesOf(env: Environment): Record<string, string> {
   const out: Record<string, string> = {}
   for (const v of env.variables) {
-    if (v.enabled) out[v.key] = v.currentValue ? v.currentValue : v.value
+    if (v.enabled) out[v.key] = v.currentValue !== undefined ? v.currentValue : v.value
   }
   return out
 }
@@ -173,7 +176,8 @@ export class EnvironmentStore {
 
       const values: Record<string, string> = {}
       for (const v of env.variables) {
-        if (v.currentValue) {
+        // An empty current value is kept on a variable (it overrides the initial one); on a secret it is no value.
+        if (v.currentValue !== undefined && (v.currentValue !== '' || !v.secret)) {
           values[v.key] = v.secret ? this.cipher.encrypt(v.currentValue) : v.currentValue
         } else if (v.secret && v.locked === true) {
           // A secret this machine cannot decrypt (Keychain denied or reset) is kept as is unless it was replaced; a
