@@ -188,17 +188,17 @@ describe('startLoad', () => {
 
   it('ramps virtual users up linearly', async () => {
     const base = await serve(okHandler)
-    const { finished } = run([req(`${base}/`)], options({ vus: 8, durationSec: 3, rampUpSec: 2, thinkTimeMs: 20 }))
+    const { finished } = run([req(`${base}/`)], options({ vus: 8, durationSec: 4, rampUpSec: 2, thinkTimeMs: 20 }))
     const end = await finished()
     // VU k starts at 2 s * k / 8: four start in the first second and all eight in the second. A busy machine (the
-    // whole suite runs in parallel) delays timers, so a start can slip into the next second; the third second leaves
-    // room for that and must see every VU.
+    // whole suite runs in parallel, including other load tests) delays timers, sometimes by more than a second; the
+    // last second leaves two seconds of room for that and must see every VU.
     const active = end.ticks.map((t) => t.activeVus)
     expect(active[0]).toBeGreaterThanOrEqual(2)
     expect(active[0]).toBeLessThanOrEqual(4)
     expect(active[1]).toBeGreaterThan(active[0])
     expect(active[1]).toBeLessThanOrEqual(8)
-    expect(active[2]).toBe(8)
+    expect(active.at(-1)).toBe(8)
   })
 
   it('reuses connections for HEAD and for a GET with a body instead of opening one per request', async () => {

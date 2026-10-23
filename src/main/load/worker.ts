@@ -103,7 +103,14 @@ function runLoad(init: WorkerInit, post: (msg: FromLoadWorker) => void): { stop(
     if (hard) abortInFlight()
     else graceTimer ??= setTimeout(abortInFlight, GRACE_MS)
   }
-  const endTimer = setTimeout(() => end(false), init.durationMs)
+  // Like the VU start times below, the end must not come early: a timer may fire a fraction of a millisecond before
+  // its time, which would end this worker's VUs inside the last second and under-report it.
+  const onEndTimer = () => {
+    const left = t0 + init.durationMs - performance.now()
+    if (left > 0) endTimer = setTimeout(onEndTimer, Math.max(1, Math.ceil(left)))
+    else end(false)
+  }
+  let endTimer = setTimeout(onEndTimer, init.durationMs)
   let graceTimer: NodeJS.Timeout | undefined
 
   let snapshotTimer: NodeJS.Timeout | undefined
