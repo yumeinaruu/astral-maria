@@ -18,6 +18,7 @@ import type {
 import { OperationTracker } from './flushGuard'
 import { orderedScopes, resolveRequest, type VariableScope } from './http/resolve'
 import { requestUrl, sendRequest } from './http/sendRequest'
+import { snippet } from './http/snippets'
 import { startLoad, validateLoadOptions, type LoadHandle, type WorkerLike } from './load/engine'
 import type { WorkerInit } from './load/worker'
 import { dataScope, MAX_DATA_BYTES, parseDataFile } from './runner/dataFile'
@@ -648,6 +649,12 @@ export function createApi(deps: ApiDeps): AstralApi {
         if (typeof sendId !== 'string') return
         inFlight.get(sendId)?.abort()
         inFlight.delete(sendId)
+      },
+      async snippet(request, context, language) {
+        const ws = await workspace()
+        const collection = await findCollection(ws, context.collectionPath)
+        const plain = await plainScopes(ws, { environmentId: context.environmentId }, collectionScopeOf(ws, collection))
+        return snippet(resolveRequest(withInheritedAuth(request, collection), plain.scopes), language)
       },
     },
     runner: {

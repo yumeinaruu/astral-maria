@@ -5,7 +5,7 @@ import type { KeyValue, RequestItem } from '../../shared/types'
 // content type included) and the body bytes. `sendRequest` and the load test workers both build from here, so a
 // load test sends the same bytes and headers as Send.
 
-const RAW_CONTENT_TYPES = { json: 'application/json', text: 'text/plain', xml: 'application/xml', html: 'text/html' }
+export const RAW_CONTENT_TYPES = { json: 'application/json', text: 'text/plain', xml: 'application/xml', html: 'text/html' }
 
 /** A request that cannot be sent as written (e.g. `invalid_url`). */
 export class DispatchError extends Error {
@@ -48,7 +48,8 @@ export function requestUrl(request: RequestItem): string {
   }
 }
 
-function buildUrl(request: RequestItem): URL {
+/** The URL with the enabled params (and an API key sent in the query); throws `DispatchError` (`invalid_url`). */
+export function buildUrl(request: RequestItem): URL {
   let url: URL
   try {
     url = new URL(request.url)
@@ -102,7 +103,8 @@ function buildBody(request: RequestItem, headers: Headers): string | Buffer | un
   }
 }
 
-function applyAuth(request: RequestItem, headers: Headers): string | undefined {
+/** Adds the auth header (unless the user set it); returns the lower-case name of an API key header. */
+export function applyAuth(request: RequestItem, headers: Headers): string | undefined {
   const auth = request.auth
   const addIfAbsent = (name: string, value: string) => {
     if (!headers.has(name.toLowerCase())) setHeader(headers, name, value)

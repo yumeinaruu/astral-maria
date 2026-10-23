@@ -14,6 +14,7 @@ import type {
   RunOptions,
   Scripts,
   SendResult,
+  SnippetLanguage,
   SyncChoice,
   SyncOutcome,
   SyncState,
@@ -80,6 +81,15 @@ export interface AstralApi {
     ): Promise<SendResult>
     /** Cancels the send with this id; an unknown or finished id is a no-op. */
     cancel(sendId: string): Promise<void>
+    /**
+     * Code in `language` that sends the request as Send would, variables resolved (secrets too) and inherited auth
+     * applied; scripts are not run. Rejects with `unknown_language: <name>`.
+     */
+    snippet(
+      request: RequestItem,
+      context: { collectionPath: string | null; environmentId: string | null },
+      language: SnippetLanguage,
+    ): Promise<string>
   }
   runner: {
     /**
@@ -197,7 +207,7 @@ export const API_METHODS = {
   ],
   environments: ['list', 'save', 'remove'],
   transfer: ['importFiles', 'importText', 'exportCollection', 'exportEnvironment'],
-  http: ['send', 'cancel'],
+  http: ['send', 'cancel', 'snippet'],
   runner: ['start', 'stop', 'pickDataFile', 'saveReport'],
   load: ['start', 'stop', 'saveReport'],
   git: [

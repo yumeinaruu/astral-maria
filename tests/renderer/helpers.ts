@@ -118,6 +118,7 @@ export function installApi(overrides: Partial<{ [G in keyof AstralApi]: Partial<
     http: {
       send: vi.fn(),
       cancel: vi.fn().mockResolvedValue(undefined),
+      snippet: vi.fn().mockResolvedValue("curl --location 'http://localhost/'\n"),
       ...overrides.http,
     },
     runner: {

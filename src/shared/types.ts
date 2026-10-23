@@ -20,6 +20,9 @@ export type Auth =
   | { type: 'basic'; username: string; password: string }
   | { type: 'apikey'; key: string; value: string; in: 'header' | 'query' }
 
+/** The languages Code can show a request in. */
+export type SnippetLanguage = 'curl' | 'fetch' | 'python'
+
 /** Script source as written by the user; run around every send (see `main/scripts/pipeline.ts`). */
 export interface Scripts {
   preRequest: string
