@@ -82,7 +82,9 @@ export function EnvironmentEditor({ envId }: Props): React.JSX.Element | null {
   const selection = useRef(0)
   /** The uid the trailing empty row gets once something is typed into it, so focus stays in that row. */
   const [nextRow, setNextRow] = useState(() => blankRow())
-  const [revealed, setRevealed] = useState<ReadonlySet<number>>(new Set())
+  /** Show secrets: every secret shown, also ones added or made secret later; `flipped` rows are toggled against it. */
+  const [revealAll, setRevealAll] = useState(false)
+  const [flipped, setFlipped] = useState<ReadonlySet<number>>(new Set())
   const [query, setQuery] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -129,7 +131,8 @@ export function EnvironmentEditor({ envId }: Props): React.JSX.Element | null {
   function show(env: Environment): void {
     selection.current++
     useApp.getState().editEnvironmentDraft(envId, () => ({ draft: toDraft(env), baseline: fingerprint(env) }))
-    setRevealed(new Set())
+    setRevealAll(false)
+    setFlipped(new Set())
     setSaveError(null)
   }
 
@@ -241,7 +244,7 @@ export function EnvironmentEditor({ envId }: Props): React.JSX.Element | null {
   }
 
   function toggleReveal(uid: number): void {
-    setRevealed((r) => {
+    setFlipped((r) => {
       const next = new Set(r)
       if (!next.delete(uid)) next.add(uid)
       return next
@@ -251,7 +254,8 @@ export function EnvironmentEditor({ envId }: Props): React.JSX.Element | null {
   saveRef.current = () => void save()
 
   const revealable = draft.rows.filter((r) => r.secret && !isLocked(r))
-  const allShown = revealable.length > 0 && revealable.every((r) => revealed.has(r.uid))
+  const isRevealed = (uid: number): boolean => revealAll !== flipped.has(uid)
+  const allShown = revealable.length > 0 ? revealable.every((r) => isRevealed(r.uid)) : revealAll
   const needle = query?.trim().toLowerCase() ?? ''
   const visible = draft.rows
     .map((row, i) => ({ row, n: i + 1 }))
@@ -261,7 +265,10 @@ export function EnvironmentEditor({ envId }: Props): React.JSX.Element | null {
   const optionsMenu = (): MenuEntry[] => [
     {
       label: allShown ? 'Hide secrets' : 'Show secrets',
-      onSelect: () => setRevealed(allShown ? new Set() : new Set(revealable.map((r) => r.uid))),
+      onSelect: () => {
+        setRevealAll(!allShown)
+        setFlipped(new Set())
+      },
     },
     { separator: true },
     { note: HELP, wrap: true },
@@ -403,7 +410,7 @@ export function EnvironmentEditor({ envId }: Props): React.JSX.Element | null {
                     row,
                     n,
                     problem: rowErrors.get(row.uid),
-                    revealed: revealed.has(row.uid),
+                    revealed: isRevealed(row.uid),
                     onChange: (patch) => updateRow(row.uid, patch),
                     onSecret: (secret) => setSecret(row, secret),
                     onReveal: () => toggleReveal(row.uid),

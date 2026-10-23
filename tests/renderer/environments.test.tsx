@@ -444,6 +444,28 @@ describe('environment editor', () => {
     expect(rowInput('Value', 2)).toHaveAttribute('type', 'password')
   })
 
+  it('shows a variable made secret after Show secrets too', async () => {
+    const env: Environment = {
+      id: 'e',
+      name: 'E',
+      variables: [
+        { key: 'a', value: '', currentValue: 'one', secret: true, enabled: true },
+        { key: 'c', value: 'plain', secret: false, enabled: true },
+      ],
+    }
+    const { user } = await mount([env])
+    await openEditor(user, 'E')
+    await user.click(screen.getByRole('button', { name: 'Variable options' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Show secrets' }))
+    await user.click(screen.getByRole('button', { name: 'Type 2' }))
+    await user.click(screen.getByRole('menuitemradio', { name: 'Secret' }))
+    expect(rowInput('Value', 2)).toHaveAttribute('type', 'text')
+    await user.click(screen.getByRole('button', { name: 'Variable options' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Hide secrets' }))
+    expect(rowInput('Value', 1)).toHaveAttribute('type', 'password')
+    expect(rowInput('Value', 2)).toHaveAttribute('type', 'password')
+  })
+
   it('never puts secret values into DOM attributes', async () => {
     const env: Environment = {
       id: 'e',
