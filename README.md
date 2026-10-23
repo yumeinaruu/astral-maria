@@ -105,3 +105,8 @@ What is verified, on macOS only: the e2e test checks that the UI made no request
 receives exactly the requests the test sent, and that the switches and the disabled spellchecker are in effect and
 the location permission is denied. It observes the UI's requests, not every socket of every Chromium process. Windows and Linux builds are not produced or tested yet: the same settings are configured
 for them, but their effect there has not been verified.
+
+## License
+
+[MIT](LICENSE). The app bundles Inter and IBM Plex Mono (SIL Open Font License 1.1) and Lucide icons (ISC); the other
+bundled libraries are MIT-licensed.
