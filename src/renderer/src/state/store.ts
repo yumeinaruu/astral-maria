@@ -20,6 +20,7 @@ import type {
   ScriptPhase,
   Scripts,
   SendResult,
+  SnippetLanguage,
   StopReason,
   SyncChoice,
   SyncOutcome,
@@ -450,6 +451,8 @@ export interface AppActions {
   send(path: string): Promise<void>
   /** Cancels the send in flight for `path`, if any; sends of other tabs keep running. */
   cancelSend(path: string): Promise<void>
+  /** Code that sends the draft of `path` as Send would, with the active environment; null without a draft. */
+  requestSnippet(path: string, language: SnippetLanguage): Promise<string | null>
   setResponseView(path: string, patch: Partial<ResponseView>): void
   setActiveEnvironment(id: string | null): void
   /**
@@ -2056,6 +2059,18 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
       // Clean again, so the refresh replaces the draft with the file on disk and takes its revision.
       setSave(path, null)
       await get().refresh()
+    },
+
+    async requestSnippet(path, language) {
+      const s = get()
+      const draft = s.drafts[path]
+      if (!draft) return null
+      const collection = s.collections.find((c) => isWithin(path, c.path))
+      return window.astral.http.snippet(
+        draft,
+        { collectionPath: collection?.path ?? null, environmentId: s.activeEnvironmentId },
+        language,
+      )
     },
 
     async send(path) {

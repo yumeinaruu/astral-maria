@@ -3050,6 +3050,75 @@ select.grid-input {
   box-shadow: none;
 }
 
+.code-btn {
+  width: var(--controls-size-large);
+  height: 100%;
+}
+
+.url-paste-note {
+  display: flex;
+  flex: none;
+  gap: var(--spacing-s);
+  align-items: center;
+  margin: var(--spacing-s) var(--spacing-l) 0;
+  padding: var(--spacing-xs) var(--spacing-xs) var(--spacing-xs) var(--spacing-m);
+  font-size: var(--text-size-s);
+  color: var(--content-primary);
+  background: var(--status-warning-bg);
+  border-radius: var(--radius-s);
+}
+
+.url-paste-note > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.url-paste-note-error {
+  color: var(--content-error);
+}
+
+/* ---- Code dialog ---- */
+
+.code-dialog {
+  width: min(760px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+}
+
+.code-dialog-head {
+  display: flex;
+  gap: var(--spacing-m);
+  align-items: center;
+  justify-content: space-between;
+}
+
+.dialog .code-dialog-note {
+  margin-top: calc(-1 * var(--spacing-s));
+  font-size: var(--text-size-s);
+}
+
+.dialog .code-dialog-error {
+  color: var(--content-error);
+}
+
+.code-dialog-code {
+  display: flex;
+  height: min(420px, calc(100vh - 260px));
+  min-height: 160px;
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-default);
+}
+
+.code-dialog-code > * {
+  flex: 1;
+  min-width: 0;
+}
+
+.code-dialog .dialog-actions .copy-note {
+  margin-right: auto;
+}
+
 /* ---- {{variable}} inputs ---- */
 
 .var-input {

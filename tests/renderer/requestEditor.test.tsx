@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /// <reference types="node" />
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -683,5 +683,84 @@ describe('request editor', () => {
       window.dispatchEvent(new Event('beforeunload'))
       expect(api.collections.saveRequest).toHaveBeenCalledTimes(1)
     })
+  })
+})
+
+describe('curl paste and Code', () => {
+  const paste = (text: string) =>
+    fireEvent.paste(urlBar(), { clipboardData: { getData: (type: string) => (type === 'text/plain' ? text : '') } })
+
+  it('replaces the request with a pasted curl command, keeping its name', async () => {
+    await openedEditor()
+    paste(`curl -X POST 'https://api.example.com/users?page=2' \\\n  -H 'X-Token: t' -d 'a=1'`)
+    const draft = useApp.getState().drafts[REQUEST_PATH]!
+    expect(draft).toMatchObject({
+      name: 'Get users',
+      method: 'POST',
+      url: 'https://api.example.com/users',
+      params: [{ key: 'page', value: '2', enabled: true }],
+      headers: [{ key: 'X-Token', value: 't', enabled: true }],
+      body: { mode: 'urlencoded', fields: [{ key: 'a', value: '1', enabled: true }] },
+      auth: { type: 'none' },
+    })
+    expect(urlBar()).toHaveValue('https://api.example.com/users?page=2')
+    expect(screen.queryByText(/Imported from cURL/)).toBeNull()
+  })
+
+  it('says what a pasted command left out, and why one could not be read', async () => {
+    await openedEditor()
+    paste(`curl http://x -F 'pic=@me.png' -F 'a=1'`)
+    expect(screen.getByText('Imported from cURL. Left out: file field pic.')).toBeInTheDocument()
+    paste(`curl 'http://x`)
+    expect(screen.getByText('Could not read the cURL command: Unterminated quote')).toBeInTheDocument()
+    expect(useApp.getState().drafts[REQUEST_PATH]?.url).toBe('http://x')
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByText(/Could not read/)).toBeNull()
+  })
+
+  it('pastes other text as it is', async () => {
+    await openedEditor()
+    const event = paste('https://example.com/curl')
+    expect(event).toBe(true) // not prevented: the browser pastes it
+  })
+
+  it('shows the request as code in the remembered language and copies it', async () => {
+    const snippet = vi.fn(async (_r: unknown, _c: unknown, language: string) => `${language} code\n`)
+    const { user } = await openedEditor({ http: { snippet } })
+    // After setup: user-event puts its own clipboard in place.
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined)
+    typeUrl('https://example.com/a')
+    await user.click(screen.getByRole('button', { name: 'Code' }))
+    const dialog = screen.getByRole('dialog', { name: 'Code' })
+    await waitFor(() =>
+      expect(within(dialog).getByRole('textbox', { name: 'Request as cURL' })).toHaveValue('curl code\n'),
+    )
+    expect(snippet).toHaveBeenLastCalledWith(
+      expect.objectContaining({ url: 'https://example.com/a' }),
+      { collectionPath: 'collections/shop', environmentId: null },
+      'curl',
+    )
+    await user.click(within(dialog).getByRole('button', { name: 'Language' }))
+    await user.click(screen.getByRole('menuitemradio', { name: 'Python – requests' }))
+    await waitFor(() =>
+      expect(within(dialog).getByRole('textbox', { name: 'Request as Python – requests' })).toHaveValue(
+        'python code\n',
+      ),
+    )
+    await user.click(within(dialog).getByRole('button', { name: 'Copy' }))
+    expect(writeText).toHaveBeenCalledWith('python code\n')
+    expect(await within(dialog).findByText('Copied')).toBeInTheDocument()
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    // Opened again, it starts in the language chosen last.
+    await user.click(screen.getByRole('button', { name: 'Code' }))
+    expect(await screen.findByRole('textbox', { name: 'Request as Python – requests' })).toBeInTheDocument()
+  })
+
+  it('shows why the code could not be generated', async () => {
+    const { user } = await openedEditor({ http: { snippet: vi.fn().mockRejectedValue(new Error('boom')) } })
+    await user.click(screen.getByRole('button', { name: 'Code' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not generate the code: boom')
+    expect(screen.getByRole('button', { name: 'Copy' })).toBeDisabled()
   })
 })

@@ -186,7 +186,11 @@ test('create, send, persist, and keep secrets local', async () => {
 
   await test.step('create a workspace', async () => {
     await page.getByRole('button', { name: 'Create workspace' }).click()
-    await page.getByLabel('Workspace name').fill('Smoke')
+    // On a cold first launch the typed name was sometimes lost (Create stayed disabled); type again until it holds.
+    await expect(async () => {
+      await page.getByLabel('Workspace name').fill('Smoke')
+      await expect(page.getByRole('button', { name: 'Create', exact: true })).toBeEnabled({ timeout: 1000 })
+    }).toPass()
     await page.getByRole('button', { name: 'Create', exact: true }).click()
     await expect(page.locator('.workspace-name')).toHaveText('Smoke')
     await shotBoth(page, '0-empty-workspace')
@@ -791,6 +795,32 @@ test('import Postman files and export a collection as v2.1', async () => {
     const doc = JSON.parse(await readFile(target, 'utf8'))
     expect(doc.info.schema).toBe('https://schema.getpostman.com/json/collection/v2.1.0/collection.json')
     expect(doc.info.name).toBe('Acme Orders API')
+  })
+
+  await test.step('paste a curl command into the URL and show the request as code', async () => {
+    for (const folder of ['Customers', 'Public']) {
+      await page.getByRole('treeitem', { name: folder }).locator('.tree-row').first().click()
+    }
+    await page.getByRole('treeitem', { name: 'Health' }).locator('.tree-row').first().click()
+    const url = page.getByRole('textbox', { name: 'URL', exact: true })
+    await app!.evaluate(
+      ({ clipboard }, text) => clipboard.writeText(text),
+      `curl -X POST '${baseUrl}/curl?from=paste' \\\n  -H 'X-Trace: curl-paste' \\\n  --data-raw '{"a":1}'`,
+    )
+    await url.click()
+    await page.keyboard.press('Meta+V')
+    await expect(url).toHaveValue(`${baseUrl}/curl?from=paste`)
+    await expect(page.getByRole('button', { name: 'Method' })).toHaveText('POST')
+    await page.getByRole('button', { name: 'Send', exact: true }).click()
+    await expect.poll(() => traces.at(-1)).toBe('curl-paste')
+    expect(hits.at(-1)).toBe('/curl?from=paste')
+
+    await page.getByRole('button', { name: 'Code', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: 'Code' })
+    await expect(dialog.getByText(`--data-raw '{"a":1}'`)).toBeVisible()
+    await shotBoth(page, 'e3-code-dialog')
+    await page.keyboard.press('Escape')
+    await expect(dialog).toBeHidden()
   })
 
   expect(problems).toEqual([])
