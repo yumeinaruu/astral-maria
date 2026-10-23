@@ -7,6 +7,11 @@ import type {
   HttpMethod,
   KeyValue,
   LoadError,
+  LoadEvent,
+  LoadOptions,
+  LoadStopReason,
+  LoadTick,
+  LoadTotals,
   RequestItem,
   RunEvent,
   RunOptions,
@@ -32,14 +37,15 @@ import {
   toEnvironment,
   type Draft,
 } from '../lib/environments'
+import type { LoadMeta, LoadTargetRequest } from '../lib/loadReport'
 import type { RunMeta } from '../lib/runReport'
 import { composeUrl } from '../lib/url'
 import { MASK } from '../lib/variables'
 
 /**
  * A tab: the path of a request, the path of a collection or folder (its settings; see `containerDrafts`),
- * `env:<id>` (see `environmentTabId`) for an environment editor, or `runner:<path>` (see `runnerTabId`) for the Runner
- * of a collection or folder.
+ * `env:<id>` (see `environmentTabId`) for an environment editor, `runner:<path>` (see `runnerTabId`) for the Runner
+ * of a collection or folder, or `load:<path>` (see `loadTabId`) for the load test of a request, folder or collection.
  */
 export interface OpenTab {
   path: string
@@ -69,9 +75,103 @@ export function runnerPathOf(tab: string): string | null {
   return tab.startsWith(RUNNER_TAB) ? tab.slice(RUNNER_TAB.length) : null
 }
 
-/** The tree path a tab belongs to: its own path, or the collection or folder of a Runner tab. */
-function tabTarget(tab: string): string {
-  return runnerPathOf(tab) ?? tab
+const LOAD_TAB = 'load:'
+
+/** The tab id of the load test of the request, folder or collection at `path`; tree paths never start with `load:`. */
+export function loadTabId(path: string): string {
+  return LOAD_TAB + path
+}
+
+/** The request, folder or collection path of a Load test tab, or null for any other tab. */
+export function loadPathOf(tab: string): string | null {
+  return tab.startsWith(LOAD_TAB) ? tab.slice(LOAD_TAB.length) : null
+}
+
+/** The tree path a tab belongs to: its own path, or the target of a Runner or Load test tab. */
+export function tabTarget(tab: string): string {
+  return runnerPathOf(tab) ?? loadPathOf(tab) ?? tab
+}
+
+/** The bounds of the load test settings (main checks them too); the ramp-up is also at most the duration. */
+export const LOAD_LIMITS = {
+  vus: { min: 1, max: 1000 },
+  durationSec: { min: 1, max: 3600 },
+  rampUpSec: { min: 0, max: 3600 },
+  thinkTimeMs: { min: 0, max: 60_000 },
+  timeoutSec: { min: 1, max: 120 },
+} as const
+
+/** The configuration view of a Load test tab; numbers are kept as typed. */
+export interface LoadConfig {
+  vus: string
+  durationSec: string
+  rampUpSec: string
+  thinkTimeMs: string
+  timeoutSec: string
+}
+
+export function defaultLoadConfig(): LoadConfig {
+  return { vus: '10', durationSec: '30', rampUpSec: '0', thinkTimeMs: '0', timeoutSec: '30' }
+}
+
+/** A load test of a Load test tab, as its events reported it. */
+export interface LoadTest {
+  testId: string
+  options: LoadOptions
+  meta: LoadMeta
+  /** Every closed second so far: live ticks appended, then the full series of `finished`. */
+  ticks: LoadTick[]
+  /** The latest running totals; null before the first tick. */
+  totals: LoadTotals | null
+  finished: { reason: LoadStopReason; message?: string; durationMs: number } | null
+}
+
+/** The state of a Load test tab; kept until the tab is closed. */
+export interface LoadState {
+  view: 'config' | 'results'
+  config: LoadConfig
+  /** The latest test, or null before the first one. */
+  test: LoadTest | null
+  /** `load.start` is in flight (after the drafts were written). */
+  starting: boolean
+  /** Why the last start was rejected; shown in the configuration. */
+  error: string | null
+}
+
+/** A request a load test sends, with its current draft (or saved) content. */
+export interface LoadableRequest {
+  path: string
+  name: string
+  method: HttpMethod
+  request: RequestItem
+}
+
+/**
+ * What the load test of `path` targets: the request itself, or the requests at or below a folder or collection in
+ * tree order. Drafts win over the saved requests (they are written before the test starts). Null when `path` is not
+ * in the tree.
+ */
+export function loadTargetOf(
+  collections: CollectionTree[],
+  drafts: Record<string, RequestItem>,
+  path: string,
+): { name: string; kind: 'request' | 'folder' | 'collection'; requests: LoadableRequest[] } | null {
+  const saved = requestFromTree(collections, path)
+  if (saved) {
+    const request = drafts[path] ?? saved
+    return {
+      name: request.name,
+      kind: 'request',
+      requests: [{ path, name: request.name, method: request.method, request }],
+    }
+  }
+  const names = containerNames(collections, path)
+  if (!names) return null
+  const requests = requestsInRunOrder(collections, path).flatMap((r): LoadableRequest[] => {
+    const request = drafts[r.path] ?? requestFromTree(collections, r.path)
+    return request ? [{ path: r.path, name: request.name, method: request.method, request }] : []
+  })
+  return { name: names.name, kind: names.folder ? 'folder' : 'collection', requests }
 }
 
 /** The bounds of the run settings (main checks them too). */
@@ -278,6 +378,8 @@ export interface AppState {
   consoleLines: ConsoleLine[]
   /** The state of each open Runner tab, by the path of its collection or folder. */
   runners: Record<string, RunnerState>
+  /** The state of each open Load test tab, by the path of its request, folder or collection. */
+  loads: Record<string, LoadState>
   /** The workspace's git sync state; null until it has been read. */
   sync: SyncState | null
   /** A git operation started from the UI is running. */
@@ -386,6 +488,21 @@ export interface AppActions {
   stopRun(path: string): Promise<void>
   /** A runner event from main (see `AstralEvents.onRunEvent`). */
   receiveRunEvent(event: RunEvent): void
+  /** Opens (or activates) the Load test tab of the request, folder or collection at `path`. */
+  openLoadTest(path: string): void
+  editLoadConfig(path: string, update: (config: LoadConfig) => LoadConfig): void
+  /** Shows the configuration of a Load test tab again ("New test"); the last results stay until the next start. */
+  showLoadConfig(path: string): void
+  /**
+   * Writes every unsaved draft (as `flushAll`), then starts the load test. A rejected start is shown in the
+   * configuration. Events of the test may arrive before `load.start` resolves with its id; they are kept and applied.
+   * `requests` are the target requests as shown (URLs masked), kept for the report until `started` names them.
+   */
+  startLoad(path: string, options: LoadOptions, requests: LoadTargetRequest[]): Promise<void>
+  /** Stops the load test of a Load test tab, if one is going. */
+  stopLoad(path: string): Promise<void>
+  /** A load test event from main (see `AstralEvents.onLoadEvent`). */
+  receiveLoadEvent(event: LoadEvent): void
   /** Re-reads the git sync state; failures are ignored (the indicator keeps the last state). */
   refreshSync(): Promise<void>
   /** Background `git fetch` of a linked workspace; errors are ignored. */
@@ -446,6 +563,7 @@ export function initialState(): AppState {
     containerDrafts: {},
     consoleLines: [],
     runners: {},
+    loads: {},
     sync: null,
     syncBusy: false,
     syncNotice: null,
@@ -550,7 +668,7 @@ interface SendTicket {
   dead: boolean
 }
 
-function requestFromTree(collections: CollectionTree[], path: string): RequestItem | null {
+export function requestFromTree(collections: CollectionTree[], path: string): RequestItem | null {
   for (const c of collections) {
     const found = requestsByPath(c.children, new Map()).get(path)
     if (found) return found
@@ -740,6 +858,77 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
     if (event.type === 'finished') runTabs.delete(event.runId)
   }
 
+  /** The test id of each load test a Load test tab follows, to the path of that tab's target. */
+  const loadTabs = new Map<string, string>()
+  /** A `load.start` in flight; `adopted` is the test id taken from its `started` event, if that came first. */
+  let loadStart: { path: string; options: LoadOptions; meta: LoadMeta; adopted: string | null } | null = null
+  /** Events of unknown tests received while a start is in flight; they may belong to it. */
+  let loadBuffer: LoadEvent[] = []
+
+  function setLoad(path: string, update: (state: LoadState) => LoadState): void {
+    set((s) => {
+      const state = s.loads[path]
+      return state ? { loads: { ...s.loads, [path]: update(state) } } : s
+    })
+  }
+
+  /** Makes test `testId` the test of the Load test tab that started it; stops it if that tab was closed meanwhile. */
+  function adoptLoad(start: NonNullable<typeof loadStart>, testId: string): void {
+    start.adopted = testId
+    if (!get().loads[start.path]) {
+      window.astral.load.stop(testId).catch(() => undefined)
+      return
+    }
+    loadTabs.set(testId, start.path)
+    const test: LoadTest = { testId, options: start.options, meta: start.meta, ticks: [], totals: null, finished: null }
+    setLoad(start.path, (st) => ({ ...st, test, view: 'results', starting: false, error: null }))
+    const buffered = loadBuffer.filter((e) => e.testId === testId)
+    loadBuffer = loadBuffer.filter((e) => e.testId !== testId)
+    for (const e of buffered) applyLoadEvent(start.path, e)
+  }
+
+  function applyLoadEvent(path: string, event: LoadEvent): void {
+    setLoad(path, (st) => {
+      const test = st.test
+      if (!test || test.testId !== event.testId || test.finished) return st
+      if (event.type === 'started') {
+        const meta = {
+          ...test.meta,
+          startedAt: event.startedAt,
+          target: { ...test.meta.target, requests: event.requests },
+        }
+        return { ...st, test: { ...test, meta } }
+      }
+      if (event.type === 'tick') {
+        return { ...st, test: { ...test, ticks: [...test.ticks, ...event.ticks], totals: event.totals } }
+      }
+      const finished = {
+        reason: event.reason,
+        ...(event.message !== undefined ? { message: event.message } : {}),
+        durationMs: event.durationMs,
+      }
+      return { ...st, test: { ...test, ticks: event.ticks, totals: event.totals, finished } }
+    })
+    if (event.type === 'finished') loadTabs.delete(event.testId)
+  }
+
+  function isLoading(state: LoadState | undefined): boolean {
+    return Boolean(state?.test && !state.test.finished)
+  }
+
+  /** Forgets the Load test tabs of `paths` (closed or removed), stopping the tests they follow. */
+  function dropLoads(paths: string[]): void {
+    const loads = get().loads
+    for (const p of paths) {
+      const test = loads[p]?.test
+      if (test && !test.finished) {
+        loadTabs.delete(test.testId)
+        window.astral.load.stop(test.testId).catch(() => undefined)
+      }
+    }
+    set((s) => ({ loads: without(s.loads, paths) }))
+  }
+
   function isRunning(state: RunnerState | undefined): boolean {
     return Boolean(state?.run && !state.run.finished)
   }
@@ -803,6 +992,9 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
     runTabs.clear()
     runStart = null
     runBuffer = []
+    loadTabs.clear()
+    loadStart = null
+    loadBuffer = []
   }
 
   function isLocked(path: string): boolean {
@@ -1239,10 +1431,15 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
     remapEditing(from, to)
     const remapTab = (tab: string): string => {
       const target = runnerPathOf(tab)
-      return target === null ? remapPath(tab, from, to) : runnerTabId(remapPath(target, from, to))
+      if (target !== null) return runnerTabId(remapPath(target, from, to))
+      const loadTarget = loadPathOf(tab)
+      if (loadTarget !== null) return loadTabId(remapPath(loadTarget, from, to))
+      return remapPath(tab, from, to)
     }
     for (const [id, p] of runTabs) runTabs.set(id, remapPath(p, from, to))
     if (runStart) runStart.path = remapPath(runStart.path, from, to)
+    for (const [id, p] of loadTabs) loadTabs.set(id, remapPath(p, from, to))
+    if (loadStart) loadStart.path = remapPath(loadStart.path, from, to)
     set((s) => ({
       openTabs: s.openTabs.map((t) => ({ path: remapTab(t.path) })),
       activePath: s.activePath === null ? null : remapTab(s.activePath),
@@ -1250,6 +1447,25 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
         Object.entries(s.runners).map(([p, st]) => [
           remapPath(p, from, to),
           { ...st, config: { ...st.config, deselected: st.config.deselected.map((d) => remapPath(d, from, to)) } },
+        ]),
+      ),
+      // A test's options and report name its target by path; "Run again" must find it.
+      loads: Object.fromEntries(
+        Object.entries(s.loads).map(([p, st]) => [
+          remapPath(p, from, to),
+          st.test
+            ? {
+                ...st,
+                test: {
+                  ...st.test,
+                  options: { ...st.test.options, path: remapPath(st.test.options.path, from, to) },
+                  meta: {
+                    ...st.test.meta,
+                    target: { ...st.test.meta.target, path: remapPath(st.test.meta.target.path, from, to) },
+                  },
+                },
+              }
+            : st,
         ]),
       ),
       expanded: Object.fromEntries(Object.keys(s.expanded).map((p) => [remapPath(p, from, to), true as const])),
@@ -1431,6 +1647,8 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
         const present = (p: string): boolean => {
           const target = runnerPathOf(p)
           if (target !== null) return containers.has(target) || isLocked(target)
+          const loadTarget = loadPathOf(p)
+          if (loadTarget !== null) return saved.has(loadTarget) || containers.has(loadTarget) || isLocked(loadTarget)
           return saved.has(p) || containers.has(p) || isLocked(p) || environmentIdOf(p) !== null
         }
         const current = get()
@@ -1486,6 +1704,7 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
         })
         dropEditing([...vanished, ...vanishedPending], 'removed')
         dropRunners(vanished.map(runnerPathOf).filter((p): p is string => p !== null))
+        dropLoads(vanished.map(loadPathOf).filter((p): p is string => p !== null))
         if (lost.length > 0) set((s) => ({ error: [s.error, ...lost].filter(Boolean).join('. ') }))
         // A dirty draft keeps its edits but must not write an outdated name over a rename done on disk.
         for (const e of [...entries.values(), ...pending.values()]) {
@@ -1555,6 +1774,7 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
             const index = s.openTabs.findIndex((t) => t.path === s.activePath)
             const openTabs = s.openTabs.filter((t) => !isWithin(tabTarget(t.path), path))
             dropRunners(Object.keys(s.runners).filter((p) => isWithin(p, path)))
+            dropLoads(Object.keys(s.loads).filter((p) => isWithin(p, path)))
             set({
               openTabs,
               activePath: closing ? neighbour(openTabs, Math.min(index, openTabs.length)) : s.activePath,
@@ -1685,8 +1905,10 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
     closeTab(path, options) {
       if (!get().openTabs.some((t) => t.path === path)) return
       const runnerPath = runnerPathOf(path)
-      if (runnerPath !== null) {
-        dropRunners([runnerPath])
+      const loadPath = loadPathOf(path)
+      if (runnerPath !== null || loadPath !== null) {
+        if (runnerPath !== null) dropRunners([runnerPath])
+        if (loadPath !== null) dropLoads([loadPath])
         set((s) => {
           const index = s.openTabs.findIndex((t) => t.path === path)
           const openTabs = s.openTabs.filter((t) => t.path !== path)
@@ -2130,6 +2352,92 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
       } else if (start.adopted === null) {
         runBuffer.push(event)
       }
+    },
+
+    openLoadTest(path) {
+      const tab = loadTabId(path)
+      const previous = get().activePath
+      if (previous !== tab) flush(previous)
+      if (!get().loads[path] && !loadTargetOf(get().collections, {}, path)) return
+      set((s) => ({
+        openTabs: s.openTabs.some((t) => t.path === tab) ? s.openTabs : [...s.openTabs, { path: tab }],
+        activePath: tab,
+        loads: s.loads[path]
+          ? s.loads
+          : {
+              ...s.loads,
+              [path]: { view: 'config', config: defaultLoadConfig(), test: null, starting: false, error: null },
+            },
+      }))
+    },
+    editLoadConfig(path, update) {
+      setLoad(path, (st) => ({ ...st, config: update(st.config) }))
+    },
+    showLoadConfig(path) {
+      setLoad(path, (st) => (isLoading(st) ? st : { ...st, view: 'config' }))
+    },
+    async startLoad(path, options, requests) {
+      const state = get().loads[path]
+      if (!state || state.starting || isLoading(state) || loadStart) return
+      const started = epoch
+      setLoad(path, (st) => ({ ...st, starting: true, error: null }))
+      // Requests are resolved from disk, as saved.
+      await get().flushAll()
+      if (epoch !== started) return
+      if (!get().loads[path]) return
+      if (loadStart) {
+        // Another Load test tab started first; main would refuse this one the same way.
+        setLoad(path, (st) => ({ ...st, starting: false, view: 'config', error: 'load_busy' }))
+        return
+      }
+      const s = get()
+      const meta: LoadMeta = {
+        target: { name: loadTargetOf(s.collections, s.drafts, path)?.name ?? path, path, requests },
+        environment:
+          s.activeEnvironmentId === null
+            ? null
+            : (s.environments.find((e) => e.id === s.activeEnvironmentId)?.name ?? null),
+        startedAt: new Date().toISOString(),
+      }
+      const start = { path, options, meta, adopted: null as string | null }
+      loadStart = start
+      loadBuffer = []
+      try {
+        const testId = await window.astral.load.start(options)
+        if (epoch !== started || loadStart !== start) return
+        loadStart = null
+        if (start.adopted === null) adoptLoad(start, testId)
+        loadBuffer = []
+      } catch (e) {
+        if (epoch !== started || loadStart !== start) return
+        loadStart = null
+        loadBuffer = []
+        if (isGateError(e)) {
+          fail(e)
+          return
+        }
+        setLoad(start.path, (st) => ({ ...st, starting: false, view: 'config', error: messageOf(e) }))
+      }
+    },
+    async stopLoad(path) {
+      const test = get().loads[path]?.test
+      if (!test || test.finished) return
+      try {
+        await window.astral.load.stop(test.testId)
+      } catch (e) {
+        if (isGateError(e)) fail(e)
+      }
+    },
+    receiveLoadEvent(event) {
+      const path = loadTabs.get(event.testId)
+      if (path !== undefined) {
+        applyLoadEvent(path, event)
+        return
+      }
+      const start = loadStart
+      if (!start || start.adopted !== null) return
+      loadBuffer.push(event)
+      if (event.type === 'started') adoptLoad(start, event.testId)
     },
   }
 })

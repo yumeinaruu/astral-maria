@@ -1,7 +1,8 @@
-import { ChevronRight, Save } from 'lucide-react'
+import { ChevronRight, MoreHorizontal, Save } from 'lucide-react'
 import type { CollectionTree, TreeNode } from '../../../../shared/types'
 import { shortcut } from '../../lib/platform'
 import { useApp } from '../../state/store'
+import { MenuButton } from '../MenuButton'
 
 /** Names of the collection and folders above `path`, top first. */
 export function trailOf(collections: CollectionTree[], path: string): string[] {
@@ -97,6 +98,13 @@ export function Breadcrumb({ path, name }: { path: string; name: string }): Reac
           <Save size={14} aria-hidden="true" />
           Save
         </button>
+        <MenuButton
+          label="More actions"
+          align="end"
+          items={[{ label: 'Load test', onSelect: () => store().openLoadTest(path) }]}
+        >
+          <MoreHorizontal size={16} aria-hidden="true" />
+        </MenuButton>
       </div>
     </div>
   )

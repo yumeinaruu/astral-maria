@@ -28,3 +28,19 @@ export const isNumber = (v: unknown): v is number => typeof v === 'number' && Nu
 export function oneOf<T extends string>(...options: T[]): (v: unknown) => v is T {
   return (v: unknown): v is T => typeof v === 'string' && (options as string[]).includes(v)
 }
+
+const LOAD_HOSTS_KEY = 'loadConfirmedHosts'
+const isStringList = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string')
+
+/** Confirmed in this session; kept even when storage is unavailable. */
+const sessionLoadHosts = new Set<string>()
+
+/** The hosts the user confirmed they may load-test (asked once per host; see the load test's host check). */
+export function confirmedLoadHosts(): string[] {
+  return [...new Set([...readPref(LOAD_HOSTS_KEY, [], isStringList), ...sessionLoadHosts])]
+}
+
+export function confirmLoadHosts(hosts: string[]): void {
+  for (const h of hosts) sessionLoadHosts.add(h)
+  writePref(LOAD_HOSTS_KEY, confirmedLoadHosts())
+}

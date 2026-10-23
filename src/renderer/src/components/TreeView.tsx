@@ -104,6 +104,7 @@ export function TreeView({
         { label: 'Run', onSelect: () => useApp.getState().openRunner(meta.path) },
       )
     }
+    items.push({ label: 'Load test', onSelect: () => useApp.getState().openLoadTest(meta.path) })
     if (meta.kind === 'collection') {
       items.push({ label: 'Export', onSelect: () => void useApp.getState().exportCollection(meta.path) })
     }

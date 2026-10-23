@@ -3,6 +3,7 @@ import type { AstralApi } from '../../src/shared/api'
 import type {
   CollectionTree,
   FolderNode,
+  LoadEvent,
   RequestNode,
   RunEvent,
   SyncState,
@@ -126,6 +127,12 @@ export function installApi(overrides: Partial<{ [G in keyof AstralApi]: Partial<
       saveReport: vi.fn().mockResolvedValue('/tmp/report.json'),
       ...overrides.runner,
     },
+    load: {
+      start: vi.fn().mockResolvedValue('load-1'),
+      stop: vi.fn().mockResolvedValue(undefined),
+      saveReport: vi.fn().mockResolvedValue('/tmp/load-report.json'),
+      ...overrides.load,
+    },
     git: {
       state: vi.fn().mockResolvedValue(NOT_LINKED),
       link: vi.fn().mockResolvedValue(linkedState()),
@@ -155,6 +162,10 @@ export function installApi(overrides: Partial<{ [G in keyof AstralApi]: Partial<
 export interface MockEvents {
   /** Delivers a runner event to every `onRunEvent` listener, as main's push channel would. */
   emitRun(event: RunEvent): void
+  /** Delivers a load test event to every `onLoadEvent` listener. */
+  emitLoad(event: LoadEvent): void
+  /** How many `onLoadEvent` listeners are subscribed. */
+  loadListeners(): number
   /** Asks every `onFlushRequest` listener to flush. */
   requestFlush(): void
   /** How many `onRunEvent` listeners are subscribed. */
@@ -165,6 +176,7 @@ export interface MockEvents {
 export function installEvents(): MockEvents {
   const run = new Set<(event: RunEvent) => void>()
   const flush = new Set<() => void>()
+  const load = new Set<(event: LoadEvent) => void>()
   ;(window as unknown as { astralEvents: unknown }).astralEvents = {
     onFlushRequest(listener: () => void) {
       flush.add(listener)
@@ -174,11 +186,19 @@ export function installEvents(): MockEvents {
       run.add(listener)
       return () => run.delete(listener)
     },
+    onLoadEvent(listener: (event: LoadEvent) => void) {
+      load.add(listener)
+      return () => load.delete(listener)
+    },
   }
   return {
     emitRun: (event) => {
       for (const l of [...run]) l(event)
     },
+    emitLoad: (event) => {
+      for (const l of [...load]) l(event)
+    },
+    loadListeners: () => load.size,
     requestFlush: () => {
       for (const l of [...flush]) l()
     },

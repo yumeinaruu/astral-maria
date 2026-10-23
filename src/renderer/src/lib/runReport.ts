@@ -87,14 +87,22 @@ export function buildReport(
 
 const ILLEGAL = /[/\\:*?"<>|\u0000-\u001f]/g
 
-/** `<name>-run-<yyyy-mm-dd-hhmmss>.json`, the time in UTC; characters illegal in file names become `_`. */
-export function reportFileName(name: string, startedAt: string): string {
-  const safe = name.trim().replace(ILLEGAL, '_') || 'run'
+/**
+ * `<name>-<kind>-<yyyy-mm-dd-hhmmss>.json`, the time in UTC; characters illegal in file names become `_`, and an empty
+ * name becomes `kind`.
+ */
+export function stampedFileName(name: string, kind: string, startedAt: string): string {
+  const safe = name.trim().replace(ILLEGAL, '_') || kind
   const d = new Date(startedAt)
   const pad = (n: number): string => String(n).padStart(2, '0')
   const stamp = Number.isNaN(d.getTime())
     ? 'unknown'
     : `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}-` +
       `${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}`
-  return `${safe}-run-${stamp}.json`
+  return `${safe}-${kind}-${stamp}.json`
+}
+
+/** `<name>-run-<yyyy-mm-dd-hhmmss>.json` (see `stampedFileName`). */
+export function reportFileName(name: string, startedAt: string): string {
+  return stampedFileName(name, 'run', startedAt)
 }

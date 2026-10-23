@@ -4,12 +4,14 @@ interface Props {
   title: string
   message: string
   confirmLabel: string
+  /** The confirm button's style: `danger` (the default) for destructive actions, `primary` otherwise. */
+  tone?: 'danger' | 'primary'
   onConfirm(): void
   onCancel(): void
 }
 
 /** In-app replacement for window.confirm: focus starts on Cancel, Escape cancels, Tab stays inside, focus is restored. */
-export function ConfirmDialog({ title, message, confirmLabel, onConfirm, onCancel }: Props): React.JSX.Element {
+export function ConfirmDialog({ title, message, confirmLabel, tone = 'danger', onConfirm, onCancel }: Props): React.JSX.Element {
   const titleId = useId()
   const messageId = useId()
   const cancelRef = useRef<HTMLButtonElement>(null)
@@ -55,7 +57,7 @@ export function ConfirmDialog({ title, message, confirmLabel, onConfirm, onCance
           <button type="button" className="btn" ref={cancelRef} onClick={onCancel}>
             Cancel
           </button>
-          <button type="button" className="btn btn-danger" ref={confirmRef} onClick={onConfirm}>
+          <button type="button" className={`btn btn-${tone}`} ref={confirmRef} onClick={onConfirm}>
             {confirmLabel}
           </button>
         </div>
