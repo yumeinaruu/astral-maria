@@ -1,8 +1,40 @@
 import { vi } from 'vitest'
 import type { AstralApi } from '../../src/shared/api'
-import type { CollectionTree, FolderNode, RequestNode, RunEvent, WorkspaceInfo } from '../../src/shared/types'
+import type {
+  CollectionTree,
+  FolderNode,
+  RequestNode,
+  RunEvent,
+  SyncState,
+  WorkspaceInfo,
+} from '../../src/shared/types'
 
 export const WS: WorkspaceInfo = { id: 'w1', name: 'Demo workspace', dir: '/tmp/demo' }
+
+/** A workspace folder that is not a git repository. */
+export const NOT_LINKED: SyncState = {
+  linked: false,
+  branch: null,
+  remoteUrl: null,
+  ahead: 0,
+  behind: 0,
+  changes: [],
+  merging: false,
+  conflicts: [],
+  identity: null,
+}
+
+/** A linked workspace on `main`, in step with the remote, with an identity. */
+export function linkedState(over: Partial<SyncState> = {}): SyncState {
+  return {
+    ...NOT_LINKED,
+    linked: true,
+    branch: 'main',
+    remoteUrl: 'git@example.com:team/apis.git',
+    identity: { name: 'Dana', email: 'dana@example.com' },
+    ...over,
+  }
+}
 
 export function requestNode(path: string, name: string, method: RequestNode['request']['method'] = 'GET'): RequestNode {
   return {
@@ -54,6 +86,7 @@ export function installApi(overrides: Partial<{ [G in keyof AstralApi]: Partial<
       pickDirectory: vi.fn().mockResolvedValue('/tmp/demo'),
       recent: vi.fn().mockResolvedValue([]),
       close: vi.fn().mockResolvedValue(undefined),
+      reload: vi.fn().mockResolvedValue(WS),
       ...overrides.workspace,
     },
     collections: {
@@ -92,6 +125,23 @@ export function installApi(overrides: Partial<{ [G in keyof AstralApi]: Partial<
       pickDataFile: vi.fn().mockResolvedValue(null),
       saveReport: vi.fn().mockResolvedValue('/tmp/report.json'),
       ...overrides.runner,
+    },
+    git: {
+      state: vi.fn().mockResolvedValue(NOT_LINKED),
+      link: vi.fn().mockResolvedValue(linkedState()),
+      unlink: vi.fn().mockResolvedValue(NOT_LINKED),
+      fetch: vi.fn().mockResolvedValue(linkedState()),
+      clone: vi.fn().mockResolvedValue(null),
+      setIdentity: vi.fn().mockResolvedValue(undefined),
+      commit: vi.fn().mockResolvedValue(undefined),
+      sync: vi.fn().mockResolvedValue({ kind: 'up_to_date' }),
+      pull: vi.fn().mockResolvedValue({ kind: 'up_to_date' }),
+      push: vi.fn().mockResolvedValue({ kind: 'up_to_date' }),
+      resolve: vi.fn().mockResolvedValue(linkedState()),
+      openInEditor: vi.fn().mockResolvedValue(undefined),
+      finishMerge: vi.fn().mockResolvedValue({ kind: 'done', pulled: 1, pushed: 0 }),
+      abortMerge: vi.fn().mockResolvedValue(linkedState()),
+      ...overrides.git,
     },
     app: {
       flushed: vi.fn().mockResolvedValue(undefined),

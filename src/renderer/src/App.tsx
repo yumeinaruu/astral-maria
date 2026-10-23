@@ -12,6 +12,7 @@ import { RequestTabs, tabDomId } from './components/RequestTabs'
 import { RunnerTab } from './components/runner/RunnerTab'
 import { Sidebar } from './components/Sidebar'
 import { StatusBar } from './components/StatusBar'
+import { ConflictsDialog, MergeBanner } from './components/sync/ConflictsDialog'
 import { WorkspaceGate } from './components/WorkspaceGate'
 import { hasMod, shortcut } from './lib/platform'
 import { createRequestHere } from './lib/tabs'
@@ -25,6 +26,7 @@ export function App(): React.JSX.Element {
   const sidebarVisible = useUi((s) => s.sidebarVisible)
   const importOpen = useUi((s) => s.importOpen)
   const consoleOpen = useUi((s) => s.consoleOpen)
+  const conflictsOpen = useApp((s) => s.conflictsOpen)
 
   // The Import dialog belongs to a workspace; it does not reappear in the next one.
   useEffect(() => {
@@ -92,6 +94,7 @@ export function App(): React.JSX.Element {
     <div className="app">
       <Header />
       <ErrorBanner />
+      <MergeBanner />
       <div className="layout">
         {sidebarVisible && <Sidebar />}
         <main className="main">
@@ -116,6 +119,7 @@ export function App(): React.JSX.Element {
       {consoleOpen && <ConsolePanel />}
       <StatusBar />
       {importOpen && <ImportDialog onClose={() => useUi.getState().setImportOpen(false)} />}
+      {conflictsOpen && <ConflictsDialog />}
     </div>
   )
 }

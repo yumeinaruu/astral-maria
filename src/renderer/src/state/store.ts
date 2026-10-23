@@ -16,6 +16,9 @@ import type {
   Scripts,
   SendResult,
   StopReason,
+  SyncChoice,
+  SyncOutcome,
+  SyncState,
   TreeNode,
   WorkspaceInfo,
 } from '../../../shared/types'
@@ -275,7 +278,24 @@ export interface AppState {
   consoleLines: ConsoleLine[]
   /** The state of each open Runner tab, by the path of its collection or folder. */
   runners: Record<string, RunnerState>
+  /** The workspace's git sync state; null until it has been read. */
+  sync: SyncState | null
+  /** A git operation started from the UI is running. */
+  syncBusy: boolean
+  /** What the last git operation did (`Up to date`, `Pulled 1, pushed 2`), shown for `SYNC_NOTICE_MS`. */
+  syncNotice: string | null
+  /** The Conflicts dialog is open. */
+  conflictsOpen: boolean
+  /** The operation whose merge is in progress, when this session started it; `sync` finishes with a push. */
+  mergeOrigin: 'sync' | 'pull' | 'link' | null
 }
+
+/** The result of a git action for a dialog that shows its error inline. */
+export type GitResult<T> = { ok: true; value: T } | { ok: false; error: string }
+
+export const SYNC_NOTICE_MS = 4000
+/** How often a linked workspace fetches in the background, to update how far behind it is. */
+export const SYNC_FETCH_MS = 10 * 60 * 1000
 
 export interface AppActions {
   openWorkspace(dir: string): Promise<void>
@@ -366,6 +386,43 @@ export interface AppActions {
   stopRun(path: string): Promise<void>
   /** A runner event from main (see `AstralEvents.onRunEvent`). */
   receiveRunEvent(event: RunEvent): void
+  /** Re-reads the git sync state; failures are ignored (the indicator keeps the last state). */
+  refreshSync(): Promise<void>
+  /** Background `git fetch` of a linked workspace; errors are ignored. */
+  fetchSync(): Promise<void>
+  /** Writes every draft (as `flushAll`), then reads the sync state: what the Commit dialog lists. */
+  prepareSync(): Promise<SyncState | null>
+  /**
+   * The git operations. Each writes every draft first and afterwards reloads collections, environments, the
+   * workspace's name (a pull may change `workspace.json`) and the sync state. With `inline` the error is returned for
+   * the dialog to show; otherwise it goes to the error banner. A `conflicts` outcome opens the Conflicts dialog.
+   */
+  syncNow(message: string | null, options?: { inline?: boolean }): Promise<GitResult<SyncOutcome>>
+  pullOnly(): Promise<GitResult<SyncOutcome>>
+  pushOnly(): Promise<GitResult<SyncOutcome>>
+  commitChanges(message: string, options?: { inline?: boolean }): Promise<GitResult<void>>
+  setGitIdentity(name: string, email: string): Promise<GitResult<void>>
+  linkRemote(url: string): Promise<GitResult<SyncState>>
+  unlinkRemote(): Promise<GitResult<SyncState>>
+  resolveConflict(id: string, choice: SyncChoice): Promise<GitResult<SyncState>>
+  openConflictInEditor(id: string): Promise<GitResult<void>>
+  finishMerge(): Promise<GitResult<SyncOutcome>>
+  abortMerge(): Promise<GitResult<SyncState>>
+  setConflictsOpen(open: boolean): void
+  /**
+   * "Open from Git": writes the drafts of the open workspace (if any), then clones through the folder picker and
+   * opens the clone. Resolves `unsaved` (cloning nothing) when some drafts could not be written.
+   */
+  openFromGit(url: string): Promise<'opened' | 'cancelled' | 'unsaved' | 'failed'>
+}
+
+/** The status-bar text for a finished operation. */
+export function outcomeNotice(outcome: SyncOutcome): string | null {
+  if (outcome.kind === 'up_to_date') return 'Up to date'
+  if (outcome.kind === 'conflicts') return null
+  if (outcome.pushed === 0) return `Pulled ${outcome.pulled}`
+  if (outcome.pulled === 0) return `Pushed ${outcome.pushed}`
+  return `Pulled ${outcome.pulled}, pushed ${outcome.pushed}`
 }
 
 export function initialState(): AppState {
@@ -389,6 +446,11 @@ export function initialState(): AppState {
     containerDrafts: {},
     consoleLines: [],
     runners: {},
+    sync: null,
+    syncBusy: false,
+    syncNotice: null,
+    conflictsOpen: false,
+    mergeOrigin: null,
   }
 }
 
@@ -606,6 +668,10 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
   let epoch = 0
   let openSeq = 0
   let refreshSeq = 0
+  let syncSeq = 0
+  /** The sync-state refresh that follows a reload of the tree (i.e. any save), debounced. */
+  let syncRefreshTimer: ReturnType<typeof setTimeout> | null = null
+  let noticeTimer: ReturnType<typeof setTimeout> | null = null
   const entries = new Map<string, SaveEntry>()
   /** Entries of closed tabs whose save is still pending or running; kept until it settles. */
   const pending = new Map<string, SaveEntry>()
@@ -1220,30 +1286,116 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
     }
   }
 
-  async function enter(open: () => Promise<WorkspaceInfo>): Promise<void> {
+  /** Opens the workspace `open` resolves; null (a cancelled picker) leaves everything as it is. */
+  async function enter(open: () => Promise<WorkspaceInfo | null>): Promise<'opened' | 'cancelled' | 'failed'> {
     const mine = ++openSeq
     try {
       const workspace = await open()
-      if (mine !== openSeq) return
+      if (mine !== openSeq) return 'failed'
+      if (workspace === null) return 'cancelled'
       epoch++
       resetEditing()
+      if (noticeTimer) clearTimeout(noticeTimer)
+      noticeTimer = null
       set({ ...initialState(), workspace })
     } catch (e) {
       if (mine === openSeq) fail(e)
-      return
+      return 'failed'
     }
     await get().refresh()
-    if (mine !== openSeq) return
+    if (mine !== openSeq) return 'opened'
     set((s) => ({
       expanded: { ...s.expanded, ...Object.fromEntries(s.collections.map((c) => [c.path, true as const])) },
     }))
+    return 'opened'
+  }
+
+  // --- git sync ---
+
+  function scheduleSyncRefresh(): void {
+    if (syncRefreshTimer) clearTimeout(syncRefreshTimer)
+    syncRefreshTimer = setTimeout(() => {
+      syncRefreshTimer = null
+      void get().refreshSync()
+    }, 300)
+  }
+
+  function showNotice(text: string | null): void {
+    if (noticeTimer) clearTimeout(noticeTimer)
+    noticeTimer = null
+    set({ syncNotice: text })
+    if (text === null) return
+    const started = epoch
+    noticeTimer = setTimeout(() => {
+      noticeTimer = null
+      if (epoch === started) set({ syncNotice: null })
+    }, SYNC_NOTICE_MS)
+  }
+
+  /**
+   * Re-reads `workspace.json` of the open workspace: a pull, a link or an abort may have changed its name. Only the
+   * workspace info changes, so tabs, drafts and sends stay (reopening it would cancel sends and runs in main).
+   */
+  async function reloadWorkspaceInfo(started: number): Promise<void> {
+    try {
+      const info = await window.astral.workspace.reload()
+      const current = get().workspace
+      if (epoch !== started || !current || current.dir !== info.dir) return
+      if (current.name !== info.name || current.id !== info.id) set({ workspace: info })
+    } catch (e) {
+      if (epoch === started && isGateError(e)) fail(e)
+    }
+  }
+
+  /** Runs one git operation; see `AppActions.syncNow`. */
+  async function gitAction<T>(
+    call: () => Promise<T>,
+    options: { inline?: boolean } = {},
+    apply?: (value: T) => void,
+  ): Promise<GitResult<T>> {
+    const started = epoch
+    set({ syncBusy: true })
+    let result: GitResult<T>
+    try {
+      await get().flushAll()
+      if (epoch !== started) return { ok: false, error: 'no_workspace_open' }
+      const value = await call()
+      result = { ok: true, value }
+      if (epoch === started) apply?.(value)
+    } catch (e) {
+      result = { ok: false, error: messageOf(e) }
+      if (epoch === started && (isGateError(e) || !options.inline)) fail(e)
+    } finally {
+      if (epoch === started) set({ syncBusy: false })
+    }
+    if (epoch !== started) return result
+    await get().refresh()
+    await reloadWorkspaceInfo(started)
+    await get().refreshSync()
+    return result
+  }
+
+  function applyOutcome(origin: 'sync' | 'pull' | null) {
+    return (outcome: SyncOutcome): void => {
+      if (outcome.kind === 'conflicts') {
+        set({ sync: outcome.state, conflictsOpen: true, mergeOrigin: origin ?? get().mergeOrigin })
+        showNotice(null)
+        return
+      }
+      if (origin === null) set({ conflictsOpen: false, mergeOrigin: null })
+      showNotice(outcomeNotice(outcome))
+    }
   }
 
   return {
     ...initialState(),
 
-    openWorkspace: (dir) => enter(() => window.astral.workspace.open(dir)),
-    createWorkspace: (dir, name) => enter(() => window.astral.workspace.create(dir, name)),
+    openWorkspace: async (dir) => {
+      await enter(() => window.astral.workspace.open(dir))
+    },
+    createWorkspace: async (dir, name) => {
+      await enter(() => window.astral.workspace.create(dir, name))
+    },
 
     async refresh() {
       if (!get().workspace) return
@@ -1255,6 +1407,8 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
       ])
       // Only the latest refresh of the current workspace may apply its result.
       if (mine !== refreshSeq || epoch !== started) return
+      // The tree is reloaded after every save and every change on disk the app makes: the sync indicator follows.
+      scheduleSyncRefresh()
       if (collections.status === 'fulfilled') {
         const saved = new Map<string, RequestItem>()
         const onDisk = new Map<string, string>()
@@ -1785,6 +1939,102 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
       })
     },
     dismissError: () => set({ error: null }),
+
+    async refreshSync() {
+      if (!get().workspace) return
+      const started = epoch
+      const mine = ++syncSeq
+      try {
+        const sync = await window.astral.git.state()
+        if (epoch !== started || mine !== syncSeq) return
+        set((s) => ({ sync, conflictsOpen: s.conflictsOpen && sync.merging }))
+      } catch (e) {
+        if (epoch === started && isGateError(e)) fail(e)
+      }
+    },
+    async fetchSync() {
+      const { sync, syncBusy, workspace } = get()
+      if (!workspace || !sync?.linked || syncBusy) return
+      const started = epoch
+      const mine = ++syncSeq
+      try {
+        const next = await window.astral.git.fetch()
+        if (epoch === started && mine === syncSeq) set({ sync: next })
+      } catch {
+        // Offline or signed out: the next Sync reports it.
+      }
+    },
+    async prepareSync() {
+      if (get().syncBusy) return null
+      const started = epoch
+      // Busy meanwhile, so a second click on Sync does not start a second operation.
+      set({ syncBusy: true })
+      try {
+        await get().flushAll()
+        if (epoch !== started) return null
+        await get().refreshSync()
+        return epoch === started ? get().sync : null
+      } finally {
+        if (epoch === started) set({ syncBusy: false })
+      }
+    },
+    syncNow: (message, options) => gitAction(() => window.astral.git.sync(message), options, applyOutcome('sync')),
+    pullOnly: () => gitAction(() => window.astral.git.pull(), {}, applyOutcome('pull')),
+    pushOnly: () => gitAction(() => window.astral.git.push(), {}, applyOutcome('sync')),
+    commitChanges: (message, options) =>
+      gitAction(
+        () => window.astral.git.commit(message),
+        options,
+        () => showNotice('Committed'),
+      ),
+    setGitIdentity: (name, email) => gitAction(() => window.astral.git.setIdentity(name, email), { inline: true }),
+    linkRemote: (url) =>
+      gitAction(
+        () => window.astral.git.link(url),
+        { inline: true },
+        (sync) => set({ sync, conflictsOpen: sync.merging, mergeOrigin: sync.merging ? 'link' : null }),
+      ),
+    unlinkRemote: () =>
+      gitAction(
+        () => window.astral.git.unlink(),
+        {},
+        (sync) => set({ sync }),
+      ),
+    resolveConflict: (id, choice) =>
+      gitAction(
+        () => window.astral.git.resolve(id, choice),
+        { inline: true },
+        (sync) => set({ sync }),
+      ),
+    async openConflictInEditor(id) {
+      try {
+        await window.astral.git.openInEditor(id)
+        return { ok: true, value: undefined }
+      } catch (e) {
+        return { ok: false, error: messageOf(e) }
+      }
+    },
+    finishMerge: () => gitAction(() => window.astral.git.finishMerge(), { inline: true }, applyOutcome(null)),
+    abortMerge: () =>
+      gitAction(
+        () => window.astral.git.abortMerge(),
+        { inline: true },
+        (sync) => set({ sync, conflictsOpen: false, mergeOrigin: null }),
+      ),
+    setConflictsOpen: (open) => set({ conflictsOpen: open }),
+    async openFromGit(url) {
+      if (get().workspace) {
+        const started = epoch
+        await get().flushAll()
+        if (epoch !== started) return 'failed'
+        const unsaved = get().unsavedPaths()
+        if (unsaved.length > 0) {
+          set({ error: `These changes could not be saved: ${unsaved.join(', ')}. Save or discard them first` })
+          return 'unsaved'
+        }
+      }
+      return enter(() => window.astral.git.clone(url))
+    },
     clearConsole: () => set({ consoleLines: [] }),
 
     openRunner(path) {

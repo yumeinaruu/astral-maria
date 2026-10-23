@@ -1,7 +1,8 @@
-import { FolderOpen, FolderPlus } from 'lucide-react'
+import { FolderOpen, FolderPlus, GitBranch } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { WorkspaceInfo } from '../../../shared/types'
 import { useApp } from '../state/store'
+import { OpenFromGitDialog } from './sync/OpenFromGitDialog'
 
 export function WorkspaceGate(): React.JSX.Element {
   const openWorkspace = useApp((s) => s.openWorkspace)
@@ -9,6 +10,7 @@ export function WorkspaceGate(): React.JSX.Element {
   const [recent, setRecent] = useState<WorkspaceInfo[]>([])
   const [pendingDir, setPendingDir] = useState<string | null>(null)
   const [name, setName] = useState('')
+  const [cloneOpen, setCloneOpen] = useState(false)
 
   useEffect(() => {
     window.astral.workspace
@@ -61,6 +63,10 @@ export function WorkspaceGate(): React.JSX.Element {
             <FolderOpen size={15} aria-hidden="true" />
             Open workspace
           </button>
+          <button type="button" className="btn" onClick={() => setCloneOpen(true)}>
+            <GitBranch size={15} aria-hidden="true" />
+            Open from Git
+          </button>
         </div>
         {pendingDir && (
           <form className="gate-form" onSubmit={submit} onKeyDown={(e) => e.key === 'Escape' && setPendingDir(null)}>
@@ -101,6 +107,7 @@ export function WorkspaceGate(): React.JSX.Element {
           </section>
         )}
       </div>
+      {cloneOpen && <OpenFromGitDialog onClose={() => setCloneOpen(false)} />}
     </main>
   )
 }

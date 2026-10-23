@@ -1516,6 +1516,59 @@ input[type='radio'] {
   background: var(--highlight-tertiary);
 }
 
+/* Git sync: branch, ↑n ↓m, the change dot, the transient result and the Sync split button. */
+.sync-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  min-width: 0;
+  padding: 0 var(--spacing-xs);
+  color: var(--content-secondary);
+  white-space: nowrap;
+}
+
+.sync-branch {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sync-counts {
+  font-variant-numeric: tabular-nums;
+}
+
+.sync-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  background: var(--content-warning);
+  border-radius: 50%;
+}
+
+.sync-notice {
+  color: var(--content-success);
+  white-space: nowrap;
+}
+
+.sync-split {
+  display: inline-flex;
+  align-items: center;
+}
+
+.statusbar .sync-split .sync-main {
+  border-radius: var(--radius-s) 0 0 var(--radius-s);
+}
+
+.statusbar .sync-split .sync-chevron {
+  padding: 0 var(--spacing-xxs);
+  border-radius: 0 var(--radius-s) var(--radius-s) 0;
+}
+
+.statusbar .sync-chevron[aria-expanded='true'] {
+  color: var(--content-primary);
+  background: var(--highlight-primary);
+}
+
 /* ---- console ---- */
 
 .console-panel {
@@ -1793,6 +1846,254 @@ input[type='radio'] {
   justify-content: flex-end;
   gap: var(--spacing-m);
   margin-top: var(--spacing-xs);
+}
+
+/* ---- sync dialogs (Set up sync, Commit, Conflicts, Open from Git) ---- */
+
+.sync-dialog {
+  max-height: calc(100vh - 64px);
+  overflow: auto;
+}
+
+.sync-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  min-width: 0;
+}
+
+.sync-label {
+  padding: 0;
+  font-size: var(--text-size-s);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-s);
+  color: var(--content-secondary);
+}
+
+.dialog .sync-hint {
+  font-size: var(--text-size-m);
+  line-height: var(--line-height-m);
+  color: var(--content-secondary);
+}
+
+.dialog .sync-error {
+  padding: var(--spacing-xs) var(--spacing-m);
+  color: var(--status-error-fg);
+  background: var(--status-error-bg);
+  border-radius: var(--radius-default);
+}
+
+.sync-identity {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.sync-identity-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--spacing-m);
+}
+
+.sync-textarea {
+  padding: var(--spacing-s) var(--spacing-m);
+  font: inherit;
+  line-height: var(--line-height-m);
+  color: var(--content-primary);
+  resize: vertical;
+  background: var(--background-primary);
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-default);
+}
+
+.sync-textarea:focus {
+  border-color: var(--border-focus);
+  outline: none;
+}
+
+.sync-textarea:disabled {
+  color: var(--content-tertiary);
+}
+
+.commit-dialog,
+.conflicts-dialog {
+  width: min(560px, calc(100vw - 32px));
+}
+
+.commit-changes {
+  max-height: 200px;
+  margin: 0;
+  padding: var(--spacing-xs) 0;
+  overflow: auto;
+  list-style: none;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-default);
+}
+
+.commit-change {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-m);
+  height: var(--size-m);
+  padding: 0 var(--spacing-m);
+  white-space: nowrap;
+}
+
+.commit-mark {
+  flex: none;
+  width: 12px;
+  font-family: var(--font-family-code);
+  font-weight: var(--font-weight-bold);
+  text-align: center;
+}
+
+.commit-added .commit-mark {
+  color: var(--content-success);
+}
+
+.commit-modified .commit-mark {
+  color: var(--content-warning);
+}
+
+.commit-deleted .commit-mark {
+  color: var(--content-error);
+}
+
+.commit-renamed .commit-mark {
+  color: var(--content-info);
+}
+
+.commit-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conflict-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-m);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.conflict-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-m);
+  padding: var(--spacing-m) var(--spacing-l);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-default);
+}
+
+.conflict-head {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-m);
+  min-width: 0;
+}
+
+.conflict-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: var(--font-weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conflict-resolved {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  color: var(--content-success);
+}
+
+.conflict-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-m);
+}
+
+.conflict-note {
+  color: var(--content-secondary);
+}
+
+.conflict-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-s);
+}
+
+.conflict-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-m);
+}
+
+/* The key/value grid's metrics: 1px lines, 12px/500 secondary headers. */
+.conflict-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  border: 1px solid var(--border-default);
+}
+
+.conflict-table th,
+.conflict-table td {
+  padding: var(--spacing-xs) var(--spacing-m);
+  text-align: left;
+  vertical-align: top;
+  border: 1px solid var(--border-default);
+}
+
+.conflict-table thead th {
+  font-weight: var(--font-weight-medium);
+  color: var(--content-secondary);
+}
+
+.conflict-table th.conflict-field {
+  width: 28%;
+  font-weight: var(--font-weight-regular);
+  overflow-wrap: anywhere;
+}
+
+.conflict-value {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacing-s);
+  cursor: pointer;
+}
+
+.conflict-value input {
+  flex: none;
+  margin: 3px 0 0;
+  accent-color: var(--brand);
+}
+
+.conflict-text {
+  min-width: 0;
+  font-size: var(--text-size-s);
+  line-height: var(--line-height-s);
+  overflow-wrap: anywhere;
+}
+
+.conflicts-actions {
+  justify-content: space-between;
+}
+
+.banner-merge {
+  align-items: center;
+  color: var(--status-warning-fg);
+  background: var(--status-warning-bg);
+  border-color: var(--border-warning);
 }
 
 /* ---- import dialog ---- */
