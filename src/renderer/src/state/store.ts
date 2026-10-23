@@ -2149,9 +2149,15 @@ export const useApp = create<AppState & AppActions>()((set, get) => {
       const name = get().collections.find((c) => c.path === path)?.name ?? path
       await runExport(name, () => window.astral.transfer.exportCollection(path))
     },
-    exportEnvironment(id) {
+    async exportEnvironment(id) {
+      // Like a collection, the environment is exported as the editor shows it: its unsaved changes are saved first.
+      const savable = savableEnvironmentDrafts().find(([draftId]) => draftId === id)
+      if (savable) {
+        await writeEnvironmentDraft(id, savable[1])
+        if (savableEnvironmentDrafts().some(([draftId]) => draftId === id)) return
+      }
       const name = storedEnvironment(id)?.name ?? id
-      return runExport(name, () => window.astral.transfer.exportEnvironment(id))
+      await runExport(name, () => window.astral.transfer.exportEnvironment(id))
     },
     setExpanded(path, expanded) {
       set((s) => {

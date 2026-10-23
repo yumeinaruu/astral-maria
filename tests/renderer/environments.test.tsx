@@ -177,6 +177,22 @@ describe('environments in the sidebar', () => {
     await waitFor(() => expect(api.transfer.exportEnvironment).toHaveBeenCalledWith('dev'))
   })
 
+  it('saves the unsaved changes of an environment before exporting it', async () => {
+    const { api, user, environments } = await mount()
+    await openEditor(user, 'Dev')
+    await user.clear(rowInput('Value', 1))
+    await user.type(rowInput('Value', 1), 'edited')
+    expect(environments.save).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Actions for Dev' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Export' }))
+    await waitFor(() => expect(api.transfer.exportEnvironment).toHaveBeenCalledWith('dev'))
+    expect(environments.save).toHaveBeenCalledTimes(1)
+    expect((environments.save.mock.calls[0][0] as Environment).variables[0].currentValue).toBe('edited')
+    expect(environments.save.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(api.transfer.exportEnvironment).mock.invocationCallOrder[0],
+    )
+  })
+
   it('shows an environment export that fails in the error banner', async () => {
     const { user } = await mount([DEV, PROD], {
       transfer: { exportEnvironment: vi.fn().mockRejectedValue(new Error('EACCES')) },
