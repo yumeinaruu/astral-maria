@@ -13,11 +13,13 @@ import type { WorkerInit } from './worker'
 let code: string | undefined
 
 export function spawnLoadWorker(init: WorkerInit): Worker {
-  // The wrapper gives the bundle the __filename and __dirname of its real location.
+  // The wrapper gives the bundle the __filename and __dirname of its real location, and a `require` that resolves
+  // from there: code evaluated from a string otherwise resolves bare modules (undici) from the process's cwd.
   if (code === undefined) {
     const bundle = readFileSync(workerPath, 'utf8')
-    const args = `${JSON.stringify(workerPath)}, ${JSON.stringify(dirname(workerPath))}`
-    code = `(function (__filename, __dirname) {${bundle}\n})(${args})`
+    const file = JSON.stringify(workerPath)
+    const args = `require('node:module').createRequire(${file}), ${file}, ${JSON.stringify(dirname(workerPath))}`
+    code = `(function (require, __filename, __dirname) {${bundle}\n})(${args})`
   }
   return new Worker(code, { eval: true, workerData: init })
 }
