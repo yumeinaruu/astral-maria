@@ -42,6 +42,20 @@ ASTRAL_E2E_EXECUTABLE="$PWD/release-e2e/mac-arm64/Astral Maria.app/Contents/MacO
 Packaged builds are unsigned (ad-hoc signed) and meant for local use; macOS may ask you to allow them in System
 Settings.
 
+### Installing the .dmg
+
+Open `release/Astral Maria-<version>-arm64.dmg` and drag Astral Maria into Applications. A `.dmg` built on this Mac
+opens straight away. A copy downloaded or received from someone else is quarantined, and macOS refuses to open an
+unsigned app: open it once with right-click → Open, or allow it under System Settings → Privacy & Security, or clear
+the quarantine flag:
+
+```
+xattr -dr com.apple.quarantine "/Applications/Astral Maria.app"
+```
+
+The app icon is `build/icon.png`, drawn by `scripts/make-icon.py` (Pillow); electron-builder turns it into the
+macOS `.icns`.
+
 ## Workspace folder layout
 
 A workspace is a plain folder, safe to put under git:

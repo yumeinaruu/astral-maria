@@ -3,6 +3,7 @@
   "productName": "Astral Maria",
   "version": "0.1.0",
   "description": "A local-first desktop API client.",
+  "author": "yumeinaruu",
   "private": true,
   "main": "./out/main/index.js",
   "engines": {
