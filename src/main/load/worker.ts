@@ -130,7 +130,10 @@ function runLoad(init: WorkerInit, post: (msg: FromLoadWorker) => void): { stop(
     }, init.timeoutMs)
     const started = performance.now()
     try {
-      const res = await agent.request({ ...spec, signal: flight.controller.signal })
+      // reset: false keeps the connection for HEAD and for requests with a body (a GET with a JSON body, say),
+      // which undici would otherwise close after each response: a load test would open one socket per request and
+      // run out of local ports (EADDRNOTAVAIL).
+      const res = await agent.request({ ...spec, signal: flight.controller.signal, reset: false })
       let bytes = 0
       for await (const chunk of res.body) bytes += (chunk as Buffer).length
       const at = performance.now()

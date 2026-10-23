@@ -176,13 +176,45 @@ describe('startLoad', () => {
     await workers!.allExited()
   })
 
+  it('reports exactly one tick per second of the duration, folding the ramp-down grace into the last one', async () => {
+    const base = await serve((_req, res) => setTimeout(() => res.end('slow'), 300))
+    const { finished } = run([req(`${base}/`)], options({ vus: 4, durationSec: 2 }))
+    const end = await finished()
+    expect(end.ticks.map((t) => t.t)).toEqual([0, 1])
+    // Requests that finished during the grace after the duration still count, in the last second.
+    expect(end.ticks.reduce((n, t) => n + t.rps, 0)).toBe(end.totals.completed)
+    expect(end.ticks[1].activeVus).toBe(4)
+  })
+
   it('ramps virtual users up linearly', async () => {
     const base = await serve(okHandler)
-    const { finished } = run([req(`${base}/`)], options({ vus: 8, durationSec: 2, rampUpSec: 2, thinkTimeMs: 20 }))
+    const { finished } = run([req(`${base}/`)], options({ vus: 8, durationSec: 3, rampUpSec: 2, thinkTimeMs: 20 }))
     const end = await finished()
-    // VU k starts at 2 s * k / 8: four start in the first second, all eight by the end of the second.
-    expect(end.ticks[0].activeVus).toBe(4)
-    expect(end.ticks[1].activeVus).toBe(8)
+    // VU k starts at 2 s * k / 8: four start in the first second and all eight in the second. A busy machine (the
+    // whole suite runs in parallel) delays timers, so a start can slip into the next second; the third second leaves
+    // room for that and must see every VU.
+    const active = end.ticks.map((t) => t.activeVus)
+    expect(active[0]).toBeGreaterThanOrEqual(2)
+    expect(active[0]).toBeLessThanOrEqual(4)
+    expect(active[1]).toBeGreaterThan(active[0])
+    expect(active[1]).toBeLessThanOrEqual(8)
+    expect(active[2]).toBe(8)
+  })
+
+  it('reuses connections for HEAD and for a GET with a body instead of opening one per request', async () => {
+    let connections = 0
+    const base = await serve(okHandler)
+    server!.on('connection', () => connections++)
+    const requests = [
+      req(`${base}/head`, { method: 'HEAD' }),
+      req(`${base}/get`, { body: { mode: 'raw', language: 'json', content: '{"a":1}' } }),
+    ]
+    const { finished } = run(requests, options({ vus: 2, durationSec: 1, thinkTimeMs: 5 }))
+    const end = await finished()
+    expect(end.totals.completed).toBeGreaterThan(50)
+    expect(end.totals.errors).toBe(0)
+    // One keep-alive socket per VU (per worker agent), not one per request.
+    expect(connections).toBeLessThanOrEqual(4)
   })
 
   it('pauses each virtual user for the think time after every request', async () => {

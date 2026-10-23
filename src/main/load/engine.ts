@@ -149,9 +149,11 @@ export function startLoad(
     }
   }
 
+  /** Seconds past the duration only hold the ramp-down grace; their requests are folded into the last second. */
+  const lastSecond = Math.ceil(options.durationSec) - 1
   const ticksBetween = (from: number, to: number): LoadTick[] => {
     const out: LoadTick[] = []
-    for (let t = from; t < to; t++) out.push(toTick(seconds.get(t) ?? quietSecond(t)))
+    for (let t = from; t < Math.min(to, lastSecond + 1); t++) out.push(toTick(seconds.get(t) ?? quietSecond(t)))
     return out
   }
 
@@ -177,12 +179,17 @@ export function startLoad(
   const onSnapshot = (slot: Slot, snapshot: MetricsSnapshot, last: boolean) => {
     slot.latest = snapshot
     // Only the seconds this snapshot reports: merged into the buckets other workers gave for them, or added.
-    const known = snapshot.seconds.flatMap((s) => seconds.get(s.t) ?? [])
-    const into = mergeSnapshots(
-      { ...emptySnapshot(), seconds: known },
-      { ...emptySnapshot(), seconds: snapshot.seconds },
-    )
-    for (const s of into.seconds) seconds.set(s.t, s)
+    for (const reportedSecond of snapshot.seconds) {
+      // A grace second keeps its requests (so the per-second sums still add up to the totals) but not its VU count,
+      // which the last second already has.
+      const s =
+        reportedSecond.t > lastSecond ? { ...reportedSecond, t: lastSecond, activeVus: 0 } : reportedSecond
+      const known = seconds.get(s.t)
+      const merged = known
+        ? mergeSnapshots({ ...emptySnapshot(), seconds: [known] }, { ...emptySnapshot(), seconds: [s] }).seconds[0]
+        : s
+      seconds.set(s.t, merged)
+    }
     const reported = snapshot.seconds.at(-1)
     if (reported) slot.through = Math.max(slot.through, reported.t + 1)
     if (last) {
