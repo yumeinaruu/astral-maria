@@ -8,7 +8,8 @@ import { createApi, type ApiDeps } from '../../src/main/api'
 import { OperationTracker } from '../../src/main/flushGuard'
 import { gitSandbox } from './gitHelpers'
 import { API_METHODS, CHANNELS, channelName, unwrapIpcError, type AstralApi } from '../../src/shared/api'
-import type { Environment, RequestItem, RunEvent, RunOptions } from '../../src/shared/types'
+import type { Environment, LoadEvent, LoadOptions, RequestItem, RunEvent, RunOptions } from '../../src/shared/types'
+import { loadWorkers } from './loadHelpers'
 
 const cipher = {
   encrypt: (s: string) => `x:${s}`,
@@ -722,6 +723,158 @@ describe('runner', () => {
       expect(await api.runner.saveReport('{}', 'r.json')).toBeNull()
       await expect(api.runner.saveReport(5 as unknown as string, 'r.json')).rejects.toThrow('invalid_argument')
     })
+  })
+})
+
+describe('load', () => {
+  let workers: ReturnType<typeof loadWorkers>
+  beforeEach(() => {
+    workers = loadWorkers()
+  })
+  afterEach(async () => {
+    await workers.terminateAll()
+  })
+
+  function loadApi(over: Partial<ApiDeps> = {}) {
+    const events: LoadEvent[] = []
+    const live = new Set<{ stop(): void }>()
+    const api = makeApi(undefined, {
+      spawnLoadWorker: workers.spawn,
+      emitLoadEvent: (e) => events.push(e),
+      loadTests: live,
+      ...over,
+    })
+    const finished = async () => {
+      await waitFor(() => events.some((e) => e.type === 'finished'))
+      return events.find((e) => e.type === 'finished')!
+    }
+    return { api, events, finished, live }
+  }
+
+  async function savedRequest(api: AstralApi, parent: string, name: string, over: Partial<RequestItem>) {
+    const node = await api.collections.createRequest(parent, name)
+    await api.collections.saveRequest(node.path, { ...node.request, ...over })
+    return node.path
+  }
+
+  const loadOptions = (over: Partial<LoadOptions> & Pick<LoadOptions, 'path'>): LoadOptions => ({
+    environmentId: null,
+    vus: 1,
+    durationSec: 1,
+    rampUpSec: 0,
+    thinkTimeMs: 100,
+    timeoutSec: 30,
+    ...over,
+  })
+
+  it('resolves a request once, like Send (inherited auth, variables) and masks secrets in the URL', async () => {
+    const { api, events, finished } = loadApi()
+    await newWorkspace(api)
+    await api.environments.save({
+      id: 'e1',
+      name: 'e1',
+      variables: [
+        { key: 'baseUrl', value: base, secret: false, enabled: true },
+        { key: 'key', value: '', currentValue: 'supersecret', secret: true, enabled: true },
+      ],
+    })
+    await api.environments.save(env('globals', { token: 'fromGlobals', who: 'global' }))
+    const c = await api.collections.createCollection('Shop')
+    await api.collections.updateSettings(c.path, {
+      variables: [{ key: 'who', value: 'collection', enabled: true }],
+      auth: { type: 'bearer', token: '{{token}}' },
+    })
+    const r = await savedRequest(api, c.path, 'One', {
+      url: '{{baseUrl}}/one/{{who}}',
+      params: [{ key: 'k', value: '{{key}}', enabled: true }],
+      auth: { type: 'inherit' },
+    })
+    const testId = await api.load.start(loadOptions({ path: r, environmentId: 'e1' }))
+    expect(events[0]).toMatchObject({
+      testId,
+      type: 'started',
+      requests: [{ name: 'One', method: 'GET', url: `${base}/one/collection?k=••••` }],
+    })
+    const end = await finished()
+    expect(end).toMatchObject({ testId, reason: 'completed' })
+    expect(seen.length).toBeGreaterThan(3)
+    expect(seen.every((s) => s.url === '/one/collection?k=supersecret')).toBe(true)
+    expect(seen.every((s) => s.headers.authorization === 'Bearer fromGlobals')).toBe(true)
+    await workers.allExited()
+  })
+
+  it('loads a folder in tree order and rejects an unknown path, an empty folder and bad options', async () => {
+    const { api, events, finished } = loadApi()
+    await newWorkspace(api)
+    const c = await api.collections.createCollection('Shop')
+    await savedRequest(api, c.path, 'Top', { url: `${base}/top` })
+    const f = await api.collections.createFolder(c.path, 'Inner')
+    await savedRequest(api, f.path, 'Deep', { url: `${base}/deep`, method: 'POST' })
+    const empty = await api.collections.createFolder(c.path, 'Empty')
+    await expect(api.load.start(loadOptions({ path: `${c.path}/missing` }))).rejects.toThrow(
+      `not_found: ${c.path}/missing`,
+    )
+    await expect(api.load.start(loadOptions({ path: empty.path }))).rejects.toThrow('no_requests')
+    await expect(api.load.start(loadOptions({ path: c.path, vus: 0 }))).rejects.toThrow('invalid_load_options: vus')
+    expect(workers.count).toBe(0)
+    await api.load.start(loadOptions({ path: c.path, vus: 2 }))
+    const started = events[0]
+    expect(started.type === 'started' && started.requests.map((q) => q.name)).toEqual(['Top', 'Deep'])
+    await finished()
+    expect(new Set(seen.map((s) => s.url))).toEqual(new Set(['/top', '/deep']))
+  })
+
+  it('runs one test at a time per workspace, and stop(id) ends it', async () => {
+    const { api, events, live } = loadApi()
+    await newWorkspace(api)
+    const c = await api.collections.createCollection('Shop')
+    const r = await savedRequest(api, c.path, 'R', { url: `${base}/r` })
+    const testId = await api.load.start(loadOptions({ path: r, durationSec: 30 }))
+    expect(live.size).toBe(1)
+    await expect(api.load.start(loadOptions({ path: r }))).rejects.toThrow('load_busy')
+    await api.load.stop('another')
+    expect(events.some((e) => e.type === 'finished')).toBe(false)
+    await api.load.stop(testId)
+    expect(events.at(-1)).toMatchObject({ testId, type: 'finished', reason: 'stopped' })
+    expect(live.size).toBe(0)
+    await workers.allExited()
+    // Once stopped, the next test can start.
+    await api.load.start(loadOptions({ path: r, durationSec: 30 }))
+    await api.workspace.close()
+  })
+
+  it('closing or switching the workspace stops the test and its workers exit', async () => {
+    for (const leave of ['close', 'switch'] as const) {
+      const { api, finished } = loadApi()
+      await newWorkspace(api, `ws-${leave}`)
+      const c = await api.collections.createCollection('Shop')
+      const r = await savedRequest(api, c.path, 'R', { url: `${base}/slow` })
+      await api.load.start(loadOptions({ path: r, durationSec: 30, vus: 2 }))
+      await waitFor(() => seen.length >= 2)
+      if (leave === 'close') await api.workspace.close()
+      else await newWorkspace(api, `other-${leave}`)
+      const end = await finished()
+      expect(end.type === 'finished' && end.reason).toBe('stopped')
+      expect(end.type === 'finished' && end.totals.aborted).toBeGreaterThanOrEqual(2)
+      await workers.allExited()
+      seen = []
+    }
+  })
+
+  it('needs an open workspace and a worker spawner; saveReport writes where the dialog says', async () => {
+    const { api } = loadApi()
+    await expect(api.load.start(loadOptions({ path: 'collections/c' }))).rejects.toThrow('no_workspace_open')
+    await expect(api.load.saveReport('{}', 'r.json')).rejects.toThrow('no_workspace_open')
+    await api.load.stop('nope')
+    const target = path.join(tmp, 'load.json')
+    const saving = loadApi({ pickExportPath: async () => target, spawnLoadWorker: undefined })
+    await newWorkspace(saving.api)
+    expect(await saving.api.load.saveReport('{"ok":1}', 'Shop.load.json')).toBe(target)
+    expect(await fs.readFile(target, 'utf8')).toBe('{"ok":1}')
+    await expect(saving.api.load.saveReport(5 as unknown as string, 'r.json')).rejects.toThrow('invalid_argument')
+    const c = await saving.api.collections.createCollection('Shop')
+    const r = await savedRequest(saving.api, c.path, 'R', { url: `${base}/r` })
+    await expect(saving.api.load.start(loadOptions({ path: r }))).rejects.toThrow('load_unavailable')
   })
 })
 

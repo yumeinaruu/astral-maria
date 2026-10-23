@@ -6,7 +6,9 @@ import type {
   CollectionTree,
   Environment,
   KeyValue,
+  LoadEvent,
   RequestItem,
+  RequestNode,
   RunEvent,
   Scripts,
   SendResult,
@@ -16,6 +18,8 @@ import type {
 import { OperationTracker } from './flushGuard'
 import { orderedScopes, resolveRequest, type VariableScope } from './http/resolve'
 import { requestUrl, sendRequest } from './http/sendRequest'
+import { startLoad, validateLoadOptions, type LoadHandle, type WorkerLike } from './load/engine'
+import type { WorkerInit } from './load/worker'
 import { dataScope, MAX_DATA_BYTES, parseDataFile } from './runner/dataFile'
 import {
   abortableSleep,
@@ -64,6 +68,12 @@ export interface ApiDeps {
   emitRunEvent?: (event: RunEvent) => void
   /** Opens a file in the OS default app (Electron's `shell.openPath`); resolves an error message, '' on success. */
   openPath?: (absPath: string) => Promise<string>
+  /** Starts one load test worker thread. Without it, `load.start` rejects with `load_unavailable`. */
+  spawnLoadWorker?: (init: WorkerInit) => WorkerLike
+  /** Pushes a load test event to the renderer. */
+  emitLoadEvent?: (event: LoadEvent) => void
+  /** Every load test in progress is kept here while it runs, so a quit can stop it. */
+  loadTests?: Set<{ stop(): void }>
 }
 
 /** Collection variable changes made by scripts: a value, or null for a key a script unset. */
@@ -77,6 +87,8 @@ interface Open {
   sessionVariables: Map<string, Overrides>
   /** The collection run in progress, if any: at most one per workspace. */
   run?: RunHandle
+  /** The load test in progress, if any: at most one per workspace, independent of the runner. */
+  load?: LoadHandle
 }
 
 /** One request to send: as `http.send` gets it, or as the runner loaded it, with the runner's extras. */
@@ -174,6 +186,20 @@ function secretValues(environments: Environment[], id: string | null, scope: Var
 
 const REQUEST_SUFFIX = '.request.json'
 
+/** The folder or request at `nodePath`, searched depth-first. */
+function findNode(nodes: TreeNode[], nodePath: string): TreeNode | undefined {
+  for (const node of nodes) {
+    if (node.path === nodePath) return node
+    if (node.kind === 'folder' && nodePath.startsWith(`${node.path}/`)) return findNode(node.children, nodePath)
+  }
+  return undefined
+}
+
+/** The requests under `nodes`, in tree order. */
+function requestsIn(nodes: TreeNode[]): RequestNode[] {
+  return nodes.flatMap((node) => (node.kind === 'folder' ? requestsIn(node.children) : [node]))
+}
+
 /** The folder at `folderPath`, searched depth-first. */
 function findFolder(nodes: TreeNode[], folderPath: string): TreeNode[] | undefined {
   for (const node of nodes) {
@@ -256,6 +282,16 @@ export function createApi(deps: ApiDeps): AstralApi {
       return target
     }
 
+  /** Save dialog, then writes `json` there; the dialog is not tracked, as a quit must not wait for an answer. */
+  async function saveReport(json: string, defaultName: string): Promise<string | null> {
+    if (typeof json !== 'string' || typeof defaultName !== 'string') throw new Error('invalid_argument')
+    const before = await workspace()
+    const target = await pickExportPath(before)(defaultName)
+    if (target === null) return null
+    await trackWrite(fs.writeFile(target, json, 'utf8'))
+    return target
+  }
+
   /** After a dialog: the workspace must still be the one the dialog was opened for. */
   async function sameWorkspace(before: Open): Promise<Open> {
     const ws = await workspace()
@@ -263,13 +299,20 @@ export function createApi(deps: ApiDeps): AstralApi {
     return ws
   }
 
-  /** Also stops the workspace's collection run, which emits its `finished` event before this returns. */
+  /**
+   * Also stops the workspace's collection run, which emits its `finished` event before this returns, and its load
+   * test, whose `finished` event follows once the workers have wound down.
+   */
   const cancelAllSends = (): void => {
     for (const controller of inFlight.values()) controller.abort()
     inFlight.clear()
     if (current?.run) {
       current.run.stop()
       current.run = undefined
+    }
+    if (current?.load) {
+      current.load.stop()
+      current.load = undefined
     }
   }
 
@@ -341,15 +384,37 @@ export function createApi(deps: ApiDeps): AstralApi {
    * else resolved and sent directly. Both paths resolve the runner's data row and read its variable overlay.
    */
   async function sendOne(ws: Open, s: SendInput): Promise<SendResult> {
-    const overrides = s.collection ? ws.sessionVariables.get(s.collection.path) : undefined
-    const collectionScope = withOverrides(
-      withOverrides(enabledScope(s.collection?.variables ?? []), overrides),
-      s.overlay?.collection,
-    )
+    const collectionScope = collectionScopeOf(ws, s.collection, s.overlay)
     const sources = scriptSources(s.collection, s.requestPath, s.request)
     if (deps.scriptHost && hasScripts(sources)) {
       return sendWithScripts(ws, deps.scriptHost, s, collectionScope, sources)
     }
+    const plain = await plainScopes(ws, s, collectionScope)
+    const resolved = resolveRequest(withInheritedAuth(s.request, s.collection), plain.scopes)
+    const result = await sendRequest(resolved, { signal: s.signal })
+    if (s.observe) {
+      const secrets = await plainSecrets(ws, s.environmentId, plain)
+      s.observe.url = maskSecrets(result.ok ? result.response.finalUrl : requestUrl(resolved), secrets)
+    }
+    return result
+  }
+
+  /** The collection's enabled variables with the session's script changes, then the runner overlay's, on top. */
+  function collectionScopeOf(
+    ws: Open,
+    collection: CollectionTree | undefined,
+    overlay?: VariableOverlay | null,
+  ): VariableScope {
+    const overrides = collection ? ws.sessionVariables.get(collection.path) : undefined
+    return withOverrides(withOverrides(enabledScope(collection?.variables ?? []), overrides), overlay?.collection)
+  }
+
+  /** The variable scopes of the plain path (no scripts), in resolution order. */
+  async function plainScopes(
+    ws: Open,
+    s: Pick<SendInput, 'environmentId' | 'iterationData' | 'overlay'>,
+    collectionScope: VariableScope,
+  ): Promise<{ scopes: VariableScope[]; environment: VariableScope; globals: VariableScope }> {
     const envOverlay = environmentOverlay(s.overlay, s.environmentId)
     const environment = withOverrides(await environmentValues(ws, s.environmentId), envOverlay)
     const globals = withOverrides(await environmentValues(ws, GLOBALS_ID), s.overlay?.globals)
@@ -359,17 +424,20 @@ export function createApi(deps: ApiDeps): AstralApi {
       collection: collectionScope,
       globals,
     })
-    const resolved = resolveRequest(withInheritedAuth(s.request, s.collection), scopes)
-    const result = await sendRequest(resolved, { signal: s.signal })
-    if (s.observe) {
-      const environments = await listEnvironments(ws)
-      const secrets = [
-        ...secretValues(environments, s.environmentId, environment),
-        ...secretValues(environments, GLOBALS_ID, globals),
-      ]
-      s.observe.url = maskSecrets(result.ok ? result.response.finalUrl : requestUrl(resolved), secrets)
-    }
-    return result
+    return { scopes, environment, globals }
+  }
+
+  /** The secret values the plain path resolved with, to mask in what is shown. */
+  async function plainSecrets(
+    ws: Open,
+    environmentId: string | null,
+    plain: { environment: VariableScope; globals: VariableScope },
+  ): Promise<string[]> {
+    const environments = await listEnvironments(ws)
+    return [
+      ...secretValues(environments, environmentId, plain.environment),
+      ...secretValues(environments, GLOBALS_ID, plain.globals),
+    ]
   }
 
   async function sendWithScripts(
@@ -679,14 +747,60 @@ export function createApi(deps: ApiDeps): AstralApi {
         if (bytes.length > MAX_DATA_BYTES) throw tooBig()
         return { name: path.basename(file), rows: parseDataFile(bytes.toString('utf8'), kind) }
       },
-      async saveReport(json, defaultName) {
-        if (typeof json !== 'string' || typeof defaultName !== 'string') throw new Error('invalid_argument')
-        const before = await workspace()
-        const target = await pickExportPath(before)(defaultName)
-        if (target === null) return null
-        await trackWrite(fs.writeFile(target, json, 'utf8'))
-        return target
+      saveReport,
+    },
+    load: {
+      async start(options) {
+        const ws = await workspace()
+        validateLoadOptions(options)
+        if (ws.load) throw new Error('load_busy')
+        const spawnWorker = deps.spawnLoadWorker
+        if (!spawnWorker) throw new Error('load_unavailable')
+        const { collections } = await ws.collections.list()
+        const collection = collections.find((c) => c.path === collectionRoot(options.path))
+        const node = collection && collection.path !== options.path ? findNode(collection.children, options.path) : null
+        if (!collection || node === undefined) throw new Error(`not_found: ${options.path}`)
+        const nodes =
+          node === null
+            ? requestsIn(collection.children)
+            : node.kind === 'folder'
+              ? requestsIn(node.children)
+              : [node]
+        if (nodes.length === 0) throw new Error('no_requests')
+        // Resolved once, as Send's plain path resolves: scripts are not run.
+        const plain = await plainScopes(ws, { environmentId: options.environmentId }, collectionScopeOf(ws, collection))
+        const requests = nodes.map((n) => resolveRequest(withInheritedAuth(n.request, collection), plain.scopes))
+        const secrets = await plainSecrets(ws, options.environmentId, plain)
+        const displayUrls = requests.map((r) => maskSecrets(requestUrl(r), secrets))
+        await sameWorkspace(ws)
+        if (ws.load) throw new Error('load_busy')
+        const handle: LoadHandle = startLoad(
+          {
+            spawnWorker,
+            emit(event) {
+              // `started` is emitted before startLoad returns, so `handle` is only read for `finished`.
+              if (event.type === 'finished' && ws.load === handle) ws.load = undefined
+              deps.emitLoadEvent?.(event)
+            },
+            now: () => performance.now(),
+          },
+          { requests, displayUrls },
+          options,
+        )
+        ws.load = handle
+        deps.loadTests?.add(handle)
+        void handle.done.then(() => deps.loadTests?.delete(handle))
+        return handle.testId
       },
+      async stop(testId) {
+        // An unknown or finished test is a no-op.
+        const handle = current?.load
+        if (!current || !handle || handle.testId !== testId) return
+        current.load = undefined
+        handle.stop()
+        await handle.done
+      },
+      saveReport,
     },
     git: {
       state: () => serialGit(gitSync.readSyncState),

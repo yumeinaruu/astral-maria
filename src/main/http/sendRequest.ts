@@ -1,10 +1,12 @@
 import { STATUS_CODES } from 'node:http'
-import { randomBytes } from 'node:crypto'
 import { pipeline, type Readable, type Transform } from 'node:stream'
 import zlib from 'node:zlib'
 import { Agent, request as undiciRequest } from 'undici'
-import type { HttpResponse, KeyValue, RequestItem, SendResult } from '../../shared/types'
+import type { HttpResponse, RequestItem, SendResult } from '../../shared/types'
 import { parseSetCookie } from './cookies'
+import { DispatchError, flatHeaders, prepareRequest } from './dispatchOptions'
+
+export { requestUrl } from './dispatchOptions'
 
 export interface SendOptions {
   timeoutMs?: number
@@ -19,113 +21,6 @@ const DEFAULT_MAX_REDIRECTS = 10
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
 const CREDENTIAL_HEADERS = ['authorization', 'cookie', 'proxy-authorization']
 const BODY_HEADERS = ['content-type', 'content-length', 'content-encoding', 'content-language', 'content-location']
-const RAW_CONTENT_TYPES = { json: 'application/json', text: 'text/plain', xml: 'application/xml', html: 'text/html' }
-
-class SendError extends Error {
-  constructor(
-    readonly code: string,
-    message: string,
-  ) {
-    super(message)
-  }
-}
-
-type Headers = Map<string, { name: string; value: string }>
-
-function setHeader(headers: Headers, name: string, value: string): void {
-  const lower = name.toLowerCase()
-  const existing = headers.get(lower)
-  const separator = lower === 'cookie' ? '; ' : ', '
-  headers.set(lower, { name, value: existing ? `${existing.value}${separator}${value}` : value })
-}
-
-function enabled(rows: KeyValue[]): KeyValue[] {
-  return rows.filter((row) => row.enabled && row.key !== '')
-}
-
-const encode = encodeURIComponent
-
-/** The query (and fragment) may carry resolved secrets, so messages only show what comes before it. */
-function withoutQuery(url: string): string {
-  const cut = url.search(/[?#]/)
-  return cut < 0 ? url : `${url.slice(0, cut)}?…`
-}
-
-/** The URL a resolved request goes to, query included; the request's own URL when it is not a valid one. */
-export function requestUrl(request: RequestItem): string {
-  try {
-    return buildUrl(request).toString()
-  } catch {
-    return request.url
-  }
-}
-
-function buildUrl(request: RequestItem): URL {
-  let url: URL
-  try {
-    url = new URL(request.url)
-  } catch {
-    throw new SendError('invalid_url', `Invalid URL: ${request.url === '' ? '(empty)' : withoutQuery(request.url)}`)
-  }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new SendError('invalid_url', `Unsupported URL scheme ${url.protocol} (only http: and https: are supported)`)
-  }
-  const pairs = enabled(request.params).map((p): [string, string] => [p.key, p.value])
-  if (request.auth.type === 'apikey' && request.auth.in === 'query' && request.auth.key !== '') {
-    pairs.push([request.auth.key, request.auth.value])
-  }
-  if (pairs.length > 0) {
-    const query = pairs.map(([k, v]) => `${encode(k)}=${encode(v)}`).join('&')
-    url.search = url.search === '' || url.search === '?' ? query : `${url.search.slice(1)}&${query}`
-  }
-  return url
-}
-
-function buildBody(request: RequestItem, headers: Headers): string | Buffer | undefined {
-  const body = request.body
-  const defaultType = (type: string) => {
-    if (!headers.has('content-type')) setHeader(headers, 'Content-Type', type)
-  }
-  switch (body.mode) {
-    case 'none':
-      return undefined
-    case 'raw':
-      defaultType(RAW_CONTENT_TYPES[body.language])
-      return body.content
-    case 'urlencoded':
-      defaultType('application/x-www-form-urlencoded')
-      return enabled(body.fields)
-        .map((f) => `${encode(f.key)}=${encode(f.value)}`)
-        .join('&')
-    case 'formdata': {
-      // The boundary must match the body, so this header is always generated.
-      const boundary = `----AstralMaria${randomBytes(12).toString('hex')}`
-      headers.delete('content-type')
-      setHeader(headers, 'Content-Type', `multipart/form-data; boundary=${boundary}`)
-      const quote = (s: string) => s.replace(/[\r\n"]/g, (c) => ({ '\r': '%0D', '\n': '%0A', '"': '%22' })[c] as string)
-      const parts = enabled(body.fields).map(
-        (f) => `--${boundary}\r\nContent-Disposition: form-data; name="${quote(f.key)}"\r\n\r\n${f.value}\r\n`,
-      )
-      return Buffer.from(`${parts.join('')}--${boundary}--\r\n`, 'utf8')
-    }
-  }
-}
-
-function applyAuth(request: RequestItem, headers: Headers): string | undefined {
-  const auth = request.auth
-  const addIfAbsent = (name: string, value: string) => {
-    if (!headers.has(name.toLowerCase())) setHeader(headers, name, value)
-  }
-  if (auth.type === 'bearer') {
-    addIfAbsent('Authorization', `Bearer ${auth.token}`)
-  } else if (auth.type === 'basic') {
-    addIfAbsent('Authorization', `Basic ${Buffer.from(`${auth.username}:${auth.password}`, 'utf8').toString('base64')}`)
-  } else if (auth.type === 'apikey' && auth.in === 'header' && auth.key !== '') {
-    addIfAbsent(auth.key, auth.value)
-    return auth.key.toLowerCase()
-  }
-  return undefined
-}
 
 function errorCode(err: unknown): string {
   const e = err as { code?: unknown; cause?: { code?: unknown }; errors?: { code?: unknown }[] }
@@ -233,22 +128,14 @@ export async function sendRequest(request: RequestItem, options: SendOptions = {
     if (options.signal?.aborted) return fail('cancelled', 'Request was cancelled')
     options.signal?.addEventListener('abort', onUserAbort, { once: true })
 
-    let url = buildUrl(request)
-    const headers: Headers = new Map()
-    for (const h of enabled(request.headers)) setHeader(headers, h.key, h.value)
-    const userSetEncoding = headers.has('accept-encoding')
-    if (!userSetEncoding) setHeader(headers, 'Accept-Encoding', 'gzip, deflate, br')
-    const apikeyHeader = applyAuth(request, headers)
-    let method: string = request.method
-    const built = buildBody(request, headers)
-    let body = method === 'HEAD' ? undefined : built
+    const prepared = prepareRequest(request)
+    const { headers, userSetEncoding, apikeyHeader } = prepared
+    let { url, method, body } = prepared
 
     for (let redirects = 0; ; redirects++) {
-      const flat: Record<string, string> = {}
-      for (const [lower, h] of headers) flat[lower] = h.value
       const res = await undiciRequest(url, {
         method: method as 'GET',
-        headers: flat,
+        headers: flatHeaders(headers),
         body,
         signal: controller.signal,
         dispatcher: agent,
@@ -323,7 +210,7 @@ export async function sendRequest(request: RequestItem, options: SendOptions = {
   } catch (err) {
     if (abortedBy === 'timeout') return fail('timeout', `Request timed out after ${timeoutMs} ms`)
     if (abortedBy === 'cancelled') return fail('cancelled', 'Request was cancelled')
-    if (err instanceof SendError) return fail(err.code, err.message)
+    if (err instanceof DispatchError) return fail(err.code, err.message)
     const { code, message } = describeError(err)
     return fail(code, message)
   } finally {

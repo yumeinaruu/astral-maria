@@ -53,8 +53,13 @@ export class Metrics {
   private nextT = 0
   private lastVus = 0
 
+  // A field, not a parameter property: in tests the load worker runs this file with Node's type stripping.
+  private readonly startedAt: number
+
   /** `startedAt` and every `at`/`now` below are on the same ms clock (e.g. `performance.now()`). */
-  constructor(private readonly startedAt: number) {}
+  constructor(startedAt: number) {
+    this.startedAt = startedAt
+  }
 
   /** A response arrived (any status). 4xx and 5xx count as errors. */
   recordResponse(status: number, ms: number, bytes: number, at: number): void {

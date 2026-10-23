@@ -6,6 +6,8 @@ import type {
   ImportReport,
   KeyValue,
   LoadError,
+  LoadEvent,
+  LoadOptions,
   RequestItem,
   RequestNode,
   RunEvent,
@@ -93,6 +95,19 @@ export interface AstralApi {
     /** Save dialog; writes `json` and resolves the path, or null when cancelled. */
     saveReport(json: string, defaultName: string): Promise<string | null>
   }
+  load: {
+    /**
+     * Starts a load test of a request, folder or collection; its requests are resolved once (environment, collection
+     * variables, globals, inherited auth; no scripts). Resolves the test id once its `started` event was sent; progress
+     * then arrives as LoadEvents. Rejects with `invalid_load_options: <field>`, `load_busy` (a test is in progress in
+     * this workspace), `not_found: <path>` or `no_requests`. Closing or switching the workspace stops the test.
+     */
+    start(options: LoadOptions): Promise<string>
+    /** Stops the test: its `finished` event (`stopped`) is sent before this resolves. An unknown id is a no-op. */
+    stop(testId: string): Promise<void>
+    /** Save dialog; writes `json` and resolves the path, or null when cancelled. */
+    saveReport(json: string, defaultName: string): Promise<string | null>
+  }
   /**
    * Syncing the open workspace with a git repository through the system `git`. Every method but `state` and
    * `openInEditor` rejects with `Finish or abort the merge first` while a merge is in progress (except the merge
@@ -153,6 +168,8 @@ export interface AstralEvents {
   onFlushRequest(listener: () => void): () => void
   /** A collection run's progress (see `runner.start`). Returns a function that removes the listener. */
   onRunEvent(listener: (event: RunEvent) => void): () => void
+  /** A load test's progress (see `load.start`). Returns a function that removes the listener. */
+  onLoadEvent(listener: (event: LoadEvent) => void): () => void
 }
 
 /** The channel main uses to send a flush request to the renderer. */
@@ -160,6 +177,9 @@ export const FLUSH_REQUEST_CHANNEL = 'astral:app.flush-request'
 
 /** The channel main uses to push runner events to the renderer. */
 export const RUN_EVENT_CHANNEL = 'astral:runner.event'
+
+/** The channel main uses to push load test events to the renderer. */
+export const LOAD_EVENT_CHANNEL = 'astral:load.event'
 
 /** Method names per group; the preload and the main-process handlers are both generated from this table. */
 export const API_METHODS = {
@@ -179,6 +199,7 @@ export const API_METHODS = {
   transfer: ['importFiles', 'importText', 'exportCollection', 'exportEnvironment'],
   http: ['send', 'cancel'],
   runner: ['start', 'stop', 'pickDataFile', 'saveReport'],
+  load: ['start', 'stop', 'saveReport'],
   git: [
     'state',
     'link',

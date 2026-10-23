@@ -280,3 +280,77 @@ export type SyncOutcome =
  * `edited` (only for a `file` item) keeps the working-tree file as the user edited it.
  */
 export type SyncChoice = 'ours' | 'theirs' | 'edited' | { fields: Record<string, 'ours' | 'theirs'> }
+
+/** What a load test runs, and how (see `main/load/engine.ts`). */
+export interface LoadOptions {
+  /** A request path, or a folder or collection path (its requests, in tree order). */
+  path: string
+  environmentId: string | null
+  /** Virtual users, 1 to 1000. */
+  vus: number
+  /** 1 to 3600. */
+  durationSec: number
+  /** 0 to the duration; VU `k` starts at `rampUpSec * k / vus`. */
+  rampUpSec: number
+  /** Pause after each request, per VU: 0 to 60 000. */
+  thinkTimeMs: number
+  /** 1 to 120. */
+  timeoutSec: number
+}
+
+/** One second of a load test; `t` is whole seconds since the start, latencies are in ms. */
+export interface LoadTick {
+  t: number
+  /** Requests completed in this second. */
+  rps: number
+  errors: number
+  activeVus: number
+  p50: number
+  p95: number
+  p99: number
+}
+
+/** Running totals of a load test; `errorRate` is 0..1, latencies in ms. */
+export interface LoadTotals {
+  completed: number
+  errors: number
+  aborted: number
+  bytes: number
+  rps: number
+  p50: number
+  p95: number
+  p99: number
+  mean: number
+  max: number
+  errorRate: number
+  /** Count per response status ("200", "404", …). */
+  status: Record<string, number>
+  /** Count per error: a transport code (`ECONNREFUSED`, `timeout`, `tls`, …), or `4xx` / `5xx`. */
+  errorCodes: Record<string, number>
+}
+
+export type LoadStopReason = 'completed' | 'stopped' | 'error'
+
+/**
+ * Progress of a load test, pushed from main to the renderer; nothing follows `finished`. A `tick` carries the seconds
+ * closed since the previous one; `finished` carries every second of the test. Request URLs have secrets masked.
+ */
+export type LoadEvent =
+  | {
+      testId: string
+      type: 'started'
+      startedAt: string
+      requests: { name: string; method: HttpMethod; url: string }[]
+      workers: number
+    }
+  | { testId: string; type: 'tick'; ticks: LoadTick[]; totals: LoadTotals }
+  | {
+      testId: string
+      type: 'finished'
+      reason: LoadStopReason
+      /** Set when `reason` is `error`. */
+      message?: string
+      durationMs: number
+      totals: LoadTotals
+      ticks: LoadTick[]
+    }
