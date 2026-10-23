@@ -678,6 +678,40 @@ test('create, send, persist, and keep secrets local', async () => {
     await p.getByRole('tab', { name: /Hello/ }).click()
   })
 
+  await test.step('load-test a request and export the results', async () => {
+    const p = app!.windows()[0]
+    await p.getByRole('treeitem', { name: 'Hello' }).click({ button: 'right' })
+    await p.getByRole('menuitem', { name: 'Load test', exact: true }).click()
+    await expect(p.getByRole('tab', { name: 'Load · Hello' })).toHaveAttribute('aria-selected', 'true')
+    await expect(p.getByRole('list', { name: 'Target requests' }).getByRole('listitem')).toHaveCount(1)
+    await expect(p.getByText('Redirects are not followed during a load test.')).toBeVisible()
+    await p.getByLabel('Virtual users').fill('5')
+    await p.getByLabel('Duration (s)').fill('3')
+    await shotBoth(p, 'i1-load-config')
+
+    // The e2e server is on 127.0.0.1: no host confirmation.
+    await p.getByRole('button', { name: 'Start load test' }).click()
+    await expect(p.getByRole('alertdialog')).toHaveCount(0)
+    await expect(p.getByRole('progressbar', { name: 'Elapsed' })).toBeVisible()
+    await expect(p.getByText('Completed', { exact: true })).toBeVisible({ timeout: 15_000 })
+    const requests = await p.getByRole('group', { name: 'Requests' }).locator('.load-tile-value').innerText()
+    expect(Number(requests.replace(/\s/g, ''))).toBeGreaterThan(0)
+    await expect(p.getByRole('group', { name: 'Error rate' }).locator('.load-tile-value')).toHaveText('0%')
+    await expect(p.getByRole('table', { name: 'Status codes' })).toContainText('200')
+    await shotBoth(p, 'i2-load-results')
+
+    await p.getByRole('button', { name: 'Export results' }).click()
+    const loadReports = async () => (await readdir(runnerExportDir)).filter((f) => f.includes('-load-'))
+    await expect.poll(async () => (await loadReports()).length).toBe(1)
+    const [file] = await loadReports()
+    expect(file).toMatch(/^Hello-load-\d{4}-\d{2}-\d{2}-\d{6}\.json$/)
+    const report = JSON.parse(await readFile(join(runnerExportDir, file), 'utf8'))
+    expect(report.totals.completed).toBeGreaterThan(0)
+    expect(report.options).toMatchObject({ vus: 5, durationSec: 3 })
+    await p.getByRole('treeitem', { name: 'Hello' }).click()
+    await expect(p.getByRole('textbox', { name: 'URL', exact: true })).toBeVisible()
+  })
+
   await test.step('an edit typed just before quitting is on disk after the quit', async () => {
     const p = app!.windows()[0]
     await p.getByRole('textbox', { name: 'URL', exact: true }).fill('{{baseUrl}}/typed-before-quit')

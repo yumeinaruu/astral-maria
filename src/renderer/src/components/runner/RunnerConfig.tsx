@@ -226,7 +226,7 @@ export function RunnerConfig({ path, name, state }: { path: string; name: string
   )
 }
 
-function NumberField(props: {
+export function NumberField(props: {
   id: string
   label: string
   value: string

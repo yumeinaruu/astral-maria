@@ -8,6 +8,7 @@ import { Header } from './components/Header'
 import { ImportDialog } from './components/ImportDialog'
 import { QUICK_OPEN_ID } from './components/QuickOpen'
 import { RequestEditor } from './components/RequestEditor'
+import { LoadTab } from './components/load/LoadTab'
 import { RequestTabs, tabDomId } from './components/RequestTabs'
 import { RunnerTab } from './components/runner/RunnerTab'
 import { Sidebar } from './components/Sidebar'
@@ -16,7 +17,7 @@ import { ConflictsDialog, MergeBanner } from './components/sync/ConflictsDialog'
 import { WorkspaceGate } from './components/WorkspaceGate'
 import { hasMod, shortcut } from './lib/platform'
 import { createRequestHere } from './lib/tabs'
-import { environmentIdOf, runnerPathOf, useApp } from './state/store'
+import { environmentIdOf, loadPathOf, runnerPathOf, useApp } from './state/store'
 import { useUi } from './state/ui'
 
 export function App(): React.JSX.Element {
@@ -57,6 +58,9 @@ export function App(): React.JSX.Element {
   // Progress of collection runs; the store routes each event to the Runner tab of its run.
   useEffect(() => window.astralEvents?.onRunEvent?.((event) => useApp.getState().receiveRunEvent(event)), [])
 
+  // Progress of load tests; the store routes each event to the Load test tab of its test.
+  useEffect(() => window.astralEvents?.onLoadEvent?.((event) => useApp.getState().receiveLoadEvent(event)), [])
+
   // App-wide shortcuts; the tab strip handles the tab ones.
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {
@@ -89,6 +93,7 @@ export function App(): React.JSX.Element {
 
   const envId = activePath === null ? null : environmentIdOf(activePath)
   const runnerPath = activePath === null ? null : runnerPathOf(activePath)
+  const loadPath = activePath === null ? null : loadPathOf(activePath)
 
   return (
     <div className="app">
@@ -107,6 +112,8 @@ export function App(): React.JSX.Element {
                 <EnvironmentEditor key={activePath} envId={envId} />
               ) : runnerPath !== null ? (
                 <RunnerTab key={activePath} path={runnerPath} />
+              ) : loadPath !== null ? (
+                <LoadTab key={activePath} path={loadPath} />
               ) : containerTab ? (
                 <ContainerEditor key={activePath} path={activePath} />
               ) : (

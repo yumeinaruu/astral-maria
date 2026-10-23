@@ -1,11 +1,12 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, safeStorage, session, shell } from 'electron'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
-import { API_METHODS, channelName, FLUSH_REQUEST_CHANNEL, RUN_EVENT_CHANNEL } from '../shared/api'
-import type { RunEvent } from '../shared/types'
+import { API_METHODS, channelName, FLUSH_REQUEST_CHANNEL, LOAD_EVENT_CHANNEL, RUN_EVENT_CHANNEL } from '../shared/api'
+import type { LoadEvent, RunEvent } from '../shared/types'
 import { createApi } from './api'
 import { FlushCoordinator, interceptOnce, OperationTracker } from './flushGuard'
 import { appMenuTemplate, windowBackground } from './menu'
+import { spawnLoadWorker } from './load/spawn'
 import { createScriptHost } from './scripts/spawn'
 import { createSecretCipher } from './secretCipher'
 import { devServerUrlFor, isAllowedRendererUrl, isE2eAllowed, isPermissionAllowed } from './security'
@@ -42,6 +43,8 @@ const FLUSH_TIMEOUT_MS = 3000
 const operations = new OperationTracker()
 /** The script sandbox, shared by every send; its worker starts on the first script. */
 const scriptHost = createScriptHost()
+/** The load tests in progress (at most one per workspace); a quit stops them. */
+const loadTests = new Set<{ stop(): void }>()
 const flusher = new FlushCoordinator({
   requestFlush() {
     let asked = 0
@@ -132,13 +135,16 @@ async function pickDataFile(): Promise<string | null> {
   return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0]
 }
 
-/** Pushes a runner event to every window. */
-function emitRunEvent(event: RunEvent): void {
+/** Pushes an event to every window. */
+function broadcast(channel: string, event: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed() || win.webContents.isDestroyed()) continue
-    win.webContents.send(RUN_EVENT_CHANNEL, event)
+    win.webContents.send(channel, event)
   }
 }
+
+const emitRunEvent = (event: RunEvent): void => broadcast(RUN_EVENT_CHANNEL, event)
+const emitLoadEvent = (event: LoadEvent): void => broadcast(LOAD_EVENT_CHANNEL, event)
 
 /** One handler per API method, generated from the shared method table so main and preload cannot drift. */
 function registerApi(): void {
@@ -149,6 +155,9 @@ function registerApi(): void {
     pickExportPath,
     pickDataFile,
     emitRunEvent,
+    spawnLoadWorker,
+    emitLoadEvent,
+    loadTests,
     openPath: (absPath) => shell.openPath(absPath),
     recentFile: join(app.getPath('userData'), 'recent-workspaces.json'),
     operations,
@@ -196,9 +205,10 @@ app.on(
   ),
 )
 
-// After the quit flush: stop any script still running and the sandbox's worker.
+// After the quit flush: stop any script still running and the sandbox's worker, and any load test and its workers.
 app.on('will-quit', () => {
   void scriptHost.dispose()
+  for (const test of loadTests) test.stop()
 })
 
 app.on('window-all-closed', () => {

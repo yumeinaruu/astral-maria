@@ -139,6 +139,10 @@
   --code-selection: rgb(36 151 173 / 0.2);
   --code-match: rgb(255 200 0 / 0.3);
   --code-match-border: rgb(173 122 3 / 0.6);
+  /* Chart series (categorical slots), validated against the light surface #ffffff. */
+  --chart-series-1: #2a78d6;
+  --chart-series-2: #eb6834;
+  --chart-series-3: #1baf7a;
 }
 
 /* Dark theme: Postman's Monokai values, used when the OS is dark unless the setting forces light. */
@@ -216,6 +220,10 @@
     --code-selection: rgb(255 255 255 / 0.14);
     --code-match: rgb(255 220 122 / 0.22);
     --code-match-border: rgb(255 220 122 / 0.6);
+    /* Chart series, validated against the dark surface #282923. */
+    --chart-series-1: #3987e5;
+    --chart-series-2: #d95926;
+    --chart-series-3: #199e70;
   }
 }
 
@@ -293,6 +301,9 @@
   --code-selection: rgb(255 255 255 / 0.14);
   --code-match: rgb(255 220 122 / 0.22);
   --code-match-border: rgb(255 220 122 / 0.6);
+  --chart-series-1: #3987e5;
+  --chart-series-2: #d95926;
+  --chart-series-3: #199e70;
 }
 
 /* ---- base ---- */
@@ -4380,4 +4391,295 @@ select.grid-input {
 .runner-failure > svg {
   flex: none;
   margin-top: 3px;
+}
+
+/* ---- load test ---- */
+
+.load-target {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-m);
+  height: var(--controls-size-default);
+  padding: 0 var(--spacing-l);
+  color: var(--content-primary);
+}
+
+.load-target .method {
+  flex: none;
+  width: 44px;
+  font-family: var(--font-family-code);
+  font-size: var(--text-size-xs);
+  text-transform: uppercase;
+}
+
+.load-target .runner-order-name {
+  flex: none;
+  max-width: 40%;
+}
+
+.load-target-url {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--content-tertiary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.load-notes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xxs);
+}
+
+.load-notes p {
+  margin: 0;
+}
+
+.load-progress {
+  flex: none;
+  width: 160px;
+  height: 4px;
+  overflow: hidden;
+  background: var(--background-tertiary);
+  border-radius: var(--radius-xs);
+}
+
+.load-progress-fill {
+  height: 100%;
+  background: var(--brand);
+  transition: width 0.3s ease-out;
+}
+
+.load-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--spacing-l);
+}
+
+.load-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+  gap: var(--spacing-m);
+  margin-bottom: var(--spacing-xl);
+}
+
+.load-tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xxs);
+  padding: var(--spacing-m) var(--spacing-l);
+  background: var(--background-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-default);
+}
+
+.load-tile-value {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  font-size: var(--text-size-xxl);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-l);
+  color: var(--content-primary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.load-tile-unit {
+  font-size: var(--text-size-m);
+  font-weight: var(--font-weight-regular);
+  color: var(--content-secondary);
+}
+
+.load-tile-label {
+  font-size: var(--text-size-s);
+  line-height: var(--line-height-s);
+  color: var(--content-secondary);
+}
+
+.load-tile-error .load-tile-value {
+  color: var(--content-error);
+}
+
+.load-charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: var(--spacing-xl);
+  margin-bottom: var(--spacing-xl);
+}
+
+.load-breakdowns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--spacing-xl);
+}
+
+.load-breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-s);
+  min-width: 0;
+}
+
+.load-breakdown p {
+  margin: 0;
+}
+
+.load-table td,
+.chart-table td {
+  padding: 0 var(--spacing-s) 0 var(--spacing-m);
+  color: var(--content-primary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ---- line chart ---- */
+
+.chart {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-s);
+  min-width: 0;
+  margin: 0;
+}
+
+.chart-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-xs) var(--spacing-l);
+  min-height: var(--controls-size-default);
+}
+
+.chart-title {
+  font-weight: var(--font-weight-bold);
+  color: var(--content-primary);
+}
+
+.chart-legend {
+  display: flex;
+  gap: var(--spacing-l);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chart-legend-item {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  color: var(--content-secondary);
+}
+
+.chart-swatch {
+  flex: none;
+  width: 10px;
+  height: 2px;
+  border-radius: 1px;
+}
+
+.chart-toggle[aria-pressed='true'] {
+  color: var(--content-primary);
+  background: var(--highlight-tertiary);
+}
+
+.chart-plot {
+  position: relative;
+  min-width: 0;
+}
+
+.chart-svg {
+  display: block;
+  max-width: 100%;
+  overflow: visible;
+  border-radius: var(--radius-s);
+}
+
+.chart-svg:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.chart-grid line {
+  stroke: var(--border-default);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+.chart-axis-label {
+  font-size: var(--text-size-xs);
+  fill: var(--content-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-end-label {
+  font-size: var(--text-size-s);
+  fill: var(--content-secondary);
+}
+
+.chart-crosshair {
+  stroke: var(--content-tertiary);
+  stroke-width: 1;
+  stroke-dasharray: 2 2;
+}
+
+.chart-dot {
+  stroke: var(--background-primary);
+  stroke-width: 1.5;
+}
+
+.chart-hit {
+  cursor: crosshair;
+}
+
+.chart-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  pointer-events: none;
+}
+
+.chart-tip {
+  position: absolute;
+  z-index: 2;
+  min-width: 96px;
+  padding: var(--spacing-xs) var(--spacing-s);
+  font-size: var(--text-size-s);
+  line-height: var(--line-height-s);
+  color: var(--content-primary);
+  background: var(--background-primary);
+  border: 1px solid var(--tooltip-border);
+  border-radius: var(--radius-s);
+  box-shadow: var(--tooltip-shadow);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.chart-tip-head {
+  color: var(--content-secondary);
+}
+
+.chart-tip-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-s);
+}
+
+.chart-tip-label {
+  flex: 1;
+  color: var(--content-secondary);
+}
+
+.chart-tip-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-table-wrap {
+  max-height: 200px;
+  overflow: auto;
 }
