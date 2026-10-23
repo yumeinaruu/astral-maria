@@ -453,7 +453,7 @@ describe('conflicts dialog', () => {
     const item = within(dialog).getByRole('group', { name: FILE_ITEM.label })
     await user.click(within(item).getByRole('button', { name: 'Open in editor' }))
     expect(api.git.openInEditor).toHaveBeenCalledWith('README.md')
-    api.git.resolve.mockRejectedValueOnce(new Error('"README.md" still has conflict markers or is not valid JSON'))
+    api.git.resolve.mockRejectedValueOnce(new Error('README.md still has conflict markers or is not valid JSON'))
     await user.click(within(item).getByRole('button', { name: 'Use edited file' }))
     expect(await within(dialog).findByRole('alert')).toHaveTextContent('still has conflict markers')
     expect(api.git.resolve).toHaveBeenLastCalledWith('README.md', 'edited')

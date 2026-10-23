@@ -596,7 +596,7 @@ describe('resolving a file conflict with the edited file', () => {
 
   it('refuses while the file has conflict markers or is not valid JSON', async () => {
     const b = await fileConflict()
-    const message = '"Request "Login user" in Auth API" still has conflict markers or is not valid JSON'
+    const message = 'Request "Login user" in Auth API still has conflict markers or is not valid JSON'
     write(b.dir, REQUEST, '<<<<<<< ours\n{}\n=======\n{}\n>>>>>>> theirs\n')
     await expect(b.api.git.resolve(REQUEST, 'edited')).rejects.toThrow(message)
     write(b.dir, REQUEST, '{ "name": ')

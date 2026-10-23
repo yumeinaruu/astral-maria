@@ -10,7 +10,7 @@ export const IDENTITY_MISSING_MESSAGE = 'Git needs your name and email before it
 
 /** `git.resolve` with `edited` on a file that still has conflict markers or does not parse. */
 export function notResolvedMessage(label: string): string {
-  return `"${label}" still has conflict markers or is not valid JSON`
+  return `${label} still has conflict markers or is not valid JSON`
 }
 
 /** The kind of a workspace file, by its workspace-relative path. */

@@ -127,7 +127,7 @@ export interface AstralApi {
     push(): Promise<SyncOutcome>
     /**
      * Resolves one conflict item (see `SyncConflictItem` for what each side means) and returns the new state. With
-     * `edited` (a `file` item only) it rejects with `"<label>" still has conflict markers or is not valid JSON` unless
+     * `edited` (a `file` item only) it rejects with `<label> still has conflict markers or is not valid JSON` unless
      * the working-tree file is free of conflict markers and, for a workspace JSON file, parses.
      */
     resolve(id: string, choice: SyncChoice): Promise<SyncState>
