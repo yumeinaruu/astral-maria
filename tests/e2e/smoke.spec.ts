@@ -1,8 +1,9 @@
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test'
+import { execFileSync } from 'node:child_process'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, join, relative, resolve } from 'node:path'
 
@@ -31,6 +32,8 @@ let userData: string
 let workspace: string
 let downloadDir: string
 let runnerExportDir: string
+/** git's global config for the app and the test: a temp file, so the user's real git config is never read or written. */
+let gitConfig: string
 let app: ElectronApplication | undefined
 
 test.beforeAll(async () => {
@@ -63,6 +66,11 @@ test.beforeAll(async () => {
   downloadDir = join(root, 'downloads')
   runnerExportDir = join(root, 'runner-exports')
   await Promise.all([mkdir(userData), mkdir(workspace), mkdir(downloadDir), mkdir(runnerExportDir)])
+  gitConfig = join(root, 'gitconfig')
+  await writeFile(
+    gitConfig,
+    '[user]\n\tname = E2E Tester\n\temail = e2e@example.com\n[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n',
+  )
 })
 
 test.afterAll(async () => {
@@ -79,7 +87,7 @@ async function launch(
     // ASTRAL_E2E_EXECUTABLE runs the same steps against a packaged build instead of out/main.
     ...(PACKAGED ? { executablePath: PACKAGED } : {}),
     args: [...(PACKAGED ? [] : [MAIN]), `--user-data-dir=${userData}`],
-    env: { ...process.env, NODE_ENV: 'test', ASTRAL_E2E_WORKSPACE: workspaceDir, ...extraEnv },
+    env: { ...isolatedGitEnv(), NODE_ENV: 'test', ASTRAL_E2E_WORKSPACE: workspaceDir, ...extraEnv },
   })
   const page = await app.firstWindow()
   const problems: string[] = []
@@ -90,6 +98,34 @@ async function launch(
   page.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`))
   page.on('request', (r) => requests.push(r.url()))
   return { app, page, problems, requests }
+}
+
+/**
+ * The environment with git isolated: the global config is the temp file, the system config is skipped, and nothing
+ * inherited points git at another repository or identity.
+ */
+function isolatedGitEnv(): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...process.env }
+  for (const name of [
+    'GIT_DIR',
+    'GIT_WORK_TREE',
+    'GIT_INDEX_FILE',
+    'GIT_CONFIG',
+    'GIT_CEILING_DIRECTORIES',
+    'GIT_AUTHOR_NAME',
+    'GIT_AUTHOR_EMAIL',
+    'GIT_COMMITTER_NAME',
+    'GIT_COMMITTER_EMAIL',
+    'EMAIL',
+  ]) {
+    delete env[name]
+  }
+  return { ...env, GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: '1' }
+}
+
+/** The system git, run by the test with the same isolated config as the app. */
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync('git', args, { cwd, env: isolatedGitEnv(), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
 }
 
 async function shot(page: Page, name: string): Promise<void> {
@@ -599,7 +635,10 @@ test('create, send, persist, and keep secrets local', async () => {
     await p.getByRole('treeitem', { name: 'Echo user' }).click()
     await p.getByRole('textbox', { name: 'URL', exact: true }).fill('{{baseUrl}}/users/{{user}}')
     await openSection(p, 'Scripts')
-    await p.getByRole('tablist', { name: 'Scripts' }).getByRole('tab', { name: /^Post-response/ }).click()
+    await p
+      .getByRole('tablist', { name: 'Scripts' })
+      .getByRole('tab', { name: /^Post-response/ })
+      .click()
     await p.locator('.scripts-editor .cm-content').click()
     await p.keyboard.type(
       "pm.test('status is 200', () => pm.response.to.have.status(200)); " +
@@ -707,13 +746,85 @@ test('import Postman files and export a collection as v2.1', async () => {
 
   await test.step('export the collection', async () => {
     // The imported collection is expanded, so click its own row rather than the middle of the item and its children.
-    await page.getByRole('treeitem', { name: 'Acme Orders API' }).locator('.tree-row').first().click({ button: 'right' })
+    await page
+      .getByRole('treeitem', { name: 'Acme Orders API' })
+      .locator('.tree-row')
+      .first()
+      .click({ button: 'right' })
     await page.getByRole('menuitem', { name: 'Export' }).click()
     const target = join(exportDir, 'Acme Orders API.postman_collection.json')
     await expect.poll(() => existsSync(target)).toBe(true)
     const doc = JSON.parse(await readFile(target, 'utf8'))
     expect(doc.info.schema).toBe('https://schema.getpostman.com/json/collection/v2.1.0/collection.json')
     expect(doc.info.name).toBe('Acme Orders API')
+  })
+
+  expect(problems).toEqual([])
+})
+
+test('sync a workspace with a local bare repository', async () => {
+  const dir = join(root, 'workspace-sync')
+  const remote = join(root, 'remote.git')
+  await Promise.all([mkdir(dir), mkdir(remote)])
+  git(remote, 'init', '--quiet', '--bare', '-b', 'main')
+  const { page, problems } = await launch(dir)
+  await page.getByRole('button', { name: 'Create workspace' }).click()
+  await page.getByLabel('Workspace name').fill('Synced')
+  await page.getByRole('button', { name: 'Create', exact: true }).click()
+  await expect(page.locator('.workspace-name')).toHaveText('Synced')
+  const bar = page.locator('footer.statusbar')
+
+  await test.step('create a request', async () => {
+    await page.getByRole('button', { name: 'New collection' }).click()
+    await page.getByLabel('Name', { exact: true }).fill('Team API')
+    await page.getByLabel('Name', { exact: true }).press('Enter')
+    const collection = page.getByRole('treeitem', { name: 'Team API' })
+    await collection.click({ button: 'right' })
+    await page.getByRole('menuitem', { name: 'New request' }).click()
+    await page.getByLabel('Name', { exact: true }).fill('Ping')
+    await page.getByLabel('Name', { exact: true }).press('Enter')
+    await page.getByRole('treeitem', { name: 'Ping' }).click()
+    await expect(page.getByRole('tab', { name: /Ping/ })).toBeVisible()
+  })
+
+  await test.step('link the workspace to the repository', async () => {
+    await bar.getByRole('button', { name: 'Set up sync' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Set up sync' })
+    await dialog.getByLabel('Repository URL').fill(remote)
+    await dialog.getByRole('button', { name: 'Link' }).click()
+    await expect(dialog).toBeHidden()
+    await expect(bar.locator('.sync-branch')).toHaveText('main')
+    await expect(bar.getByRole('img', { name: 'Uncommitted changes' })).toBeVisible()
+  })
+
+  await test.step('Sync through the Commit dialog', async () => {
+    await bar.getByRole('button', { name: 'Sync', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: 'Commit changes' })
+    await expect(dialog.getByRole('list', { name: 'Changes' })).toContainText('Request "Ping" in Team API')
+    await expect(dialog.getByLabel('Commit message')).not.toHaveValue('')
+    await shotBoth(page, 'h1-sync-commit')
+    await dialog.getByLabel('Commit message').fill('Add the Ping request')
+    await dialog.getByRole('button', { name: 'Commit and sync' }).click()
+    await expect(dialog).toBeHidden()
+    await expect(bar.getByRole('status')).toHaveText('Pushed 1')
+    expect(git(remote, 'log', '--format=%s', 'main').trim().split('\n')).toEqual(['Add the Ping request'])
+    expect(git(remote, 'ls-tree', '-r', '--name-only', 'main')).not.toContain('.local/')
+  })
+
+  await test.step('change the request and Sync again', async () => {
+    await page.getByRole('textbox', { name: 'URL', exact: true }).fill('https://example.test/ping')
+    await expect(page.locator('.save-status')).toHaveText('Saved')
+    await expect(bar.getByRole('img', { name: 'Uncommitted changes' })).toBeVisible()
+    await bar.getByRole('button', { name: 'Sync', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: 'Commit changes' })
+    await dialog.getByRole('button', { name: 'Commit and sync' }).click()
+    await expect(dialog).toBeHidden()
+    await expect(bar.getByRole('status')).toHaveText('Pushed 1')
+    // Nothing left to push or pull: no ↑n ↓m and no change dot.
+    await expect(bar.locator('.sync-counts')).toHaveCount(0)
+    await expect(bar.getByRole('img', { name: 'Uncommitted changes' })).toHaveCount(0)
+    expect(git(remote, 'log', '--format=%s', 'main').trim().split('\n')).toHaveLength(2)
+    await shotBoth(page, 'h2-sync-status')
   })
 
   expect(problems).toEqual([])

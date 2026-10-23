@@ -275,5 +275,8 @@ export type SyncOutcome =
   | { kind: 'done'; pulled: number; pushed: number }
   | { kind: 'conflicts'; state: SyncState }
 
-/** How to resolve one conflict item: a whole side, or a side per field (keys are the `fields[].path` values). */
-export type SyncChoice = 'ours' | 'theirs' | { fields: Record<string, 'ours' | 'theirs'> }
+/**
+ * How to resolve one conflict item: a whole side, or a side per field (keys are the `fields[].path` values).
+ * `edited` (only for a `file` item) keeps the working-tree file as the user edited it.
+ */
+export type SyncChoice = 'ours' | 'theirs' | 'edited' | { fields: Record<string, 'ours' | 'theirs'> }

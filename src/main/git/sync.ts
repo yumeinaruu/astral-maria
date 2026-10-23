@@ -8,6 +8,7 @@
 
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
+import { IDENTITY_MISSING_MESSAGE, notResolvedMessage } from '../../shared/syncText'
 import type { SyncChoice, SyncConflictItem, SyncOutcome, SyncState } from '../../shared/types'
 import { readJson, writeJsonAtomic } from '../storage/fsJson'
 import { ensureGitignore } from '../storage/workspaceStore'
@@ -19,7 +20,6 @@ import { isLocalPath, readStatus } from './status'
 export const MERGING_MESSAGE = 'Finish or abort the merge first'
 const NOT_LINKED_MESSAGE = 'This workspace is not linked to a git repository. Set up sync first'
 const NOT_A_REPO_MESSAGE = 'This workspace is not a git repository yet. Set up sync first'
-const IDENTITY_MESSAGE = 'Git needs your name and email before it can commit'
 /** The commit `link` makes of a workspace that has none before merging the remote into it. */
 const INITIAL_MESSAGE = 'Add workspace'
 const RECORD_FILE = 'astral-merge.json'
@@ -121,7 +121,7 @@ async function readIdentity(dir: string): Promise<{ name: string; email: string 
 }
 
 async function requireIdentity(dir: string): Promise<void> {
-  if ((await readIdentity(dir)) === null) throw new GitError('identity_missing', IDENTITY_MESSAGE, '')
+  if ((await readIdentity(dir)) === null) throw new GitError('identity_missing', IDENTITY_MISSING_MESSAGE, '')
 }
 
 async function requireRepo(dir: string): Promise<void> {
@@ -487,6 +487,20 @@ export async function link(dir: string, url: unknown): Promise<SyncState> {
   return readSyncState(dir)
 }
 
+export async function unlink(dir: string): Promise<SyncState> {
+  await requireRepo(dir)
+  await requireNotMerging(dir)
+  if ((await originUrl(dir)) !== null) await git(dir, ['remote', 'remove', 'origin'])
+  return readSyncState(dir)
+}
+
+/** Fetches origin and reads the state (for the periodic refresh of `behind`). */
+export async function fetch(dir: string): Promise<SyncState> {
+  await requireLinked(dir)
+  await fetchOrigin(dir)
+  return readSyncState(dir)
+}
+
 /** The absolute path of conflict item `id`; rejects for anything that is not a current conflict. */
 async function conflictItem(dir: string, id: unknown): Promise<{ id: string; stored: StoredItem }> {
   await requireRepo(dir)
@@ -507,10 +521,38 @@ function wholeChoice(choice: SyncChoice): 'ours' | 'theirs' {
   throw new Error('Choose a whole file: ours or theirs')
 }
 
+/** Git's conflict markers at the start of a line: `<<<<<<< ours` and `>>>>>>> theirs` (`=======` alone is common text). */
+const CONFLICT_MARKER = /^(?:<{7}|>{7})(?: |$)/m
+
+/** Stages the working-tree file of a `file` item as the user edited it, once it has no markers (and parses). */
+async function useEdited(dir: string, relPath: string, label: string): Promise<void> {
+  let text: string
+  try {
+    text = await fs.readFile(path.join(dir, relPath), 'utf8')
+  } catch {
+    throw new GitError('failed', notResolvedMessage(label), '')
+  }
+  let valid = !CONFLICT_MARKER.test(text)
+  if (valid && fileKind(relPath) !== 'other') {
+    try {
+      JSON.parse(text)
+    } catch {
+      valid = false
+    }
+  }
+  if (!valid) throw new GitError('failed', notResolvedMessage(label), '')
+  await gitPaths(dir, ['add'], [relPath])
+}
+
 export async function resolve(dir: string, id: unknown, choice: SyncChoice): Promise<SyncState> {
   const item = await conflictItem(dir, id)
   const p = item.id
   const stored = item.stored
+  if (choice === 'edited') {
+    if (stored.kind !== 'file') throw new Error('Use the edited file only for a file conflict')
+    await useEdited(dir, p, stored.label)
+    return readSyncState(dir)
+  }
   if (stored.kind === 'fields') {
     let choose: (c: FieldConflict) => 'ours' | 'theirs'
     if (choice === 'ours' || choice === 'theirs') {

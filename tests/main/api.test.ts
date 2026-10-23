@@ -476,6 +476,9 @@ describe('git', () => {
     const api = makeApi()
     await expect(api.git.state()).rejects.toThrow('no_workspace_open')
     await expect(api.git.sync(null)).rejects.toThrow('no_workspace_open')
+    await expect(api.git.unlink()).rejects.toThrow('no_workspace_open')
+    await expect(api.git.fetch()).rejects.toThrow('no_workspace_open')
+    await expect(api.workspace.reload()).rejects.toThrow('no_workspace_open')
   })
 
   it('clone asks the picker for a clone folder and opens nothing when cancelled', async () => {

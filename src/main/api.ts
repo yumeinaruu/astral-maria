@@ -478,6 +478,16 @@ export function createApi(deps: ApiDeps): AstralApi {
         cancelAllSends()
         current = null
       },
+      async reload() {
+        const ws = await workspace()
+        const info = await readWorkspaceInfo(ws.info.dir)
+        // Only the workspace that was read takes the new info; one opened meanwhile keeps its own.
+        if (current !== ws) return current ? current.info : info
+        ws.info = info
+        remember(info)
+        await recentQueue
+        return info
+      },
       async recent() {
         await recentQueue
         const out: WorkspaceInfo[] = []
@@ -681,6 +691,9 @@ export function createApi(deps: ApiDeps): AstralApi {
     git: {
       state: () => serialGit(gitSync.readSyncState),
       link: gitOp(gitSync.link),
+      unlink: gitOp(gitSync.unlink),
+      // Not tracked: a quit need not wait for a background fetch, which changes no workspace file.
+      fetch: () => serialGit(gitSync.fetch),
       async clone(remoteUrl: string) {
         if (typeof remoteUrl !== 'string' || remoteUrl.trim() === '' || remoteUrl.trim().startsWith('-')) {
           throw new Error('Enter a repository URL')

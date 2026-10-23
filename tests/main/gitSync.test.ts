@@ -547,3 +547,100 @@ describe('git.state', () => {
     ])
   })
 })
+
+describe('git.unlink', () => {
+  it('removes origin only, keeping the repository and its history', async () => {
+    const { a } = await team()
+    const before = head(a.dir)
+    const state = await a.api.git.unlink()
+    expect(state).toMatchObject({ linked: false, remoteUrl: null, branch: 'main', merging: false })
+    expect(git(a.dir, 'remote').trim()).toBe('')
+    expect(head(a.dir)).toBe(before)
+    await expect(a.api.git.sync(null)).rejects.toThrow('not linked')
+    // Unlinking again is harmless.
+    expect((await a.api.git.unlink()).linked).toBe(false)
+  })
+
+  it('refuses during a merge', async () => {
+    const { a, b } = await team()
+    await edit(a, { url: 'https://alice.example/login' })
+    await a.api.git.sync('Alice')
+    await edit(b, { url: 'https://bob.example/login' })
+    expect((await b.api.git.sync('Bob')).kind).toBe('conflicts')
+    await expect(b.api.git.unlink()).rejects.toThrow(MERGING)
+    expect(git(b.dir, 'remote').trim()).toBe('origin')
+  })
+})
+
+describe('git.fetch', () => {
+  it('updates how far behind the remote is, without merging', async () => {
+    const { a, b } = await team()
+    await edit(a, { url: 'https://alice.example/login' })
+    await a.api.git.sync('Alice')
+    const before = head(b.dir)
+    expect((await b.api.git.state()).behind).toBe(0)
+    expect(await b.api.git.fetch()).toMatchObject({ behind: 1, ahead: 0 })
+    expect(head(b.dir)).toBe(before)
+  })
+})
+
+describe('resolving a file conflict with the edited file', () => {
+  async function fileConflict(): Promise<Person> {
+    const { a, b } = await team()
+    write(a.dir, REQUEST, '{ "name": "Login user", broken\n')
+    await a.api.git.sync('Break it')
+    await edit(b, { url: 'https://bob.example/login' })
+    expect((await b.api.git.sync('Edit login')).kind).toBe('conflicts')
+    return b
+  }
+
+  it('refuses while the file has conflict markers or is not valid JSON', async () => {
+    const b = await fileConflict()
+    const message = '"Request "Login user" in Auth API" still has conflict markers or is not valid JSON'
+    write(b.dir, REQUEST, '<<<<<<< ours\n{}\n=======\n{}\n>>>>>>> theirs\n')
+    await expect(b.api.git.resolve(REQUEST, 'edited')).rejects.toThrow(message)
+    write(b.dir, REQUEST, '{ "name": ')
+    await expect(b.api.git.resolve(REQUEST, 'edited')).rejects.toThrow(message)
+    expect((await b.api.git.state()).conflicts).toHaveLength(1)
+  })
+
+  it('stages the edited file as it is', async () => {
+    const b = await fileConflict()
+    const edited = JSON.stringify({ ...(JSON.parse(git(b.dir, 'show', `:2:${REQUEST}`)) as object), url: 'x' }, null, 2)
+    write(b.dir, REQUEST, edited)
+    expect((await b.api.git.resolve(REQUEST, 'edited')).conflicts).toEqual([])
+    expect(await b.api.git.finishMerge()).toEqual({ kind: 'done', pulled: 1, pushed: 2 })
+    expect(git(b.dir, 'show', `HEAD:${REQUEST}`)).toBe(edited)
+  })
+
+  it('accepts any text without markers for a file that is not JSON', async () => {
+    const { a, b } = await team()
+    write(a.dir, 'README.md', 'Alice\n')
+    await a.api.git.sync('Readme A')
+    write(b.dir, 'README.md', 'Bob\n')
+    expect((await b.api.git.sync('Readme B')).kind).toBe('conflicts')
+    write(b.dir, 'README.md', 'Alice and Bob\n')
+    expect((await b.api.git.resolve('README.md', 'edited')).conflicts).toEqual([])
+  })
+
+  it('is only for whole-file conflicts', async () => {
+    const { a, b } = await team()
+    await edit(a, { url: 'https://alice.example/login' })
+    await a.api.git.sync('Alice')
+    await edit(b, { url: 'https://bob.example/login' })
+    expect((await b.api.git.sync('Bob')).kind).toBe('conflicts')
+    await expect(b.api.git.resolve(REQUEST, 'edited')).rejects.toThrow('only for a file conflict')
+  })
+})
+
+describe('workspace.reload', () => {
+  it('reads the name a pull brought in without reopening the workspace', async () => {
+    const { a, b } = await team()
+    const meta = JSON.parse(fileAt(a, 'workspace.json')) as { name: string }
+    write(a.dir, 'workspace.json', JSON.stringify({ ...meta, name: 'Team (renamed)' }, null, 2))
+    await a.api.git.sync('Rename workspace')
+    await b.api.git.pull()
+    expect(await b.api.workspace.reload()).toMatchObject({ name: 'Team (renamed)', dir: b.dir })
+    expect((await b.api.workspace.recent())[0]).toMatchObject({ name: 'Team (renamed)', dir: b.dir })
+  })
+})

@@ -4,7 +4,7 @@
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import type { SyncChange } from '../../shared/types'
-import { fileKind } from './jsonMerge'
+import { fileKind } from '../../shared/syncText'
 import type { GitChange } from './status'
 
 /** Reads a workspace-relative file's text, or null when it does not exist there. */
@@ -81,44 +81,4 @@ export async function describeChanges(
   return out
 }
 
-type Group = 'request' | 'folder' | 'collection' | 'environment' | 'globals' | 'workspace' | 'file'
-
-const GROUPS: { group: Group; one: string; many: string; counted: boolean }[] = [
-  { group: 'request', one: 'request', many: 'requests', counted: true },
-  { group: 'folder', one: 'folder', many: 'folders', counted: true },
-  { group: 'collection', one: 'collection', many: 'collections', counted: true },
-  { group: 'environment', one: 'environment', many: 'environments', counted: true },
-  { group: 'globals', one: 'globals', many: 'globals', counted: false },
-  { group: 'workspace', one: 'workspace settings', many: 'workspace settings', counted: false },
-  { group: 'file', one: 'file', many: 'files', counted: true },
-]
-
-function groupOf(relPath: string): Group {
-  const kind = fileKind(relPath)
-  if (kind === 'environment' && relPath === GLOBALS_FILE) return 'globals'
-  if (kind === 'other') return 'file'
-  return kind
-}
-
-const VERBS: Record<SyncChange['kind'], string> = {
-  added: 'Add',
-  deleted: 'Delete',
-  renamed: 'Rename',
-  modified: 'Update',
-}
-
-/** E.g. `Update 2 requests and 1 environment`; `Add` / `Delete` / `Rename` when every change is of that kind. */
-export function defaultCommitMessage(changes: SyncChange[]): string {
-  if (changes.length === 0) return 'Update workspace'
-  const kinds = new Set(changes.map((c) => c.kind))
-  const verb = kinds.size === 1 ? VERBS[changes[0].kind] : 'Update'
-  const counts = new Map<Group, number>()
-  for (const c of changes) counts.set(groupOf(c.path), (counts.get(groupOf(c.path)) ?? 0) + 1)
-  const parts = GROUPS.filter((g) => counts.has(g.group)).map((g) => {
-    const n = counts.get(g.group) ?? 0
-    const noun = n === 1 ? g.one : g.many
-    return g.counted ? `${n} ${noun}` : noun
-  })
-  const list = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
-  return `${verb} ${list}`
-}
+export { defaultCommitMessage } from '../../shared/syncText'

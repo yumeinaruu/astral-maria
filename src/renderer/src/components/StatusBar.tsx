@@ -3,8 +3,12 @@ import { shortcut } from '../lib/platform'
 import { openActiveEnvironment } from '../lib/tabs'
 import { useApp } from '../state/store'
 import { useUi } from '../state/ui'
+import { SyncButton } from './sync/SyncButton'
 
-/** Bottom bar: sidebar toggle, Console and workspace folder on the left, layout toggle and Environments on the right. */
+/**
+ * Bottom bar: sidebar toggle, Console and workspace folder on the left; git sync, layout toggle and Environments on the
+ * right.
+ */
 export function StatusBar(): React.JSX.Element {
   const dir = useApp((s) => s.workspace?.dir ?? '')
   const sidebarVisible = useUi((s) => s.sidebarVisible)
@@ -37,6 +41,7 @@ export function StatusBar(): React.JSX.Element {
         {dir}
       </span>
       <div className="statusbar-right">
+        <SyncButton />
         <button
           type="button"
           className="icon-btn"

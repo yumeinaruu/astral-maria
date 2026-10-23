@@ -26,6 +26,11 @@ export interface AstralApi {
     recent(): Promise<WorkspaceInfo[]>
     /** Cancels sends in flight and closes the open workspace (if any); the renderer flushes its drafts first. */
     close(): Promise<void>
+    /**
+     * Re-reads the open workspace's `workspace.json` (a pull may bring in a new name) and updates the recent list,
+     * without reopening it: sends, runs and session variables are untouched.
+     */
+    reload(): Promise<WorkspaceInfo>
   }
   collections: {
     list(): Promise<{ collections: CollectionTree[]; errors: LoadError[] }>
@@ -101,6 +106,10 @@ export interface AstralApi {
      * workspace with no commits is committed first. May end with conflicts, shown in the returned state.
      */
     link(remoteUrl: string): Promise<SyncState>
+    /** Removes the `origin` remote only; the repository and its history stay. Refuses during a merge. */
+    unlink(): Promise<SyncState>
+    /** `git fetch` origin, then the state; updates `behind`. Merges nothing. */
+    fetch(): Promise<SyncState>
     /**
      * Directory picker, then clones into the chosen empty folder and opens it as the workspace (creating
      * `workspace.json` when the repository has none). Null when the picker is cancelled.
@@ -116,7 +125,11 @@ export interface AstralApi {
     pull(): Promise<SyncOutcome>
     /** Rejects with `The remote has new changes. Pull first` when the remote is ahead. */
     push(): Promise<SyncOutcome>
-    /** Resolves one conflict item (see `SyncConflictItem` for what each side means) and returns the new state. */
+    /**
+     * Resolves one conflict item (see `SyncConflictItem` for what each side means) and returns the new state. With
+     * `edited` (a `file` item only) it rejects with `"<label>" still has conflict markers or is not valid JSON` unless
+     * the working-tree file is free of conflict markers and, for a workspace JSON file, parses.
+     */
     resolve(id: string, choice: SyncChoice): Promise<SyncState>
     /** Opens the conflicted file in the OS default editor. */
     openInEditor(id: string): Promise<void>
@@ -150,7 +163,7 @@ export const RUN_EVENT_CHANNEL = 'astral:runner.event'
 
 /** Method names per group; the preload and the main-process handlers are both generated from this table. */
 export const API_METHODS = {
-  workspace: ['create', 'open', 'pickDirectory', 'recent', 'close'],
+  workspace: ['create', 'open', 'pickDirectory', 'recent', 'close', 'reload'],
   collections: [
     'list',
     'createCollection',
@@ -169,6 +182,8 @@ export const API_METHODS = {
   git: [
     'state',
     'link',
+    'unlink',
+    'fetch',
     'clone',
     'setIdentity',
     'commit',

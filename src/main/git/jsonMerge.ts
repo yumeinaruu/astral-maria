@@ -3,7 +3,9 @@
  * base, ours and theirs versions from the index stages and writes the result.
  */
 
-export type FileKind = 'request' | 'folder' | 'collection' | 'environment' | 'workspace' | 'other'
+import type { FileKind } from '../../shared/syncText'
+
+export { fileKind, type FileKind } from '../../shared/syncText'
 
 /**
  * Where a conflict sits in the document, as a JSON array of segments: a string names an object field, `{ key }` the
@@ -27,18 +29,6 @@ export type MergeOutcome =
   | { kind: 'merged'; text: string }
   | { kind: 'conflicts'; partial: unknown; conflicts: FieldConflict[] }
   | { kind: 'unmergeable'; reason: string }
-
-/** The kind of a workspace file, by its workspace-relative path. */
-export function fileKind(relPath: string): FileKind {
-  const rel = relPath.replace(/\\/g, '/')
-  const name = rel.slice(rel.lastIndexOf('/') + 1)
-  if (name.endsWith('.request.json')) return 'request'
-  if (name === 'folder.json') return 'folder'
-  if (name === 'collection.json') return 'collection'
-  if (/^environments\/[^/]+\.json$/.test(rel)) return 'environment'
-  if (rel === 'workspace.json') return 'workspace'
-  return 'other'
-}
 
 /** The same formatting as `writeJsonAtomic`. */
 function format(value: unknown): string {
