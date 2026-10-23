@@ -20,7 +20,11 @@ const BLANK: KeyValue = { key: '', value: '', enabled: true }
  * creates a row. Bulk Edit swaps the grid for `key:value` lines.
  */
 export function KeyValueTable({ rows, onChange, noun, title }: Props): React.JSX.Element {
-  const [bulk, setBulk] = useState<string | null>(null)
+  /** The Bulk Edit text, and the rows it last stood for; rows changed elsewhere (the URL) replace the text. */
+  const [bulkState, setBulkState] = useState<{ text: string; rowsText: string } | null>(null)
+  const rowsText = toBulkText(rows)
+  if (bulkState !== null && bulkState.rowsText !== rowsText) setBulkState({ text: rowsText, rowsText })
+  const bulk = bulkState?.text ?? null
   const Noun = noun.charAt(0).toUpperCase() + noun.slice(1)
 
   function update(index: number, patch: Partial<KeyValue>): void {
@@ -33,7 +37,7 @@ export function KeyValueTable({ rows, onChange, noun, title }: Props): React.JSX
       type="button"
       className="btn-text kv-bulk-toggle"
       aria-pressed={bulk !== null}
-      onClick={() => setBulk(bulk === null ? toBulkText(rows) : null)}
+      onClick={() => setBulkState(bulk === null ? { text: rowsText, rowsText } : null)}
     >
       {bulk === null ? 'Bulk Edit' : 'Key-Value Edit'}
     </button>
@@ -55,8 +59,9 @@ export function KeyValueTable({ rows, onChange, noun, title }: Props): React.JSX
           spellCheck={false}
           placeholder={'key:value\n// disabled:value'}
           onChange={(e) => {
-            setBulk(e.target.value)
-            onChange(fromBulkText(e.target.value, rows))
+            const next = fromBulkText(e.target.value, rows)
+            setBulkState({ text: e.target.value, rowsText: toBulkText(next) })
+            onChange(next)
           }}
         />
       ) : (

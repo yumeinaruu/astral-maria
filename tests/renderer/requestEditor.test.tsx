@@ -245,6 +245,24 @@ describe('request editor', () => {
     expect(lastSaved(api)![1].headers).toEqual([{ key: 'X-Token', value: 'abc', enabled: true, description: 'auth' }])
   })
 
+  it('updates the Bulk Edit text when the rows change elsewhere, and keeps what was typed', async () => {
+    const { user } = await openedEditor()
+    act(() =>
+      useApp.getState().editDraft(REQUEST_PATH, (r) => ({ ...r, headers: [{ key: 'A', value: '1', enabled: true }] })),
+    )
+    await user.click(screen.getByRole('tab', { name: /^Headers/ }))
+    await user.click(screen.getByRole('button', { name: 'Bulk Edit' }))
+    const text = screen.getByRole('textbox', { name: 'Headers as key:value lines' })
+    fireEvent.change(text, { target: { value: 'A: 1\n' } })
+    expect(text).toHaveValue('A: 1\n')
+    act(() =>
+      useApp
+        .getState()
+        .editDraft(REQUEST_PATH, (r) => ({ ...r, headers: [...r.headers, { key: 'B', value: '2', enabled: true }] })),
+    )
+    expect(text).toHaveValue('A:1\nB:2')
+  })
+
   it('round-trips the rows through Bulk Edit, with // disabling a line', async () => {
     const { user } = await openedEditor()
     act(() =>
